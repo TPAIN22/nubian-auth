@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 
 const imagekit = new ImageKit({
-  publicKey: "your_public_key_here", // اختياري فقط للمراجعة
+  publicKey: "public_RKTEIqYwtaKo9nEtKAzR0PD3/ZE=",
   privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
   urlEndpoint: "https://ik.imagekit.io/nubian",
 });
