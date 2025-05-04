@@ -38,7 +38,7 @@ app.post("/upload", upload.single("file"), (req, res) => {
       if (error) {
         return res.status(500).send("Error uploading image: " + error);
       }
-      res.send(result); // النتيجة ستتضمن رابط الصورة
+      res.send(result);
     }
   );
 });
