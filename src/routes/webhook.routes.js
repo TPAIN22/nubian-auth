@@ -1,14 +1,13 @@
 import express from 'express';
 import User from '../models/user.model.js';
 import { Webhook } from 'svix';
-import dotenv from 'dotenv';
+
 const router = express.Router();
-dotenv.config();
-// Clerk Webhook Secret
+
 const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
 
-router.post('/clerk', express.raw({ type: 'application/json' }), async (req, res) => {
-  const payload = req.body;
+router.post('/clerk', async (req, res) => {
+  const payload = req.body; 
   const headers = req.headers;
 
   const wh = new Webhook(WEBHOOK_SECRET);
@@ -16,7 +15,7 @@ router.post('/clerk', express.raw({ type: 'application/json' }), async (req, res
   let evt;
 
   try {
-    evt = wh.verify(payload, headers);
+    evt = wh.verify(payload, headers); // تحقق من التوقيع
   } catch (err) {
     console.error("Webhook verification failed:", err.message);
     return res.status(400).json({ error: "Invalid webhook signature" });
@@ -45,5 +44,6 @@ router.post('/clerk', express.raw({ type: 'application/json' }), async (req, res
     return res.status(500).send("Server error");
   }
 });
+
 
 export default router;
