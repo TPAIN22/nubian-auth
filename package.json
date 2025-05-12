@@ -4,6 +4,7 @@
   "main": "src/index.js",
   "type": "module",
   "scripts": {
+    "install": "npm install",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js"
   },
