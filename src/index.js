@@ -4,28 +4,41 @@ import cors from 'cors';
 import multer from 'multer';
 import ImageKit from 'imagekit';
 import path from 'path';
-import productRoutes from './routes/products.route.js'
-import orderRoutes from './routes/orders.route.js'
-import cartRoutes from './routes/carts.route.js'
-import reviewRoutes from './routes/reviews.route.js'
-import categoryRoutes from './routes/categories.route.js'
-import brandRoutes from './routes/brands.route.js'
-import { connect } from './lib/db.js'
-import webhookRoutes from './routes/webhook.routes.js'
+import { connect } from './lib/db.js';
+
+import productRoutes from './routes/products.route.js';
+import orderRoutes from './routes/orders.route.js';
+import cartRoutes from './routes/carts.route.js';
+import reviewRoutes from './routes/reviews.route.js';
+import categoryRoutes from './routes/categories.route.js';
+import brandRoutes from './routes/brands.route.js';
+import webhookRoutes from './routes/webhook.routes.js';
+import { clerkMiddleware } from '@clerk/express';
+
 dotenv.config();
 
 const app = express();
+
+// 🛡️ Clerk middleware لتفعيل التوثيق
+
+// 🧩 middlewares العامة
 app.use(cors());
-app.use('/api/products', productRoutes)
-app.use('/api/orders', orderRoutes)
-app.use('/api/carts', cartRoutes)
-app.use('/api/reviews', reviewRoutes)
-app.use('/api/categories', categoryRoutes)
-app.use('/api/brands', brandRoutes)
+app.use(express.json());
+
+// 📦 الراوتات  
+
+app.use(clerkMiddleware());
+app.use('/api/reviews', reviewRoutes);
+app.use('/api/carts', cartRoutes); // ← سيتم التحقق داخل هذا الراوت باستخدام requireAuth
+app.use('/api/orders', orderRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/categories', categoryRoutes);
+app.use('/api/brands', brandRoutes);
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
-app.use(express.json()); 
+
+// 📷 رفع الصور
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload = multer({ storage });
 
 const imageKit = new ImageKit({
   publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
@@ -38,24 +51,23 @@ app.post("/upload", upload.single("file"), (req, res) => {
     return res.status(400).send("No file provided");
   }
 
-  const file = req.file;
-
   imageKit.upload(
     {
-      file: file.buffer, 
-      fileName: Date.now() + path.extname(file.originalname),
+      file: req.file.buffer,
+      fileName: Date.now() + path.extname(req.file.originalname),
     },
     (error, result) => {
       if (error) {
-        return res.status(500).send("Error uploading image: " + error);
+        return res.status(500).send("Error uploading image: " + error.message);
       }
       res.send(result);
     }
   );
 });
 
+// 🟢 بدء السيرفر
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
   connect();
 });
