@@ -23,6 +23,7 @@ const app = express();
 
 // 🧩 middlewares العامة
 app.use(cors());
+app.get("/ping", (_, res) => res.send("pong"));
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
 
 app.use(express.json());
