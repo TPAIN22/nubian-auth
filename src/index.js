@@ -23,6 +23,8 @@ const app = express();
 
 // 🧩 middlewares العامة
 app.use(cors());
+app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
+
 app.use(express.json());
 
 // 📦 الراوتات  
@@ -34,7 +36,6 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/brands', brandRoutes);
-app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
 
 // 📷 رفع الصور
 const storage = multer.memoryStorage();
