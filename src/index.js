@@ -32,7 +32,7 @@ app.use(express.json());
 
 app.use(clerkMiddleware());
 app.use('/api/reviews', reviewRoutes);
-app.use('/api/carts', cartRoutes); // ← سيتم التحقق داخل هذا الراوت باستخدام requireAuth
+app.use('/api/carts', cartRoutes); 
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);

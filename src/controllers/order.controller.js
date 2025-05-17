@@ -1,8 +1,17 @@
 import Order from '../models/orders.model.js';
 import Cart from '../models/carts.model.js';
+import { getAuth } from '@clerk/express';
+import User from '../models/user.model.js';
 
 export const updateOrderStatus = async (req, res) => {
+    const { userId } = getAuth(req);
     try {
+        const user = await User.findOne({ clerkId: userId });
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const { status } = req.body;
 
         const allowedStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
@@ -23,29 +32,41 @@ export const updateOrderStatus = async (req, res) => {
         res.status(200).json(order);
     } catch (error) {
         res.status(500).json({ message: error.message });
+        console.log(error, "error in updateOrderStatus");
     }
 };
 
 export const getUserOrders = async (req, res) => {
+    const { userId } = getAuth(req);
     try {
-        const userId = req.user.id;
+        const user = await User.findOne({ clerkId: userId });
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
 
-        const orders = await Order.find({ user: userId })
+        const orders = await Order.find({ user: user._id })
             .populate('products.product') 
             .sort({ orderDate: -1 });
 
         res.status(200).json(orders);
     } catch (error) {
         res.status(500).json({ message: error.message });
+        console.log(error, "error in getUserOrders");
     }
 };
 
 export const createOrder = async (req, res) => {
+    const { userId } = getAuth(req);
     try {
-        const userId = req.user.id;
+        const user = await User.findOne({ clerkId: userId });
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
 
         // الحصول على السلة الخاصة بالمستخدم
-        const cart = await Cart.findOne({ user: userId }).populate('products.product');
+        const cart = await Cart.findOne({ user: user._id }).populate('products.product');
 
         if (!cart || cart.products.length === 0) {
             return res.status(400).json({ message: 'Cart is empty or not found' });
@@ -56,26 +77,39 @@ export const createOrder = async (req, res) => {
             product: item.product._id,
             quantity: item.quantity
         }));
+        const totalAmount = cart.products.reduce((sum, item) => {
+            return sum + item.product.price * item.quantity;
+          }, 0);
+          
 
         // إنشاء الطلب الجديد
         const order = await Order.create({
-            user: userId,
+            user: user._id,
             products: orderProducts,
-            totalAmount: req.body.totalAmount,
+            totalAmount,
             deliveryAddress: req.body.deliveryAddress,
             paymentMethod: req.body.paymentMethod,
         });
 
         // حذف السلة بعد إنشاء الطلب
-        await Cart.findOneAndDelete({ user: userId });
+        await Cart.findOneAndDelete({ user: user._id });
 
         res.status(201).json(order);
     } catch (error) {
         res.status(500).json({ message: error.message });
+        console.log(error, "error in createOrder");
     }
-}
+};
+
 export const getOrders = async (req, res) => {
+    const { userId } = getAuth(req);
     try {
+        const user = await User.findOne({ clerkId: userId });
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const orders = await Order.find()
             .populate('user')
             .populate('products.product')
@@ -84,10 +118,19 @@ export const getOrders = async (req, res) => {
         res.status(200).json(orders);
     } catch (error) {
         res.status(500).json({ message: error.message });
+        console.log(error, "error in getOrders");
     }
 };
+
 export const getOrderById = async (req, res) => {
+    const { userId } = getAuth(req);
     try {
+        const user = await User.findOne({ clerkId: userId });
+        
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const order = await Order.findById(req.params.id)
             .populate('user')
             .populate('products.product');
@@ -99,6 +142,7 @@ export const getOrderById = async (req, res) => {
         res.status(200).json(order);
     } catch (error) {   
         res.status(500).json({ message: error.message });
+        console.log(error, "error in getOrderById");
     }
 };
 

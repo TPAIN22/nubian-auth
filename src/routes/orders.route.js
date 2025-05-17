@@ -6,11 +6,11 @@ import {
   getOrders,
   getOrderById,
 } from '../controllers/order.controller.js';
-import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
+import { isAuthenticated , isAdmin} from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-router.get('/', isAuthenticated, isAdmin, getOrders);
+router.get('/admin', isAuthenticated, isAdmin, getOrders);
 
 // استرجاع طلبات المستخدم الحالية
 router.get('/my-orders', isAuthenticated, getUserOrders);
