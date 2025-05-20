@@ -16,6 +16,11 @@ const productSchema = new mongoose.Schema({
         required: true,
         min: [0.01, 'Price must be greater than 0'],
     },
+    sizes: {
+       type: [String],
+       required: false,  
+       enum: ['S', 'M', 'L', 'XL', 'XXL'],
+    },
     stock: {
         type: Number,
         required: true,
