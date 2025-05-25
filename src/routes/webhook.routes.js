@@ -31,13 +31,12 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
 
   try {
     if (type === 'user.created') {
-      const { id, first_name, last_name, phone_numbers ,email_addresses } = data;
-
+      const { id, first_name, last_name, phone_numbers , email_addresses } = data;
       await User.create({
         clerkId: id,
         fullName: `${first_name} ${last_name}`,
         phone: phone_numbers?.[0]?.phone_number || '',
-        email_address: email_addresses?.[0]?.email_address || '',
+        emailAddress: email_addresses?.[0]?.email_address || '',
       });
     }
 

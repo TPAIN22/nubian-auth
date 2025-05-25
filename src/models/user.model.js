@@ -23,6 +23,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  emailAddress: {
+    type: String,
+    required: false,
+  }
 } , {timestamps:true});
 
 const User = mongoose.model("User", userSchema);
