@@ -1,8 +1,6 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
-import multer from 'multer';
-import ImageKit from 'imagekit';
 import { connect } from './lib/db.js';
 
 import productRoutes from './routes/products.route.js';
@@ -24,7 +22,7 @@ const app = express();
 // 🧩 middlewares العامة
 app.use(cors(
   {
-    origin: ['http://localhost:3000',"http://192.168.56.1:3000"],
+    origin: ['http://localhost:3000',"http://192.168.56.1:3000" ,'*'],
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true

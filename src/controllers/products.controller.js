@@ -6,7 +6,7 @@ export const getProducts = async (req, res) => {
         const page = parseInt(req.query.page) || 1
         const limit = parseInt(req.query.limit) || 10
         const skip = (page - 1) * limit
-        const products = await Product.find().populate('category' , 'name').populate('brand' , 'name').sort({ createdAt: -1 }).skip(skip).limit(limit)
+        const products = await Product.find().sort({ createdAt: -1 }).skip(skip).limit(limit)
         const totalProducts = await Product.countDocuments()
         res.status(200).json({products , page ,totalPages: Math.ceil(totalProducts / limit)})
     } catch (error) {
