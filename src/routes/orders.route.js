@@ -14,7 +14,6 @@ router.get('/admin', isAuthenticated, isAdmin, getOrders);
 
 // استرجاع طلبات المستخدم الحالية
 router.get('/my-orders', isAuthenticated, getUserOrders);
-
 // استرجاع تفاصيل طلب معين بناءً على المعرف
 router.get('/:id', isAuthenticated, getOrderById);
 

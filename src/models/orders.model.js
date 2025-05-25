@@ -53,6 +53,10 @@ const orderSchema = new mongoose.Schema({
         type: Date,
         default: Date.now,
     },
+    orderNumber: {
+  type: String,
+  unique: true,
+}
 });
 
 orderSchema.pre('save', function (next) {

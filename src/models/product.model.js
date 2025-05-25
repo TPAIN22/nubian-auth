@@ -16,10 +16,15 @@ const productSchema = new mongoose.Schema({
         required: true,
         min: [0.01, 'Price must be greater than 0'],
     },
+    discountPrice: {
+      type: Number,
+      default: 0,
+      required: false,  
+    },
     sizes: {
        type: [String],
        required: false,  
-       enum: ['S', 'M', 'L', 'XL', 'XXL'],
+       enum: ['S', 'M', 'L', 'XL', 'XXL' , 'xxxl'],
     },
     stock: {
         type: Number,
@@ -38,16 +43,7 @@ const productSchema = new mongoose.Schema({
             message: 'At least one image is required',
         },
     },
-    category: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Category',
-        required: true,
-    },
-    brand: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Brand',
-        required: true,
-    },
+    
     createdAt: {
         type: Date,
         default: Date.now,

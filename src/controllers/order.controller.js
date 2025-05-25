@@ -58,6 +58,17 @@ export const getUserOrders = async (req, res) => {
 
 export const createOrder = async (req, res) => {
     const { userId } = getAuth(req);
+    const lastOrder = await Order.findOne().sort({ createdAt: -1 });
+
+// استخرج الرقم الأخير وزِد عليه واحد، أو ابدأ من 1 إذا ما في طلبات
+let nextOrderNumber = 1;
+if (lastOrder && lastOrder.orderNumber) {
+  const lastNumber = parseInt(lastOrder.orderNumber.split('-')[1]);
+  nextOrderNumber = lastNumber + 1;
+}
+
+// أنشئ رقم طلب جديد بصيغة مثل: ORD-0001
+    const formattedOrderNumber = `ORD-${String(nextOrderNumber).padStart(4, '0')}`;
     try {
         const user = await User.findOne({ clerkId: userId });
         
@@ -66,7 +77,7 @@ export const createOrder = async (req, res) => {
         }
 
         // الحصول على السلة الخاصة بالمستخدم
-        const cart = await Cart.findOne({ user: user._id }).populate('products.product');
+        const cart = await Cart.findOne({ user: user._id }).populate('products.product ', 'name price');
 
         if (!cart || cart.products.length === 0) {
             return res.status(400).json({ message: 'Cart is empty or not found' });
@@ -89,6 +100,7 @@ export const createOrder = async (req, res) => {
             totalAmount,
             deliveryAddress: req.body.deliveryAddress,
             paymentMethod: req.body.paymentMethod,
+            orderNumber: formattedOrderNumber,
         });
 
         // حذف السلة بعد إنشاء الطلب
@@ -104,14 +116,8 @@ export const createOrder = async (req, res) => {
 };
 
 export const getOrders = async (req, res) => {
-    const { userId } = getAuth(req);
     try {
-        const user = await User.findOne({ clerkId: userId });
         
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
         const orders = await Order.find()
             .populate('user')
             .populate('products.product')

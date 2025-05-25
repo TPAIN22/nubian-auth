@@ -1,10 +1,12 @@
 import Product from '../models/product.model.js'
+import User from '../models/user.model.js'
+import { getAuth } from '@clerk/express'
 export const getProducts = async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1
         const limit = parseInt(req.query.limit) || 10
         const skip = (page - 1) * limit
-        const products = await Product.find().sort({ createdAt: -1 }).skip(skip).limit(limit)
+        const products = await Product.find().populate('category' , 'name').populate('brand' , 'name').sort({ createdAt: -1 }).skip(skip).limit(limit)
         const totalProducts = await Product.countDocuments()
         res.status(200).json({products , page ,totalPages: Math.ceil(totalProducts / limit)})
     } catch (error) {
@@ -20,11 +22,18 @@ export const getProductById = async (req, res) => {
     }
 }
 export const createProduct = async (req, res) => {
+    
+    const { userId } = getAuth(req);
+    const user = await User.findOne({ clerkId: userId });
+
+    
     try {
         const product = await Product.create(req.body)
         res.status(201).json(product)
+        console.log(product)
     } catch (error) {
         res.status(500).json({ message: error.message })
+        console.log(error)
     }
 }
 export const updateProduct = async (req, res) => {
