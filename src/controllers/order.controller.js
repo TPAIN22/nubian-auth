@@ -78,7 +78,7 @@ export const createOrder = async (req, res) => {
         }
 
         // الحصول على السلة الخاصة بالمستخدم
-        const cart = await Cart.findOne({ user: user._id }).populate('products.product ', 'name price');
+        const cart = await Cart.findOne({ user: user._id }).populate('products.product');
 
         if (!cart || cart.products.length === 0) {
             return res.status(400).json({ message: 'Cart is empty or not found' });
@@ -87,7 +87,9 @@ export const createOrder = async (req, res) => {
         // تحويل المنتجات في السلة إلى المنتجات في الطلب
         const orderProducts = cart.products.map(item => ({
             product: item.product._id,
-            quantity: item.quantity
+            quantity: item.quantity,
+            name: item.product.name,
+            category: item.product.category,
         }));
         const totalAmount = cart.products.reduce((sum, item) => {
             return sum + item.product.price * item.quantity;
