@@ -58,7 +58,7 @@ export const getUserOrders = async (req, res) => {
 
 export const createOrder = async (req, res) => {
     const { userId } = getAuth(req);
-    const lastOrder = await Order.findOne().sort({ createdAt: -1 });
+    let lastOrder = await Order.findOne().sort({ createdAt: -1 });
     if(!lastOrder){
         lastOrder = {orderNumber: "ORD-0001"};
     }
