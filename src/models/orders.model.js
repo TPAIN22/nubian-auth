@@ -54,8 +54,8 @@ const orderSchema = new mongoose.Schema({
         default: Date.now,
     },
     orderNumber: {
-  type: String,
-  unique: true,
+    type: String,
+    unique: true,
 }
 });
 

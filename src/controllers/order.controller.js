@@ -59,12 +59,13 @@ export const getUserOrders = async (req, res) => {
 export const createOrder = async (req, res) => {
     const { userId } = getAuth(req);
     const lastOrder = await Order.findOne().sort({ createdAt: -1 });
-
-// استخرج الرقم الأخير وزِد عليه واحد، أو ابدأ من 1 إذا ما في طلبات
-let nextOrderNumber = 1;
-if (lastOrder && lastOrder.orderNumber) {
-  const lastNumber = parseInt(lastOrder.orderNumber.split('-')[1]);
-  nextOrderNumber = lastNumber + 1;
+    if(!lastOrder){
+        lastOrder = {orderNumber: "ORD-0001"};
+    }
+    let nextOrderNumber = 1;
+    if (lastOrder && lastOrder.orderNumber) {
+    const lastNumber = parseInt(lastOrder.orderNumber.split('-')[1]);
+    nextOrderNumber = lastNumber + 1;
 }
 
 // أنشئ رقم طلب جديد بصيغة مثل: ORD-0001
@@ -103,7 +104,6 @@ if (lastOrder && lastOrder.orderNumber) {
             orderNumber: formattedOrderNumber,
         });
 
-        // حذف السلة بعد إنشاء الطلب
         await Cart.findOneAndDelete({ user: user._id });
         if(!order) {
             return res.status(404).json({ message: 'Order not found' });
