@@ -4,37 +4,46 @@ import { getAuth } from '@clerk/express';
 import User from '../models/user.model.js';
 
 export const updateOrderStatus = async (req, res) => {
-    const { userId } = getAuth(req);
-    try {
-        const user = await User.findOne({ clerkId: userId });
-        
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
+  try {
+    const { status, paymentStatus } = req.body;
+    const { id } = req.params; // استخرج الـ ID من الـ URL parameters
 
-        const { status } = req.body;
+    const allowedStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
+    const allowedPaymentStatus = ['pending', 'paid', 'failed'];
 
-        const allowedStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
-        if (!allowedStatuses.includes(status)) {
-            return res.status(400).json({ message: 'Invalid status value' });
-        }
+    const updateData = {};
 
-        const order = await Order.findByIdAndUpdate(
-            req.params.id,
-            { status },
-            { new: true }
-        );
-
-        if (!order) {
-            return res.status(404).json({ message: 'Order not found' });
-        }
-
-        res.status(200).json(order);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-        console.log(error, "error in updateOrderStatus");
+    if (status !== undefined) {
+      if (!allowedStatuses.includes(status)) {
+        return res.status(400).json({ message: 'Invalid status value' });
+      }
+      updateData.status = status;
     }
+
+    if (paymentStatus !== undefined) {
+      if (!allowedPaymentStatus.includes(paymentStatus)) {
+        return res.status(400).json({ message: 'Invalid payment status value' });
+      }
+      updateData.paymentStatus = paymentStatus;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ message: 'No valid data to update' });
+    }
+
+    const order = await Order.findByIdAndUpdate(id, updateData, { new: true });
+
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    res.status(200).json(order);
+  } catch (error) {
+    console.error("error in updateOrderStatus", error);
+    res.status(500).json({ message: error.message });
+  }
 };
+
 
 export const getUserOrders = async (req, res) => {
     const { userId } = getAuth(req);

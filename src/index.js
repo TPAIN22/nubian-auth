@@ -12,6 +12,7 @@ import brandRoutes from './routes/brands.route.js';
 import userRoutes from './routes/users.route.js';
 import webhookRoutes from './routes/webhook.routes.js';
 import { clerkMiddleware } from '@clerk/express';
+import pushTokenRoutes from './routes/notifications.route.js';
 
 dotenv.config();
 
@@ -22,8 +23,8 @@ const app = express();
 // 🧩 middlewares العامة
 app.use(cors(
   {
-    origin: ['http://localhost:3000',"http://192.168.56.1:3000" ,'*'],
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    origin: ['http://localhost:3000',"http://192.168.56.1:3000" ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE' , 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
   }
@@ -36,6 +37,7 @@ app.use(express.json());
 
 app.use(clerkMiddleware());
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/push-token', pushTokenRoutes);
 app.use('/api/carts', cartRoutes); 
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);

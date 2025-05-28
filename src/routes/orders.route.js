@@ -19,7 +19,6 @@ router.get('/:id', isAuthenticated, getOrderById);
 
 // إنشاء طلب جديد
 router.post('/', isAuthenticated, createOrder);
-
 router.patch('/:id/status', isAuthenticated, isAdmin, updateOrderStatus);
 
 export default router;
