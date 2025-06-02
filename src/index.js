@@ -12,8 +12,7 @@ import brandRoutes from './routes/brands.route.js';
 import userRoutes from './routes/users.route.js';
 import webhookRoutes from './routes/webhook.routes.js';
 import { clerkMiddleware } from '@clerk/express';
-import pushTokenRoutes from './routes/notifications.route.js';
-
+import NotificationsRoutes from './routes/notifications.route.js';
 dotenv.config();
 
 const app = express();
@@ -37,7 +36,7 @@ app.use(express.json());
 
 app.use(clerkMiddleware());
 app.use('/api/reviews', reviewRoutes);
-app.use('/api/push-token', pushTokenRoutes);
+app.use('/api/notifications', NotificationsRoutes);
 app.use('/api/carts', cartRoutes); 
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
