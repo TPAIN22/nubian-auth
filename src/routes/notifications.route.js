@@ -6,5 +6,6 @@ const router = express.Router();
 
 router.post('/save', savePushToken);
 router.post('/send',isAuthenticated,isAdmin ,sendPushNotification);
+router.get('/user', getUserNotifications);
 
 export default router;
