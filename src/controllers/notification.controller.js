@@ -1,3 +1,4 @@
+import { User } from '@clerk/express';
 import PushToken from '../models/notifications.model.js';
 import Notify from '../models/notify.model.js';
 import axios from 'axios';
@@ -107,3 +108,27 @@ export const sendPushNotification = async (req, res) => {
     return res.status(500).json({ error: 'Failed to send notifications' });
   }
 };
+
+export const getNotifications = async (req, res) => {
+  const { userId, deviceId } = req.query;
+
+  if (!userId && !deviceId) {
+    return res.status(400).json({ error: 'userId or deviceId is required' });
+  }
+ const user = await User.findOne({ clerkId: userId });
+  try {
+    const notifications = await Notify.find({
+      $or: [
+        { userId: user || null },
+        { deviceId: userId ? null : deviceId },
+        { userId: null, deviceId: null }, // إشعارات عامة
+      ],
+    }).sort({ createdAt: -1 });
+
+    res.status(200).json({ notifications });
+  } catch (error) {
+    console.error('❌ Error fetching notifications:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
