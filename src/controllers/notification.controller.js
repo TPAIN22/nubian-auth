@@ -1,4 +1,4 @@
-import { User } from '@clerk/express';
+import User from '../models/user.model.js';
 import PushToken from '../models/notifications.model.js';
 import Notify from '../models/notify.model.js';
 import axios from 'axios';
