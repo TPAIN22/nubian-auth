@@ -1,7 +1,6 @@
 import express from 'express';
-import { savePushToken , sendPushNotification } from '../controllers/notification.controller.js';
+import { savePushToken , sendPushNotification , getUserNotifications} from '../controllers/notification.controller.js';
 import { isAdmin, isAuthenticated } from '../middleware/auth.middleware.js';
-import { getUserNotifications } from '../controllers/user.controller.js';
 
 const router = express.Router();
 
