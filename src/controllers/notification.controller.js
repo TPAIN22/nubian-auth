@@ -37,7 +37,6 @@ export const savePushToken = async (req, res) => {
   }
 };
 
-// حفظ الإشعار في قاعدة البيانات
 export const saveNotification = async (req, res) => {
   const { title, body, userId, deviceId } = req.body;
 

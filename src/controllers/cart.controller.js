@@ -31,7 +31,7 @@ export const addToCart = async (req, res) => {
   const { userId } = getAuth(req);
   
   try {
-    const { productId, quantity } = req.body;
+    const { productId, quantity , size } = req.body;
     
     if (!productId) {
       return res.status(400).json({ message: 'Product ID is required' });
@@ -58,7 +58,7 @@ export const addToCart = async (req, res) => {
     if (!cart) {
       cart = new Cart({
         user: user._id,
-        products: [{ product: productId, quantity }],
+        products: [{ product: productId, quantity , size }],
         totalQuantity: quantity,
         totalPrice: 0,
       });
@@ -70,7 +70,7 @@ export const addToCart = async (req, res) => {
       if (productIndex !== -1) {
         cart.products[productIndex].quantity += quantity;
       } else {
-        cart.products.push({ product: productId, quantity });
+        cart.products.push({ product: productId, quantity  , size });
       }
 
       cart.totalQuantity = cart.products.reduce(
