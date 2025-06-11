@@ -64,7 +64,7 @@ export const addToCart = async (req, res) => {
       });
     } else {
       const productIndex = cart.products.findIndex(
-        (p) => p.product && p.product.toString() === productId
+        (p) => p.product && p.product.toString() === productId && p.size === size
       );
 
       if (productIndex !== -1) {
