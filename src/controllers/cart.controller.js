@@ -1,76 +1,79 @@
-import Cart from '../models/carts.model.js';
+import Cart from "../models/carts.model.js";
 import { getAuth } from "@clerk/express";
-import User from '../models/user.model.js';
-import mongoose from 'mongoose'; // أضفنا mongoose لاستخدام Types.ObjectId
+import User from "../models/user.model.js";
+import mongoose from "mongoose"; // أضفنا mongoose لاستخدام Types.ObjectId
 
 // 🛒 جلب السلة
 export const getCart = async (req, res) => {
   const { userId } = getAuth(req);
   try {
     const user = await User.findOne({ clerkId: userId });
-    
+
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ message: "User not found" });
     }
-    
-    const cart = await Cart.findOne({ user: user._id }).populate('products.product');
+
+    const cart = await Cart.findOne({ user: user._id }).populate(
+      "products.product"
+    );
 
     if (!cart) {
-      return res.status(404).json({ message: 'No cart found for this user' });
+      return res.status(404).json({ message: "No cart found for this user" });
     }
 
     res.status(200).json(cart);
   } catch (error) {
     res.status(500).json({ message: error.message });
-    console.log(error, 'error in getCart');
+    console.log(error, "error in getCart");
   }
 };
 
 // ➕ إضافة منتج للسلة
 export const addToCart = async (req, res) => {
   const { userId } = getAuth(req);
-  
+
   try {
-    const { productId, quantity , size } = req.body;
-    
+    const { productId, quantity, size } = req.body;
+
     if (!productId) {
-      return res.status(400).json({ message: 'Product ID is required' });
+      return res.status(400).json({ message: "Product ID is required" });
     }
-    
+
     if (!mongoose.Types.ObjectId.isValid(productId)) {
-      return res.status(400).json({ message: 'Invalid product ID format' });
+      return res.status(400).json({ message: "Invalid product ID format" });
     }
-    
+
     const user = await User.findOne({ clerkId: userId });
-    
+
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ message: "User not found" });
     }
-    
+
     // تحقق من وجود المنتج في قاعدة البيانات
-    const productExists = await mongoose.model('Product').findById(productId);
-    
+    const productExists = await mongoose.model("Product").findById(productId);
+
     if (!productExists) {
-      return res.status(404).json({ message: 'Product not found' });
+      return res.status(404).json({ message: "Product not found" });
     }
 
     let cart = await Cart.findOne({ user: user._id });
     if (!cart) {
       cart = new Cart({
         user: user._id,
-        products: [{ product: productId, quantity , size }],
+        products: [{ product: productId, quantity, size }],
         totalQuantity: quantity,
         totalPrice: 0,
       });
     } else {
       const productIndex = cart.products.findIndex(
-        (p) => p.product && p.product.toString() === productId && p.size === size
+        (p) =>
+          p.product && p.product.toString() === productId && p.size === size
       );
 
       if (productIndex !== -1) {
         cart.products[productIndex].quantity += quantity;
       } else {
-        cart.products.push({ product: productId, quantity  , size });
+        cart.products.push({ product: productId, quantity, size });
       }
 
       cart.totalQuantity = cart.products.reduce(
@@ -80,7 +83,7 @@ export const addToCart = async (req, res) => {
     }
     await cart.populate({
       path: "products.product",
-      select: "price name image" 
+      select: "price name image",
     });
 
     cart.totalPrice = cart.products.reduce((acc, item) => {
@@ -90,10 +93,9 @@ export const addToCart = async (req, res) => {
         console.warn(`Product missing or has no price: ${item.product?._id}`);
         return acc;
       }
-    }, 0);    
-   await cart.save();
+    }, 0);
+    await cart.save();
     res.status(200).json(cart);
-    
   } catch (error) {
     res.status(500).json({ message: error.message });
     console.log(error, "error in addToCart");
@@ -106,37 +108,46 @@ export const updateCart = async (req, res) => {
   try {
     // أولاً نجد المستخدم باستخدام clerkId
     const user = await User.findOne({ clerkId: userId });
-    
+
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ message: "User not found" });
     }
-    
+
     const { productId, quantity } = req.body;
 
     const cart = await Cart.findOne({ user: user._id });
 
     if (!cart) {
-      return res.status(404).json({ message: 'No cart found for this user' });
+      return res.status(404).json({ message: "No cart found for this user" });
     }
 
     const productIndex = cart.products.findIndex(
-      p => p.product.toString() === productId
+      (p) => p.product.toString() === productId
     );
 
     if (productIndex !== -1) {
       if (quantity === 0) {
         cart.products.splice(productIndex, 1);
       } else {
-        cart.products[productIndex].quantity = Math.max(1, cart.products[productIndex].quantity + quantity);
+        cart.products[productIndex].quantity = Math.max(
+          1,
+          cart.products[productIndex].quantity + quantity
+        );
       }
     } else {
-      return res.status(404).json({ message: 'Product not found in cart' });
+      return res.status(404).json({ message: "Product not found in cart" });
     }
 
     await cart.populate("products.product");
 
-    cart.totalQuantity = cart.products.reduce((acc, item) => acc + item.quantity, 0);
-    cart.totalPrice = cart.products.reduce((acc, item) => acc + (item.product.price * item.quantity), 0);
+    cart.totalQuantity = cart.products.reduce(
+      (acc, item) => acc + item.quantity,
+      0
+    );
+    cart.totalPrice = cart.products.reduce(
+      (acc, item) => acc + item.product.price * item.quantity,
+      0
+    );
 
     await cart.save();
 
@@ -153,13 +164,13 @@ export const deleteCart = async (req, res) => {
   try {
     // أولاً نجد المستخدم باستخدام clerkId
     const user = await User.findOne({ clerkId: userId });
-    
+
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ message: "User not found" });
     }
-    
+
     await Cart.findOneAndDelete({ user: user._id });
-    res.status(200).json({ message: 'Cart deleted' });
+    res.status(200).json({ message: "Cart deleted" });
   } catch (error) {
     res.status(500).json({ message: error.message });
     console.log(error, "error in deleteCart");

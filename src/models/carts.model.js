@@ -20,7 +20,7 @@ const cartSchema = new mongoose.Schema({
         min: 1,
       },
       size: {
-        type: [String],
+        type: String,
         required: true,
       },
     },
