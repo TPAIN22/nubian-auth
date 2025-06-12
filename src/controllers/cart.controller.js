@@ -1,9 +1,9 @@
 import Cart from "../models/carts.model.js";
 import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
-import mongoose from "mongoose"; // أضفنا mongoose لاستخدام Types.ObjectId
+import mongoose from "mongoose"; 
 
-// 🛒 جلب السلة
+
 export const getCart = async (req, res) => {
   const { userId } = getAuth(req);
   try {
@@ -28,7 +28,7 @@ export const getCart = async (req, res) => {
   }
 };
 
-// ➕ إضافة منتج للسلة
+
 export const addToCart = async (req, res) => {
   const { userId } = getAuth(req);
 
@@ -49,7 +49,7 @@ export const addToCart = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // تحقق من وجود المنتج في قاعدة البيانات
+    
     const productExists = await mongoose.model("Product").findById(productId);
 
     if (!productExists) {
@@ -102,9 +102,9 @@ export const addToCart = async (req, res) => {
   }
 };
 
-// 🔄 تحديث السلة
+
 export const updateCart = async (req, res) => {
-  const { userId } = getAuth(req);
+  const { userId } = getAuth(req); 
   try {
     const user = await User.findOne({ clerkId: userId });
 
@@ -112,61 +112,77 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const { productId, quantity, size } = req.body;
+    const { productId, quantity, size } = req.body; 
 
+    
     const cart = await Cart.findOne({ user: user._id });
 
     if (!cart) {
       return res.status(404).json({ message: "No cart found for this user" });
     }
 
-    const productIndex = cart.products.findIndex((p) => {
-      if (size) {
-        return p.product.toString() === productId && p.size === size;
-      } else {
-        return p.product.toString() === productId && (!p.size || p.size === null);
-      }
+    
+    let newProductsArray = [...cart.products];
+
+    
+    const productIndex = newProductsArray.findIndex((p) => {
+      
+      const isSameProduct = p.product.toString() === productId;
+      
+      const isSameSize = (size === null && (!p.size || p.size === '')) || (size === p.size);
+      return isSameProduct && isSameSize;
     });
 
     if (productIndex !== -1) {
+      
       if (quantity === 0) {
-        cart.products.splice(productIndex, 1);
+        
+        newProductsArray.splice(productIndex, 1);
       } else {
-        cart.products[productIndex].quantity = Math.max(
-          1,
-          cart.products[productIndex].quantity + quantity
+        
+        newProductsArray[productIndex].quantity = Math.max(
+          1, 
+          newProductsArray[productIndex].quantity + quantity 
         );
       }
     } else {
-      return res.status(404).json({ message: "Product not found in cart" });
+      
+      
+      
+      return res.status(404).json({ message: "Product not found in cart for update" });
     }
 
-    await cart.populate("products.product");
+    
+    
+    const updatedCart = await Cart.findOneAndUpdate(
+      { _id: cart._id }, 
+      { $set: { products: newProductsArray } }, 
+      { new: true, runValidators: true } 
+    ).populate("products.product"); 
 
-    cart.totalQuantity = cart.products.reduce(
-      (acc, item) => acc + item.quantity,
-      0
-    );
-    cart.totalPrice = cart.products.reduce(
-      (acc, item) => acc + item.product.price * item.quantity,
-      0
-    );
+    if (!updatedCart) {
+      return res.status(404).json({ message: "Cart not found after update attempt" });
+    }
 
-    await cart.save();
-
-    res.status(200).json(cart);
+    
+    res.status(200).json(updatedCart);
   } catch (error) {
+    
+    if (error.name === 'VersionError') {
+      return res.status(409).json({ message: "Cart was modified by another user/process. Please try again." });
+    }
+    
     res.status(500).json({ message: error.message });
-    console.log(error, "error in updateCart");
+    console.error(error, "error in updateCart"); 
   }
 };
 
 
-// ❌ حذف السلة بالكامل
+
 export const deleteCart = async (req, res) => {
   const { userId } = getAuth(req);
   try {
-    // أولاً نجد المستخدم باستخدام clerkId
+    
     const user = await User.findOne({ clerkId: userId });
 
     if (!user) {
