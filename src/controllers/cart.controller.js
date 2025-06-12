@@ -106,14 +106,13 @@ export const addToCart = async (req, res) => {
 export const updateCart = async (req, res) => {
   const { userId } = getAuth(req);
   try {
-    // أولاً نجد المستخدم باستخدام clerkId
     const user = await User.findOne({ clerkId: userId });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const { productId, quantity } = req.body;
+    const { productId, quantity, size } = req.body; // <-- أضفنا size
 
     const cart = await Cart.findOne({ user: user._id });
 
@@ -121,8 +120,11 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "No cart found for this user" });
     }
 
+    // البحث بواسطة productId و size معاً
     const productIndex = cart.products.findIndex(
-      (p) => p.product.toString() === productId
+      (p) =>
+        p.product.toString() === productId &&
+        p.size === size // <-- نطابق size
     );
 
     if (productIndex !== -1) {
@@ -157,6 +159,7 @@ export const updateCart = async (req, res) => {
     console.log(error, "error in updateCart");
   }
 };
+
 
 // ❌ حذف السلة بالكامل
 export const deleteCart = async (req, res) => {
