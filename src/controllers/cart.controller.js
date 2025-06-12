@@ -112,7 +112,7 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const { productId, quantity, size } = req.body; // <-- أضفنا size
+    const { productId, quantity, size } = req.body;
 
     const cart = await Cart.findOne({ user: user._id });
 
@@ -120,12 +120,13 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "No cart found for this user" });
     }
 
-    // البحث بواسطة productId و size معاً
-    const productIndex = cart.products.findIndex(
-      (p) =>
-        p.product.toString() === productId &&
-        p.size === size // <-- نطابق size
-    );
+    const productIndex = cart.products.findIndex((p) => {
+      if (size) {
+        return p.product.toString() === productId && p.size === size;
+      } else {
+        return p.product.toString() === productId && (!p.size || p.size === null);
+      }
+    });
 
     if (productIndex !== -1) {
       if (quantity === 0) {
