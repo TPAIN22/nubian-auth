@@ -3,6 +3,7 @@ import {
   getCart,
   updateCart,
   addToCart,
+  removeFromCart,
 } from "../controllers/cart.controller.js";
 
 import { isAuthenticated } from "../middleware/auth.middleware.js";

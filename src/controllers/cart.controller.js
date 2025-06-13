@@ -1,7 +1,7 @@
-import Cart from "../models/carts.model";
+import Cart from "../models/carts.model.js";
 import { getAuth } from "@clerk/express";
-import User from "../models/user.model";
-import Product from "../models/product.model";
+import User from "../models/user.model.js";
+import Product from "../models/product.model.js";
 
 // GET USER'S CART
 export const getCart = async (req, res) => {
