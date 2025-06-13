@@ -38,9 +38,15 @@ export const getCart = async (req, res) => {
 
 // ADD PRODUCT TO CART
 // ADD PRODUCT TO CART
+// ADD PRODUCT TO CART
 export const addToCart = async (req, res) => {
   const { userId } = getAuth(req); // Get Clerk userId from authentication
-  const { productId, quantity, size = "" } = req.body;
+
+  const { productId, quantity } = req.body;
+  // 1. توحيد قيمة 'size' المستلمة من الطلب:
+  //    تحويلها إلى String، إزالة المسافات البيضاء، وتحويل 'null' أو 'undefined' إلى سلسلة نصية فارغة.
+  const sizeFromRequest = req.body.size;
+  const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
 
   // Basic input validation
   if (!productId || !quantity) {
@@ -68,16 +74,15 @@ export const addToCart = async (req, res) => {
     }
 
     // Find the user's cart
-    // **مهم:** عند العثور على السلة، لا تقم بعمل populate هنا إذا كنت ستعدل مصفوفة المنتجات.
-    // لأنك ستحتاج إلى الوصول إلى الـ ObjectId الخام لـ item.product للمقارنة.
-    // قم بعمل populate فقط قبل إرجاع السلة في النهاية.
+    // **مهم:** لا تقم بعمل populate هنا. نحتاج إلى الـ ObjectId الخام للمقارنة.
     let cart = await Cart.findOne({ user: user._id });
 
     // If no cart exists, create a new one
     if (!cart) {
+      console.log("No cart found for user. Creating new cart.");
       const newCart = new Cart({
         user: user._id,
-        products: [{ product: productId, quantity, size }],
+        products: [{ product: productId, quantity, size: normalizedSize }], // استخدم normalizedSize هنا
         totalQuantity: quantity,
         totalPrice: productExists.price * quantity,
       });
@@ -86,25 +91,41 @@ export const addToCart = async (req, res) => {
       // Populate the newly created cart before sending it back
       const populatedCart = await Cart.findById(newCart._id).populate({
         path: "products.product",
-        select: "name price imagess description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
+        select: "name price images description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
       });
       return res.status(201).json(populatedCart);
     }
 
     // If cart exists, check if the product (with the specific size) is already in it
-    // **التصحيح هنا:** استخدم item.product._id للمقارنة
+    console.log("Existing cart found. Checking for product match.");
+    console.log("Incoming productId:", productId.toString());
+    console.log("Normalized incoming size:", `'${normalizedSize}'`); // عرض المقاس بين علامتي اقتباس لتوضيح أي مسافات
+
     const productIndex = cart.products.findIndex(
-      (item) =>
-        item.product.toString() === productId.toString() && item.size === size
+      (item) => {
+        // 2. توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة:
+        const itemNormalizedSize = (item.size === null || item.size === undefined || String(item.size).toLowerCase() === 'null' || String(item.size).toLowerCase() === 'undefined' ? "" : String(item.size)).trim();
+
+        const isProductIdMatch = item.product.toString() === productId.toString();
+        const isSizeMatch = itemNormalizedSize === normalizedSize;
+
+        console.log(`  Comparing item in cart (ID: ${item.product.toString()}, Size: '${itemNormalizedSize}')`);
+        console.log(`  Matches incoming ID: ${isProductIdMatch}, Matches incoming Size: ${isSizeMatch}`);
+        console.log(`  Overall match for this item: ${isProductIdMatch && isSizeMatch}`);
+
+        return isProductIdMatch && isSizeMatch;
+      }
     );
 
 
     if (productIndex > -1) {
+      console.log(`Product found at index ${productIndex}. Incrementing quantity from ${cart.products[productIndex].quantity} to ${cart.products[productIndex].quantity + quantity}.`);
       // Product with the same ID and size exists, update its quantity
       cart.products[productIndex].quantity += quantity;
     } else {
+      console.log("Product not found in cart with matching size. Adding as new item.");
       // Product not found or has a different size, add it as a new item
-      cart.products.push({ product: productId, quantity, size });
+      cart.products.push({ product: productId, quantity, size: normalizedSize }); // استخدم normalizedSize هنا
     }
 
     // Recalculate total quantity and total price for the entire cart
@@ -115,8 +136,10 @@ export const addToCart = async (req, res) => {
 
     let recalculatedTotalPrice = 0;
     for (const item of cart.products) {
+      // Fetch product to get its current price (important if prices change)
       const p = await Product.findById(item.product);
       if (p) {
+        // Ensure product still exists
         recalculatedTotalPrice += p.price * item.quantity;
       }
     }
@@ -128,7 +151,7 @@ export const addToCart = async (req, res) => {
     // Populate the updated cart before sending the response
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
-      select: "name price imagess description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
+      select: "name price images description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
     });
     res.status(200).json(populatedCart);
   } catch (error) {
@@ -188,10 +211,8 @@ export const updateCart = async (req, res) => {
     );
     let recalculatedTotalPrice = 0;
     for (const item of cart.products) {
-      // Fetch product to get its current price (important if prices change)
       const p = await Product.findById(item.product);
       if (p) {
-        // Ensure product still exists
         recalculatedTotalPrice += p.price * item.quantity;
       }
     }
