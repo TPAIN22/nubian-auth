@@ -16,7 +16,7 @@ export const getCart = async (req, res) => {
     // Find the cart for the user and populate product details
     const cart = await Cart.findOne({ user: user._id }).populate({
     path:"products.product",
-    select:"name price image"
+    select:"name price images"
     }
     );
 
@@ -36,6 +36,7 @@ export const getCart = async (req, res) => {
   }
 };
 
+// ADD PRODUCT TO CART
 // ADD PRODUCT TO CART
 export const addToCart = async (req, res) => {
   const { userId } = getAuth(req); // Get Clerk userId from authentication
@@ -67,6 +68,9 @@ export const addToCart = async (req, res) => {
     }
 
     // Find the user's cart
+    // **مهم:** عند العثور على السلة، لا تقم بعمل populate هنا إذا كنت ستعدل مصفوفة المنتجات.
+    // لأنك ستحتاج إلى الوصول إلى الـ ObjectId الخام لـ item.product للمقارنة.
+    // قم بعمل populate فقط قبل إرجاع السلة في النهاية.
     let cart = await Cart.findOne({ user: user._id });
 
     // If no cart exists, create a new one
@@ -81,18 +85,19 @@ export const addToCart = async (req, res) => {
 
       // Populate the newly created cart before sending it back
       const populatedCart = await Cart.findById(newCart._id).populate({
-        path:"products.product",
-        select:"name price image"
-      }
-      );
+        path: "products.product",
+        select: "name price imagess description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
+      });
       return res.status(201).json(populatedCart);
     }
 
     // If cart exists, check if the product (with the specific size) is already in it
+    // **التصحيح هنا:** استخدم item.product._id للمقارنة
     const productIndex = cart.products.findIndex(
       (item) =>
         item.product.toString() === productId.toString() && item.size === size
     );
+
 
     if (productIndex > -1) {
       // Product with the same ID and size exists, update its quantity
@@ -108,13 +113,10 @@ export const addToCart = async (req, res) => {
       0
     );
 
-    // This calculation needs to be async because it fetches product prices
     let recalculatedTotalPrice = 0;
     for (const item of cart.products) {
-      // Fetch product to get its current price (important if prices change)
       const p = await Product.findById(item.product);
       if (p) {
-        // Ensure product still exists
         recalculatedTotalPrice += p.price * item.quantity;
       }
     }
@@ -124,12 +126,10 @@ export const addToCart = async (req, res) => {
     await cart.save();
 
     // Populate the updated cart before sending the response
-    const populatedCart = await Cart.findOne({ user: user._id }).populate(
-      {
-        path:"products.product",
-        select:"name price image"
-      }
-    );
+    const populatedCart = await Cart.findOne({ user: user._id }).populate({
+      path: "products.product",
+      select: "name price imagess description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
+    });
     res.status(200).json(populatedCart);
   } catch (error) {
     console.error("Error adding item to cart:", error);
@@ -141,6 +141,7 @@ export const addToCart = async (req, res) => {
       });
   }
 };
+
 
 export const updateCart = async (req, res) => {
   const { userId } = getAuth(req); // Get Clerk userId from authentication
@@ -199,7 +200,7 @@ export const updateCart = async (req, res) => {
     const populatedCart = await Cart.findOne({ user: user._id }).populate(
       {
         path:"products.product",
-        select:"name price image"
+        select:"name price images"
       }
     );
     res.status(200).json(populatedCart);
@@ -269,7 +270,7 @@ export const removeFromCart = async (req, res) => {
     const populatedCart = await Cart.findOne({ user: user._id }).populate(
       {
         path:"products.product",
-        select:"name price image"
+        select:"name price images"
       }
     );
     res.status(200).json(populatedCart);
