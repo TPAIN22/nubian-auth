@@ -80,8 +80,10 @@ export const addToCart = async (req, res) => {
       await newCart.save();
 
       // Populate the newly created cart before sending it back
-      const populatedCart = await Cart.findById(newCart._id).populate(
-        "products.product"
+      const populatedCart = await Cart.findById(newCart._id).populate({
+        path:"products.product",
+        select:"name price image"
+      }
       );
       return res.status(201).json(populatedCart);
     }
@@ -123,7 +125,10 @@ export const addToCart = async (req, res) => {
 
     // Populate the updated cart before sending the response
     const populatedCart = await Cart.findOne({ user: user._id }).populate(
-      "products.product"
+      {
+        path:"products.product",
+        select:"name price image"
+      }
     );
     res.status(200).json(populatedCart);
   } catch (error) {
@@ -192,7 +197,10 @@ export const updateCart = async (req, res) => {
     cart.totalPrice = recalculatedTotalPrice;
     await cart.save();
     const populatedCart = await Cart.findOne({ user: user._id }).populate(
-      "products.product"
+      {
+        path:"products.product",
+        select:"name price image"
+      }
     );
     res.status(200).json(populatedCart);
   } catch (error) {
@@ -259,7 +267,10 @@ export const removeFromCart = async (req, res) => {
     await cart.save();
 
     const populatedCart = await Cart.findOne({ user: user._id }).populate(
-      "products.product"
+      {
+        path:"products.product",
+        select:"name price image"
+      }
     );
     res.status(200).json(populatedCart);
   } catch (error) {
