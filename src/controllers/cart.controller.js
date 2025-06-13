@@ -114,17 +114,7 @@ export const updateCart = async (req, res) => {
   }
 };
 
-import Cart from "../models/cart.model.js";
-import Product from "../models/product.model.js";
-import User from "../models/user.model.js"; // Assuming you have a User model that links to Clerk IDs
-import { getAuth } from "@clerk/nextjs/server"; // Adjust import path if needed for your setup
 
-/**
- * @desc    Add a product to the user's cart or update its quantity if it already exists
- * @route   POST /api/cart/add
- * @access  Private (Clerk authentication)
- * @body    { productId: string, quantity: number, size?: string }
- */
 export const addToCart = async (req, res) => {
   const { userId } = getAuth(req); // Get Clerk user ID
 
