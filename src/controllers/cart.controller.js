@@ -26,7 +26,6 @@ export const getCart = async (req, res) => {
 
     res.status(200).json(cart);
   } catch (error) {
-    console.error("Error fetching cart:", error);
     res
       .status(500)
       .json({
@@ -79,7 +78,6 @@ export const addToCart = async (req, res) => {
 
     // If no cart exists, create a new one
     if (!cart) {
-      console.log("No cart found for user. Creating new cart.");
       const newCart = new Cart({
         user: user._id,
         products: [{ product: productId, quantity, size: normalizedSize }], // استخدم normalizedSize هنا
@@ -97,9 +95,6 @@ export const addToCart = async (req, res) => {
     }
 
     // If cart exists, check if the product (with the specific size) is already in it
-    console.log("Existing cart found. Checking for product match.");
-    console.log("Incoming productId:", productId.toString());
-    console.log("Normalized incoming size:", `'${normalizedSize}'`); // عرض المقاس بين علامتي اقتباس لتوضيح أي مسافات
 
     const productIndex = cart.products.findIndex(
       (item) => {
@@ -109,9 +104,6 @@ export const addToCart = async (req, res) => {
         const isProductIdMatch = item.product.toString() === productId.toString();
         const isSizeMatch = itemNormalizedSize === normalizedSize;
 
-        console.log(`  Comparing item in cart (ID: ${item.product.toString()}, Size: '${itemNormalizedSize}')`);
-        console.log(`  Matches incoming ID: ${isProductIdMatch}, Matches incoming Size: ${isSizeMatch}`);
-        console.log(`  Overall match for this item: ${isProductIdMatch && isSizeMatch}`);
 
         return isProductIdMatch && isSizeMatch;
       }
@@ -119,11 +111,9 @@ export const addToCart = async (req, res) => {
 
 
     if (productIndex > -1) {
-      console.log(`Product found at index ${productIndex}. Incrementing quantity from ${cart.products[productIndex].quantity} to ${cart.products[productIndex].quantity + quantity}.`);
       // Product with the same ID and size exists, update its quantity
       cart.products[productIndex].quantity += quantity;
     } else {
-      console.log("Product not found in cart with matching size. Adding as new item.");
       // Product not found or has a different size, add it as a new item
       cart.products.push({ product: productId, quantity, size: normalizedSize }); // استخدم normalizedSize هنا
     }
@@ -155,7 +145,6 @@ export const addToCart = async (req, res) => {
     });
     res.status(200).json(populatedCart);
   } catch (error) {
-    console.error("Error adding item to cart:", error);
     res
       .status(500)
       .json({
@@ -226,7 +215,6 @@ export const updateCart = async (req, res) => {
     );
     res.status(200).json(populatedCart);
   } catch (error) {
-    console.error("Error updating cart:", error);
     res
       .status(500)
       .json({
@@ -296,7 +284,6 @@ export const removeFromCart = async (req, res) => {
     );
     res.status(200).json(populatedCart);
   } catch (error) {
-    console.error("Error removing item from cart:", error);
     res
       .status(500)
       .json({
