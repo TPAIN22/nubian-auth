@@ -6,7 +6,7 @@ import User from '../models/user.model.js';
 export const updateOrderStatus = async (req, res) => {
   try {
     const { status, paymentStatus } = req.body;
-    const { id } = req.params; // استخرج الـ ID من الـ URL parameters
+    const { id } = req.params;
 
     const allowedStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
     const allowedPaymentStatus = ['pending', 'paid', 'failed'];
@@ -110,9 +110,11 @@ export const createOrder = async (req, res) => {
             user: user._id,
             products: orderProducts,
             totalAmount,
-            deliveryAddress: req.body.deliveryAddress,
             paymentMethod: req.body.paymentMethod,
             orderNumber: formattedOrderNumber,
+            phoneNumber: req.body.deliveryAddress.phone,
+            city: req.body.deliveryAddress.city,
+            address: req.body.deliveryAddress.address
         });
 
         await Cart.findOneAndDelete({ user: user._id });
