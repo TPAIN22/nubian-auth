@@ -6,13 +6,18 @@ export const getProducts = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 8;
     const skip = (page - 1) * limit;
-    
-    const { categoryId } = req.query;
 
-    // بناء فلتر حسب وجود categoryId أو لا
+    const { category } = req.query; // <-- هنا
+
+    console.log("Received query params:", req.query);
+    console.log("category from query:", category);
+
     const filter = {};
-    if (categoryId) {
-      filter.category = categoryId;
+    if (category) {
+      console.log("Filtering by category:", category);
+      filter.category = category;
+    } else {
+      console.log("No category filter applied.");
     }
 
     const products = await Product.find(filter)
@@ -20,7 +25,10 @@ export const getProducts = async (req, res) => {
       .skip(skip)
       .limit(limit);
 
+    console.log(`Found ${products.length} products`);
+
     const totalProducts = await Product.countDocuments(filter);
+    console.log("Total products count:", totalProducts);
 
     res.status(200).json({
       products,
@@ -28,9 +36,11 @@ export const getProducts = async (req, res) => {
       totalPages: Math.ceil(totalProducts / limit),
     });
   } catch (error) {
+    console.error("Error in getProducts:", error.message);
     res.status(500).json({ message: error.message });
   }
 };
+
 
 export const getProductById = async (req, res) => {
     try {
