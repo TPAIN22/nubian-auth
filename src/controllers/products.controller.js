@@ -2,17 +2,36 @@ import Product from '../models/product.model.js'
 import User from '../models/user.model.js'
 import { getAuth } from '@clerk/express'
 export const getProducts = async (req, res) => {
-    try {
-        const page = parseInt(req.query.page) || 1
-        const limit = parseInt(req.query.limit) || 10
-        const skip = (page - 1) * limit
-        const products = await Product.find().sort({ createdAt: -1 }).skip(skip).limit(limit)
-        const totalProducts = await Product.countDocuments()
-        res.status(200).json({products , page ,totalPages: Math.ceil(totalProducts / limit)})
-    } catch (error) {
-        res.status(500).json({ message: error.message })
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 8;
+    const skip = (page - 1) * limit;
+    
+    const { categoryId } = req.query;
+
+    // بناء فلتر حسب وجود categoryId أو لا
+    const filter = {};
+    if (categoryId) {
+      filter.category = categoryId;
     }
-}
+
+    const products = await Product.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalProducts = await Product.countDocuments(filter);
+
+    res.status(200).json({
+      products,
+      page,
+      totalPages: Math.ceil(totalProducts / limit),
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const getProductById = async (req, res) => {
     try {
         const product = await Product.findById(req.params.id)
@@ -22,11 +41,6 @@ export const getProductById = async (req, res) => {
     }
 }
 export const createProduct = async (req, res) => {
-    
-    const { userId } = getAuth(req);
-    const user = await User.findOne({ clerkId: userId });
-
-    
     try {
         const product = await Product.create(req.body)
         res.status(201).json(product)
