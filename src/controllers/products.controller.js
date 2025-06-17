@@ -9,15 +9,11 @@ export const getProducts = async (req, res) => {
 
     const { category } = req.query; // <-- هنا
 
-    console.log("Received query params:", req.query);
-    console.log("category from query:", category);
 
     const filter = {};
     if (category) {
-      console.log("Filtering by category:", category);
       filter.category = category;
     } else {
-      console.log("No category filter applied.");
     }
 
     const products = await Product.find(filter)
@@ -25,10 +21,8 @@ export const getProducts = async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-    console.log(`Found ${products.length} products`);
 
     const totalProducts = await Product.countDocuments(filter);
-    console.log("Total products count:", totalProducts);
 
     res.status(200).json({
       products,
@@ -56,7 +50,6 @@ export const createProduct = async (req, res) => {
         res.status(201).json(product)
     } catch (error) {
         res.status(500).json({ message: error.message })
-        console.log(error)
     }
 }
 export const updateProduct = async (req, res) => {

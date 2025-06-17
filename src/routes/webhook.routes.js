@@ -10,7 +10,6 @@ const router = express.Router();
 const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
 
 if (!WEBHOOK_SECRET) {
-  console.error("❌ WEBHOOK_SECRET is missing in .env");
   process.exit(1);
 }
 
@@ -33,12 +32,10 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
   try {
     evt = wh.verify(payload, headers);
   } catch (err) {
-    console.error("❌ Webhook verification failed:", err.message);
     return res.status(400).json({ error: "Invalid webhook signature" });
   }
 
   const { type, data } = evt;
-  console.log(`📥 Received webhook event: ${type} for user ${data.id}`);
 
   try {
     switch (type) {
@@ -46,7 +43,6 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
         {
           const userData = extractUserData(data);
           const newUser = await User.create(userData);
-          console.log(`✅ User created successfully: ${newUser.clerkId}`);
         }
         break;
 
@@ -60,9 +56,7 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
           );
           
           if (updatedUser) {
-            console.log(`✅ User updated successfully: ${updatedUser.clerkId}`);
           } else {
-            console.warn(`⚠️ User not found for update: ${data.id}`);
           }
         }
         break;
@@ -72,15 +66,12 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
           const deletedUser = await User.findOneAndDelete({ clerkId: data.id });
           
           if (deletedUser) {
-            console.log(`✅ User deleted successfully: ${deletedUser.clerkId}`);
           } else {
-            console.warn(`⚠️ User not found for deletion: ${data.id}`);
           }
         }
         break;
 
       default:
-        console.log(`ℹ️ Unhandled webhook event type: ${type}`);
     }
 
     return res.status(200).json({ 
@@ -90,11 +81,9 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
     });
 
   } catch (err) {
-    console.error(`❌ Error handling webhook event ${type}:`, err);
     
     // Check if it's a database-related error
     if (err.name === 'ValidationError') {
-      console.error("Validation error details:", err.errors);
       return res.status(400).json({ 
         error: "Invalid user data", 
         details: err.message 
@@ -102,7 +91,6 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
     }
     
     if (err.name === 'MongoError' || err.name === 'MongooseError') {
-      console.error("Database error:", err.message);
       return res.status(503).json({ 
         error: "Database temporarily unavailable" 
       });

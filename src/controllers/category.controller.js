@@ -32,7 +32,6 @@ export const createCategory = async (req, res) => {
     }
 }
 export const updateCategory = async (req, res) => {
-    console.log('البيانات المستلمة:', req.body);
     
     try {
         const { name, description, image, isActive } = req.body;
@@ -48,7 +47,6 @@ export const updateCategory = async (req, res) => {
         // إضافة updatedAt
         updateData.updatedAt = Date.now();
         
-        console.log('البيانات التي سيتم تحديثها:', updateData);
         
         const category = await Category.findByIdAndUpdate(
             req.params.id, 
@@ -63,11 +61,9 @@ export const updateCategory = async (req, res) => {
             return res.status(404).json({ message: 'الفئة غير موجودة' });
         }
         
-        console.log('الفئة بعد التحديث:', category);
         
         res.status(200).json(category);
     } catch (error) {
-        console.error('خطأ في تحديث الفئة:', error);
         
         // التعامل مع validation errors
         if (error.name === 'ValidationError') {

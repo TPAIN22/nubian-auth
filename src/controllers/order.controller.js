@@ -39,7 +39,6 @@ export const updateOrderStatus = async (req, res) => {
 
     res.status(200).json(order);
   } catch (error) {
-    console.error("error in updateOrderStatus", error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -61,7 +60,6 @@ export const getUserOrders = async (req, res) => {
         res.status(200).json(orders);
     } catch (error) {
         res.status(500).json({ message: error.message });
-        console.log(error, "error in getUserOrders");
     }
 };
 
@@ -124,7 +122,6 @@ export const createOrder = async (req, res) => {
         res.status(201).json(order);
     } catch (error) {
         res.status(500).json({ message: error.message });
-        console.log(error, "error in createOrder");
     }
 };
 
@@ -137,7 +134,6 @@ export const getOrders = async (req, res) => {
         res.status(200).json(orders);
     } catch (error) {
         res.status(500).json({ message: error.message });
-        console.log(error, "error in getOrders");
     }
 };
 
@@ -161,7 +157,6 @@ export const getOrderById = async (req, res) => {
         res.status(200).json(order);
     } catch (error) {   
         res.status(500).json({ message: error.message });
-        console.log(error, "error in getOrderById");
     }
 };
 
