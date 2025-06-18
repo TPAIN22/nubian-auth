@@ -96,7 +96,9 @@ export const getUserOrders = async (req, res) => {
 };
 
 export const createOrder = async (req, res) => {
+    console.log('--- createOrder called ---');
     const { userId } = getAuth(req);
+    console.log('userId from token:', userId);
     let lastOrder = await Order.findOne().sort({ createdAt: -1 });
     if (!lastOrder) {
         lastOrder = { orderNumber: "ORD-0001" };
@@ -106,26 +108,22 @@ export const createOrder = async (req, res) => {
         const lastNumber = parseInt(lastOrder.orderNumber.split('-')[1]);
         nextOrderNumber = lastNumber + 1;
     }
-
-    // أنشئ رقم طلب جديد بصيغة مثل: ORD-0001
     const formattedOrderNumber = `ORD-${String(nextOrderNumber).padStart(4, '0')}`;
     try {
+        console.log('Finding user by clerkId:', userId);
         const user = await User.findOne({ clerkId: userId });
-
+        console.log('User found:', user ? user._id : null);
         if (!user) {
             console.log(`Error in createOrder: User not found for clerkId - ${userId}`);
             return res.status(404).json({ message: 'User not found' });
         }
-
-        // الحصول على السلة الخاصة بالمستخدم
+        console.log('Finding cart for user:', user._id);
         const cart = await Cart.findOne({ user: user._id }).populate('products.product');
-
+        console.log('Cart found:', cart ? cart._id : null, 'Products count:', cart ? cart.products.length : 0);
         if (!cart || cart.products.length === 0) {
             console.log(`Error in createOrder: Cart empty or not found for user - ${user._id}`);
             return res.status(400).json({ message: 'Cart is empty or not found' });
         }
-
-        // تحويل المنتجات في السلة إلى المنتجات في الطلب
         const orderProducts = cart.products.map(item => ({
             product: item.product._id,
             quantity: item.quantity,
@@ -134,8 +132,9 @@ export const createOrder = async (req, res) => {
         const totalAmount = cart.products.reduce((sum, item) => {
             return sum + item.product.price * item.quantity;
         }, 0);
-
-
+        console.log('Order products:', orderProducts);
+        console.log('Total amount:', totalAmount);
+        console.log('Request body:', req.body);
         // إنشاء الطلب الجديد
         const order = await Order.create({
             user: user._id,
@@ -147,11 +146,11 @@ export const createOrder = async (req, res) => {
             city: req.body.deliveryAddress.city,
             address: req.body.deliveryAddress.address
         });
-
+        console.log('Order created:', order ? order._id : null);
         await Cart.findOneAndDelete({ user: user._id });
         if (!order) {
             console.log(`Error in createOrder: Order creation failed unexpectedly.`);
-            return res.status(404).json({ message: 'Order not found' }); // This line might be unreachable if create throws an error
+            return res.status(404).json({ message: 'Order not found' });
         }
         res.status(201).json(order);
     } catch (error) {
@@ -159,6 +158,7 @@ export const createOrder = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
 export const getOrders = async (req, res) => {
     try {
         const orders = await Order.find()
