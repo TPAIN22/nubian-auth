@@ -250,6 +250,8 @@ export const getOrderById = async (req, res) => {
             }
         };
 
+        console.log('product.images:', enhancedOrder.productsDetails[0].images);
+
         res.status(200).json(enhancedOrder);
     } catch (error) {
         console.error('Error in getOrderById:', error);
