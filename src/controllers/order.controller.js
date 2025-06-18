@@ -76,15 +76,15 @@ export const getUserOrders = async (req, res) => {
             ...order.toObject(),
             productsCount: order.products.length,
             productsDetails: order.products.map(item => ({
-                productId: item.product._id,
-                name: item.product.name,
-                price: item.product.price,
-                images: item.product.images || [],
-                category: item.product.category,
-                description: item.product.description,
-                stock: item.product.stock,
+                productId: item.product?._id || null,
+                name: item.product?.name || '',
+                price: item.product?.price || 0,
+                images: item.product?.images || [],
+                category: item.product?.category || '',
+                description: item.product?.description || '',
+                stock: item.product?.stock || 0,
                 quantity: item.quantity,
-                totalPrice: item.product.price * item.quantity
+                totalPrice: (item.product?.price || 0) * item.quantity
             }))
         }));
 
@@ -126,8 +126,7 @@ export const createOrder = async (req, res) => {
         }
         const orderProducts = cart.products.map(item => ({
             product: item.product._id,
-            quantity: item.quantity,
-            name: item.product.name,
+            quantity: item.quantity
         }));
         const totalAmount = cart.products.reduce((sum, item) => {
             return sum + item.product.price * item.quantity;
@@ -180,11 +179,11 @@ export const getOrders = async (req, res) => {
             },
             productsDetails: order.products.map(item => ({
                 productId: item.product?._id || null,
-                name: item.product?.name || item.name,
+                name: item.product?.name || '',
                 price: item.product?.price || 0,
                 images: item.product?.images || [],
-                category: item.product?.category || item.category,
-                description: item.product?.description || 'غير متوفر',
+                category: item.product?.category || '',
+                description: item.product?.description || '',
                 stock: item.product?.stock || 0,
                 quantity: item.quantity,
                 totalPrice: (item.product?.price || 0) * item.quantity
@@ -232,11 +231,11 @@ export const getOrderById = async (req, res) => {
             productsCount: order.products.length,
             productsDetails: order.products.map(item => ({
                 productId: item.product?._id || null,
-                name: item.product?.name || item.name,
+                name: item.product?.name || '',
                 price: item.product?.price || 0,
                 images: item.product?.images || [],
-                category: item.product?.category || item.category,
-                description: item.product?.description || 'غير متوفر',
+                category: item.product?.category || '',
+                description: item.product?.description || '',
                 stock: item.product?.stock || 0,
                 quantity: item.quantity,
                 totalPrice: (item.product?.price || 0) * item.quantity,
