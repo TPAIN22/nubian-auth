@@ -189,7 +189,7 @@ export const getOrders = async (req, res) => {
                 totalPrice: (item.product?.price || 0) * item.quantity
             }))
         }));
-
+        console.log('Enhanced orders:', enhancedOrders.productsDetails.images);
         res.status(200).json(enhancedOrders);
     } catch (error) {
         console.error('Error in getOrders (Admin):', error);
