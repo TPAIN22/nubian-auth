@@ -4,56 +4,62 @@ import { getAuth } from '@clerk/express';
 import User from '../models/user.model.js';
 
 export const updateOrderStatus = async (req, res) => {
-  try {
-    const { status, paymentStatus } = req.body;
-    const { id } = req.params;
+    try {
+        const { status, paymentStatus } = req.body;
+        const { id } = req.params;
 
-    const allowedStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
-    const allowedPaymentStatus = ['pending', 'paid', 'failed'];
+        const allowedStatuses = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'];
+        const allowedPaymentStatus = ['pending', 'paid', 'failed'];
 
-    const updateData = {};
+        const updateData = {};
 
-    if (status !== undefined) {
-      if (!allowedStatuses.includes(status)) {
-        return res.status(400).json({ message: 'Invalid status value' });
-      }
-      updateData.status = status;
+        if (status !== undefined) {
+            if (!allowedStatuses.includes(status)) {
+                console.log(`Error in updateOrderStatus: Invalid status value - ${status}`);
+                return res.status(400).json({ message: 'Invalid status value' });
+            }
+            updateData.status = status;
+        }
+
+        if (paymentStatus !== undefined) {
+            if (!allowedPaymentStatus.includes(paymentStatus)) {
+                console.log(`Error in updateOrderStatus: Invalid payment status value - ${paymentStatus}`);
+                return res.status(400).json({ message: 'Invalid payment status value' });
+            }
+            updateData.paymentStatus = paymentStatus;
+        }
+
+        if (Object.keys(updateData).length === 0) {
+            console.log('Error in updateOrderStatus: No valid data to update');
+            return res.status(400).json({ message: 'No valid data to update' });
+        }
+
+        const order = await Order.findByIdAndUpdate(id, updateData, { new: true })
+            .populate({
+                path: 'products.product',
+                select: 'name price image category description stock'
+            })
+            .populate('user', 'name email');
+
+        if (!order) {
+            console.log(`Error in updateOrderStatus: Order not found with ID - ${id}`);
+            return res.status(404).json({ message: 'Order not found' });
+        }
+
+        res.status(200).json(order);
+    } catch (error) {
+        console.error('Error in updateOrderStatus:', error);
+        res.status(500).json({ message: error.message });
     }
-
-    if (paymentStatus !== undefined) {
-      if (!allowedPaymentStatus.includes(paymentStatus)) {
-        return res.status(400).json({ message: 'Invalid payment status value' });
-      }
-      updateData.paymentStatus = paymentStatus;
-    }
-
-    if (Object.keys(updateData).length === 0) {
-      return res.status(400).json({ message: 'No valid data to update' });
-    }
-
-    const order = await Order.findByIdAndUpdate(id, updateData, { new: true })
-      .populate({
-        path: 'products.product',
-        select: 'name price image category description stock'
-      })
-      .populate('user', 'name email');
-
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    res.status(200).json(order);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
 };
 
 export const getUserOrders = async (req, res) => {
     const { userId } = getAuth(req);
     try {
         const user = await User.findOne({ clerkId: userId });
-        
+
         if (!user) {
+            console.log(`Error in getUserOrders: User not found for clerkId - ${userId}`);
             return res.status(404).json({ message: 'User not found' });
         }
 
@@ -84,6 +90,7 @@ export const getUserOrders = async (req, res) => {
 
         res.status(200).json(enhancedOrders);
     } catch (error) {
+        console.error('Error in getUserOrders:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -91,8 +98,8 @@ export const getUserOrders = async (req, res) => {
 export const createOrder = async (req, res) => {
     const { userId } = getAuth(req);
     let lastOrder = await Order.findOne().sort({ createdAt: -1 });
-    if(!lastOrder){
-        lastOrder = {orderNumber: "ORD-0001"};
+    if (!lastOrder) {
+        lastOrder = { orderNumber: "ORD-0001" };
     }
     let nextOrderNumber = 1;
     if (lastOrder && lastOrder.orderNumber) {
@@ -102,38 +109,32 @@ export const createOrder = async (req, res) => {
 
     // أنشئ رقم طلب جديد بصيغة مثل: ORD-0001
     const formattedOrderNumber = `ORD-${String(nextOrderNumber).padStart(4, '0')}`;
-    
     try {
         const user = await User.findOne({ clerkId: userId });
-        
+
         if (!user) {
+            console.log(`Error in createOrder: User not found for clerkId - ${userId}`);
             return res.status(404).json({ message: 'User not found' });
         }
 
-        // الحصول على السلة الخاصة بالمستخدم مع تفاصيل المنتجات
-        const cart = await Cart.findOne({ user: user._id })
-            .populate({
-                path: 'products.product',
-                select: 'name price image category description stock'
-            });
+        // الحصول على السلة الخاصة بالمستخدم
+        const cart = await Cart.findOne({ user: user._id }).populate('products.product');
 
         if (!cart || cart.products.length === 0) {
+            console.log(`Error in createOrder: Cart empty or not found for user - ${user._id}`);
             return res.status(400).json({ message: 'Cart is empty or not found' });
         }
 
-        // تحويل المنتجات في السلة إلى المنتجات في الطلب مع الاحتفاظ بالتفاصيل
+        // تحويل المنتجات في السلة إلى المنتجات في الطلب
         const orderProducts = cart.products.map(item => ({
             product: item.product._id,
             quantity: item.quantity,
             name: item.product.name,
-            category: item.product.category,
-            price: item.product.price,
-            image: item.product.image
         }));
-
         const totalAmount = cart.products.reduce((sum, item) => {
             return sum + item.product.price * item.quantity;
         }, 0);
+
 
         // إنشاء الطلب الجديد
         const order = await Order.create({
@@ -147,27 +148,17 @@ export const createOrder = async (req, res) => {
             address: req.body.deliveryAddress.address
         });
 
-        // جلب الطلب مع تفاصيل المنتجات لإرجاعه
-        const populatedOrder = await Order.findById(order._id)
-            .populate({
-                path: 'products.product',
-                select: 'name price image category description stock'
-            })
-            .populate('user', 'name email');
-
-        // حذف السلة بعد إنشاء الطلب بنجاح
         await Cart.findOneAndDelete({ user: user._id });
-
-        if(!populatedOrder) {
-            return res.status(404).json({ message: 'Order not found' });
+        if (!order) {
+            console.log(`Error in createOrder: Order creation failed unexpectedly.`);
+            return res.status(404).json({ message: 'Order not found' }); // This line might be unreachable if create throws an error
         }
-
-        res.status(201).json(populatedOrder);
+        res.status(201).json(order);
     } catch (error) {
+        console.error('Error in createOrder:', error);
         res.status(500).json({ message: error.message });
     }
 };
-
 export const getOrders = async (req, res) => {
     try {
         const orders = await Order.find()
@@ -202,6 +193,7 @@ export const getOrders = async (req, res) => {
 
         res.status(200).json(enhancedOrders);
     } catch (error) {
+        console.error('Error in getOrders (Admin):', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -210,8 +202,9 @@ export const getOrderById = async (req, res) => {
     const { userId } = getAuth(req);
     try {
         const user = await User.findOne({ clerkId: userId });
-        
+
         if (!user) {
+            console.log(`Error in getOrderById: User not found for clerkId - ${userId}`);
             return res.status(404).json({ message: 'User not found' });
         }
 
@@ -223,11 +216,13 @@ export const getOrderById = async (req, res) => {
             });
 
         if (!order) {
+            console.log(`Error in getOrderById: Order not found with ID - ${req.params.id}`);
             return res.status(404).json({ message: 'Order not found' });
         }
 
         // التأكد من أن المستخدم يملك هذا الطلب
         if (order.user._id.toString() !== user._id.toString()) {
+            console.log(`Access denied in getOrderById: User ${user._id} tried to access order ${req.params.id} belonging to ${order.user._id}`);
             return res.status(403).json({ message: 'Access denied' });
         }
 
@@ -256,7 +251,8 @@ export const getOrderById = async (req, res) => {
         };
 
         res.status(200).json(enhancedOrder);
-    } catch (error) {   
+    } catch (error) {
+        console.error('Error in getOrderById:', error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -286,6 +282,7 @@ export const getOrderStats = async (req, res) => {
             totalRevenue: totalRevenue[0]?.total || 0
         });
     } catch (error) {
+        console.error('Error in getOrderStats:', error);
         res.status(500).json({ message: error.message });
     }
 };
