@@ -37,7 +37,7 @@ export const updateOrderStatus = async (req, res) => {
         const order = await Order.findByIdAndUpdate(id, updateData, { new: true })
             .populate({
                 path: 'products.product',
-                select: 'name price image category description stock'
+                select: 'name price images category description stock'
             })
             .populate('user', 'name email');
 
@@ -66,7 +66,7 @@ export const getUserOrders = async (req, res) => {
         const orders = await Order.find({ user: user._id })
             .populate({
                 path: 'products.product',
-                select: 'name price image category description stock createdAt'
+                select: 'name price images category description stock createdAt'
             })
             .populate('user', 'name email phoneNumber')
             .sort({ orderDate: -1 });
@@ -164,7 +164,7 @@ export const getOrders = async (req, res) => {
             .populate('user', 'name email phoneNumber')
             .populate({
                 path: 'products.product',
-                select: 'name price image category description stock createdAt'
+                select: 'name price images category description stock createdAt'
             })
             .sort({ orderDate: -1 });
 
@@ -211,7 +211,7 @@ export const getOrderById = async (req, res) => {
             .populate('user', 'name email phoneNumber')
             .populate({
                 path: 'products.product',
-                select: 'name price image category description stock createdAt updatedAt'
+                select: 'name price images category description stock createdAt updatedAt'
             });
 
         if (!order) {
