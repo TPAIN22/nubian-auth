@@ -1,7 +1,7 @@
 import Category from '../models/categories.model.js'
 export const getCategories = async (req, res) => {
     try {
-        const categories = await Category.find().sort({ createdAt: -1 })
+        const categories = await Category.find().sort({ createdAt: -1 }).populate('parent', 'name');
         res.status(200).json(categories)
     } catch (error) {
         res.status(500).json({ message: error.message })
@@ -78,9 +78,18 @@ export const updateCategory = async (req, res) => {
 };
 export const deleteCategory = async (req, res) => {
     try {
-        await Category.findByIdAndDelete(req.params.id)
-        res.status(200).json({ message: 'Category deleted' })
+        const categoryId = req.params.id;
+
+        // التحقق مما إذا كانت هذه الفئة هي أب لفئات أخرى
+        const subCategoryCount = await Category.countDocuments({ parent: categoryId });
+
+        if (subCategoryCount > 0) {
+            return res.status(400).json({ message: 'لا يمكن حذف هذه الفئة لأنها تحتوي على فئات فرعية. يرجى حذف الفئات الفرعية أولاً.' });
+        }
+
+        await Category.findByIdAndDelete(categoryId);
+        res.status(200).json({ message: 'تم حذف الفئة بنجاح' });
     } catch (error) {
-        res.status(500).json({ message: error.message })
+        res.status(500).json({ message: error.message });
     }
-}
+};

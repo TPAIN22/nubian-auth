@@ -32,7 +32,6 @@ export const savePushToken = async (req, res) => {
 
     return res.status(200).json({ message: 'Token saved successfully' });
   } catch (error) {
-    console.error('❌ Error saving push token:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -54,7 +53,6 @@ export const saveNotification = async (req, res) => {
 
     res.status(201).json({ message: 'Notification saved', notification });
   } catch (error) {
-    console.error('❌ Error saving notification:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };
@@ -103,7 +101,6 @@ export const sendPushNotification = async (req, res) => {
 
     return res.status(200).json({ message: 'Notifications sent', results });
   } catch (error) {
-    console.error('❌ Error sending push notifications:', error);
     return res.status(500).json({ error: 'Failed to send notifications' });
   }
 };
@@ -126,7 +123,6 @@ export const getNotifications = async (req, res) => {
 
     res.status(200).json({ notifications });
   } catch (error) {
-    console.error('❌ Error fetching notifications:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

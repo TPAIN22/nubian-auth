@@ -1,6 +1,11 @@
 import mongoose from 'mongoose';
 
 const categorySchema = new mongoose.Schema({
+    parent: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Category',
+        default: null, // الفئات الرئيسية لن يكون لها أب
+    },
     name: {
         type: String,
         required: true,
@@ -8,7 +13,7 @@ const categorySchema = new mongoose.Schema({
     },
     description: {
         type: String,
-        required: true,
+        required: false,
         trim: true,
     },
     image: {
