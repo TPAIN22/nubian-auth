@@ -1,5 +1,6 @@
 import Review from '../models/reviews.model.js'
 import Product from '../models/product.model.js'
+import { getAuth } from '@clerk/express'
 
 export const getReviews = async (req, res) => {
     try {
@@ -19,6 +20,9 @@ export const getReviewById = async (req, res) => {
 }
 export const createReview = async (req, res) => {
     try {
+        console.log('Review Body:', req.body);
+        console.log('Review Headers:', req.headers);
+        const user = await User.findOne({ clerkId: userId });
         const review = await Review.create(req.body)
         const product = await Product.findById(review.product)
         if (product) {
