@@ -137,10 +137,14 @@ export const createOrder = async (req, res) => {
     }
 };
 
+
 export const getOrders = async (req, res) => {
     try {
         const orders = await Order.find()
-            .populate('user', 'name email phoneNumber')
+            .populate({ 
+                path: 'user',
+                select: 'fullName emailAddress phoneNumber'
+            })
             .populate({
                 path: 'products.product',
                 select: 'name price images category description stock createdAt'
@@ -152,8 +156,8 @@ export const getOrders = async (req, res) => {
             ...order.toObject(),
             productsCount: order.products.length,
             customerInfo: {
-                name: order.user?.name || 'غير محدد',
-                email: order.user?.email || 'غير محدد',
+                name: order.user?.fullName || 'غير محدد',
+                email: order.user?.emailAddress || 'غير محدد',
                 phone: order.phoneNumber
             },
             productsDetails: order.products.map(item => ({
@@ -173,6 +177,7 @@ export const getOrders = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
 
 export const getOrderById = async (req, res) => {
     const { userId } = getAuth(req);

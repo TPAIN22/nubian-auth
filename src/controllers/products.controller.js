@@ -1,13 +1,11 @@
 import Product from '../models/product.model.js'
-import User from '../models/user.model.js'
-import { getAuth } from '@clerk/express'
 export const getProducts = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 8;
     const skip = (page - 1) * limit;
 
-    const { category } = req.query; // <-- هنا
+    const { category } = req.query;
 
 
     const filter = {};

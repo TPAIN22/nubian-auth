@@ -1,4 +1,5 @@
 import Review from '../models/reviews.model.js'
+import Product from '../models/product.model.js'
 
 export const getReviews = async (req, res) => {
     try {
@@ -19,6 +20,14 @@ export const getReviewById = async (req, res) => {
 export const createReview = async (req, res) => {
     try {
         const review = await Review.create(req.body)
+        const product = await Product.findById(review.product)
+        if (product) {
+            product.reviews.push(review._id)
+            const allReviews = await Review.find({ product: product._id })
+            const avgRating = allReviews.reduce((acc, r) => acc + r.rating, 0) / allReviews.length
+            product.averageRating = avgRating
+            await product.save()
+        }
         res.status(201).json(review)
     } catch (error) {
         res.status(500).json({ message: error.message })
