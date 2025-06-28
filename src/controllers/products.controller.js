@@ -7,6 +7,7 @@ export const getProducts = async (req, res) => {
 
     const { category } = req.query;
 
+    console.log('getProducts called with:', { page, limit, skip, category });
 
     const filter = {};
     if (category) {
@@ -19,15 +20,23 @@ export const getProducts = async (req, res) => {
       .skip(skip)
       .limit(limit);
 
-
     const totalProducts = await Product.countDocuments(filter);
+    const totalPages = Math.ceil(totalProducts / limit);
+
+    console.log('getProducts result:', {
+      productsCount: products.length,
+      totalProducts,
+      totalPages,
+      currentPage: page
+    });
 
     res.status(200).json({
       products,
       page,
-      totalPages: Math.ceil(totalProducts / limit),
+      totalPages,
     });
   } catch (error) {
+    console.error('getProducts error:', error);
     res.status(500).json({ message: error.message });
   }
 };
