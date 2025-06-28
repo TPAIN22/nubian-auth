@@ -1,5 +1,6 @@
 import Review from '../models/reviews.model.js'
 import Product from '../models/product.model.js'
+import User from '../models/user.model.js'
 import { getAuth } from '@clerk/express'
 
 export const getReviews = async (req, res) => {
@@ -22,8 +23,17 @@ export const createReview = async (req, res) => {
     try {
         console.log('Review Body:', req.body);
         console.log('Review Headers:', req.headers);
+        const { userId } = getAuth(req);
         const user = await User.findOne({ clerkId: userId });
-        const review = await Review.create(req.body)
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        const review = await Review.create({
+            user: user._id,
+            product: req.body.product,
+            rating: req.body.rating,
+            comment: req.body.comment,
+        });
         const product = await Product.findById(review.product)
         if (product) {
             product.reviews.push(review._id)
