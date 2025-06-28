@@ -157,7 +157,13 @@ export const addToCart = async (req, res) => {
 
 export const updateCart = async (req, res) => {
   const { userId } = getAuth(req); // Get Clerk userId from authentication
-  const { productId, quantity, size = "" } = req.body;
+  const { productId, quantity } = req.body;
+  
+  // توحيد قيمة 'size' المستلمة من الطلب
+  const sizeFromRequest = req.body.size;
+  const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
+
+  console.log('updateCart called with:', { productId, quantity, sizeFromRequest, normalizedSize });
 
   if (!productId || !quantity) {
     return res
@@ -178,10 +184,37 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "Cart not found for this user." });
     }
 
+    console.log('Cart products before update:', cart.products.map(item => ({
+      productId: item.product.toString(),
+      size: item.size,
+      quantity: item.quantity
+    })));
+
     const productIndex = cart.products.findIndex(
-      (item) =>
-        item.product.toString() === productId.toString() && item.size === size
+      (item) => {
+        // توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة
+        const itemNormalizedSize = (item.size === null || item.size === undefined || String(item.size).toLowerCase() === 'null' || String(item.size).toLowerCase() === 'undefined' ? "" : String(item.size)).trim();
+
+        const isProductIdMatch = item.product.toString() === productId.toString();
+        const isSizeMatch = itemNormalizedSize === normalizedSize;
+
+        console.log('Comparing:', {
+          itemProductId: item.product.toString(),
+          requestProductId: productId.toString(),
+          itemSize: item.size,
+          itemNormalizedSize,
+          requestSize: sizeFromRequest,
+          normalizedSize,
+          isProductIdMatch,
+          isSizeMatch
+        });
+
+        return isProductIdMatch && isSizeMatch;
+      }
     );
+    
+    console.log('Product index found:', productIndex);
+    
     if (productIndex === -1) {
       return res
         .status(404)
@@ -189,10 +222,14 @@ export const updateCart = async (req, res) => {
     }
     const currentItem = cart.products[productIndex];
     const newQuantity = currentItem.quantity + quantity;
+    console.log('Current quantity:', currentItem.quantity, 'Change:', quantity, 'New quantity:', newQuantity);
+    
     if (newQuantity <= 0) {
       cart.products.splice(productIndex, 1);
+      console.log('Product removed from cart');
     } else {
       cart.products[productIndex].quantity = newQuantity;
+      console.log('Product quantity updated');
     }
     cart.totalQuantity = cart.products.reduce(
       (acc, item) => acc + item.quantity,
@@ -215,6 +252,7 @@ export const updateCart = async (req, res) => {
     );
     res.status(200).json(populatedCart);
   } catch (error) {
+    console.error('Error in updateCart:', error);
     res
       .status(500)
       .json({
@@ -225,7 +263,11 @@ export const updateCart = async (req, res) => {
 };
 export const removeFromCart = async (req, res) => {
   const { userId } = getAuth(req);
-  const { productId, size = "" } = req.body; // نطلب productId و size فقط للحذف
+  const { productId } = req.body;
+  
+  // توحيد قيمة 'size' المستلمة من الطلب
+  const sizeFromRequest = req.body.size;
+  const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
 
   if (!productId) {
     return res
@@ -246,10 +288,16 @@ export const removeFromCart = async (req, res) => {
 
     const initialLength = cart.products.length;
     cart.products = cart.products.filter(
-      (item) =>
-        !(
-          item.product.toString() === productId.toString() && item.size === size
-        )
+      (item) => {
+        // توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة
+        const itemNormalizedSize = (item.size === null || item.size === undefined || String(item.size).toLowerCase() === 'null' || String(item.size).toLowerCase() === 'undefined' ? "" : String(item.size)).trim();
+
+        const isProductIdMatch = item.product.toString() === productId.toString();
+        const isSizeMatch = itemNormalizedSize === normalizedSize;
+
+        // نعيد false إذا كان المنتج والحجم متطابقان (لنحذفه)
+        return !(isProductIdMatch && isSizeMatch);
+      }
     );
 
     if (cart.products.length === initialLength) {
