@@ -5,12 +5,47 @@ import { getAuth } from '@clerk/express'
 
 export const getReviews = async (req, res) => {
     try {
-        const reviews = await Review.find()
+        const { product } = req.query;
+        let query = {};
+        
+        console.log('getReviews called with query:', req.query);
+        
+        // إذا تم تمرير product في query parameters، قم بفلترة الريفيوهات حسب المنتج
+        if (product) {
+            // التحقق من أن product ID صحيح
+            if (!product.match(/^[0-9a-fA-F]{24}$/)) {
+                console.log('Invalid product ID format:', product);
+                return res.status(400).json({ message: 'Invalid product ID format' });
+            }
+            query.product = product;
+            console.log('Filtering reviews for product:', product);
+        } else {
+            console.log('No product filter applied, returning all reviews');
+        }
+        
+        console.log('Final query:', query);
+        
+        const reviews = await Review.find(query).populate('user', 'name');
+        console.log(`Found ${reviews.length} reviews for product: ${product || 'all products'}`);
+        
+        // طباعة تفاصيل الريفيوهات للـ debugging
+        reviews.forEach((review, index) => {
+            console.log(`Review ${index + 1}:`, {
+                id: review._id,
+                product: review.product,
+                user: review.user?.name,
+                rating: review.rating,
+                comment: review.comment?.substring(0, 50) + '...'
+            });
+        });
+        
         res.status(200).json(reviews)
     } catch (error) {
+        console.error('Error in getReviews:', error);
         res.status(500).json({ message: error.message })
     }
 }
+
 export const getReviewById = async (req, res) => {
     try {
         const review = await Review.findById(req.params.id)
@@ -19,6 +54,7 @@ export const getReviewById = async (req, res) => {
         res.status(500).json({ message: error.message })
     }
 }
+
 export const createReview = async (req, res) => {
     try {
         console.log('Review Body:', req.body);
@@ -47,6 +83,7 @@ export const createReview = async (req, res) => {
         res.status(500).json({ message: error.message })
     }
 }
+
 export const updateReview = async (req, res) => {
     try {
         const review = await Review.findByIdAndUpdate(req.params.id, req.body, { new: true })
@@ -55,11 +92,37 @@ export const updateReview = async (req, res) => {
         res.status(500).json({ message: error.message })
     }
 }
+
 export const deleteReview = async (req, res) => {
     try {
         await Review.findByIdAndDelete(req.params.id)
         res.status(200).json({ message: 'Review deleted' })
     } catch (error) {
+        res.status(500).json({ message: error.message })
+    }
+}
+
+export const getAllReviews = async (req, res) => {
+    try {
+        console.log('getAllReviews called');
+        const reviews = await Review.find().populate('user', 'name').populate('product', 'name');
+        console.log(`Total reviews in database: ${reviews.length}`);
+        
+        // طباعة تفاصيل جميع الريفيوهات
+        reviews.forEach((review, index) => {
+            console.log(`Review ${index + 1}:`, {
+                id: review._id,
+                productId: review.product?._id,
+                productName: review.product?.name,
+                user: review.user?.name,
+                rating: review.rating,
+                comment: review.comment?.substring(0, 50) + '...'
+            });
+        });
+        
+        res.status(200).json(reviews)
+    } catch (error) {
+        console.error('Error in getAllReviews:', error);
         res.status(500).json({ message: error.message })
     }
 }
