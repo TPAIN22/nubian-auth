@@ -25,6 +25,16 @@ export const getCategoryById = async (req, res) => {
 }
 export const createCategory = async (req, res) => {
     try {
+        const { parent } = req.body;
+        
+        // التحقق من عدم وجود دوائر في العلاقات
+        if (parent) {
+            const parentCategory = await Category.findById(parent);
+            if (!parentCategory) {
+                return res.status(400).json({ message: 'الفئة الرئيسية غير موجودة' });
+            }
+        }
+        
         const category = await Category.create(req.body)
         res.status(201).json(category)
     } catch (error) {
@@ -34,7 +44,20 @@ export const createCategory = async (req, res) => {
 export const updateCategory = async (req, res) => {
     
     try {
-        const { name, description, image, isActive } = req.body;
+        const { name, description, image, isActive, parent } = req.body;
+        
+        // التحقق من عدم وجود دوائر في العلاقات
+        if (parent) {
+            const parentCategory = await Category.findById(parent);
+            if (!parentCategory) {
+                return res.status(400).json({ message: 'الفئة الرئيسية غير موجودة' });
+            }
+            
+            // التحقق من عدم جعل الفئة أباً لنفسها
+            if (parent === req.params.id) {
+                return res.status(400).json({ message: 'لا يمكن أن تكون الفئة أباً لنفسها' });
+            }
+        }
         
         // بناء updateData ديناميكياً - فقط الحقول الموجودة
         const updateData = {};
@@ -43,6 +66,7 @@ export const updateCategory = async (req, res) => {
         if (description !== undefined) updateData.description = description;
         if (image !== undefined && image !== null) updateData.image = image;
         if (isActive !== undefined) updateData.isActive = isActive;
+        if (parent !== undefined) updateData.parent = parent; // إضافة دعم حقل parent
         
         // إضافة updatedAt
         updateData.updatedAt = Date.now();
