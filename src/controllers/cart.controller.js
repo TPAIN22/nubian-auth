@@ -5,15 +5,13 @@ import Product from "../models/product.model.js";
 
 // GET USER'S CART
 export const getCart = async (req, res) => {
-  const { userId } = getAuth(req); // Get Clerk userId from authentication
+  const { userId } = getAuth(req);
   try {
-    // Find the user in your database using their Clerk ID
     const user = await User.findOne({ clerkId: userId });
     if (!user) {
       return res.status(404).json({ message: "User not found." });
     }
 
-    // Find the cart for the user and populate product details
     const cart = await Cart.findOne({ user: user._id }).populate({
     path:"products.product",
     select:"name price images"

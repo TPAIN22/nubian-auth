@@ -1,5 +1,4 @@
 import Wishlist from '../models/wishlist.model.js';
-import Product from '../models/products.model.js';
 import { getAuth } from '@clerk/express';
 
 export const getWishlist = async (req, res) => {
