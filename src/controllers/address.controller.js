@@ -6,6 +6,9 @@ export const getAddresses = async (req, res) => {
   const { userId } = getAuth(req);
   try {
     const user = await User.findOne({ clerkId: userId });
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
     const addresses = await Address.find({ user: user._id });
     res.status(200).json(addresses);
   } catch (error) {
@@ -15,7 +18,6 @@ export const getAddresses = async (req, res) => {
 
 export const addAddress = async (req, res) => {
   const { userId } = getAuth(req);
-  
   try {
     const user = await User.findOne({ clerkId: userId });
     if (req.body.isDefault) {
@@ -31,14 +33,16 @@ export const addAddress = async (req, res) => {
 export const updateAddress = async (req, res) => {
   const { userId } = getAuth(req);
   const { id } = req.params;
-  
-  
   try {
     const user = await User.findOne({ clerkId: userId });
     if (req.body.isDefault) {
       await Address.updateMany({ user: user._id }, { isDefault: false });
     }
-    const address = await Address.findOneAndUpdate({ _id: id, user: user._id }, req.body, { new: true });
+    const address = await Address.findOneAndUpdate(
+      { _id: id, user: user._id },
+      { ...req.body, user: user._id },
+      { new: true }
+    );
     res.status(200).json(address);
   } catch (error) {
     res.status(500).json({ message: error.message });
