@@ -18,7 +18,7 @@ export const addToWishlist = async (req, res) => {
   const { productId } = req.params;
   const user = await User.findOne({ clerkId: userId });
   try {
-    let wishlist = await Wishlist.findOne({ user });
+    let wishlist = await Wishlist.findOne({ user: user._id });
     if (!wishlist) {
       wishlist = await Wishlist.create({ user, products: [productId] });
     } else if (!wishlist.products.includes(productId)) {
