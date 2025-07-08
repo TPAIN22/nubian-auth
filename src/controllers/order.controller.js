@@ -3,6 +3,7 @@ import Cart from '../models/carts.model.js';
 import { getAuth } from '@clerk/express';
 import User from '../models/user.model.js';
 import { sendOrderEmail } from '../lib/mail.js';
+import Coupon from '../models/coupon.model.js';
 
 export const updateOrderStatus = async (req, res) => {
     try {
@@ -114,19 +115,57 @@ export const createOrder = async (req, res) => {
             product: item.product._id,
             quantity: item.quantity
         }));
-        const totalAmount = cart.products.reduce((sum, item) => {
+        let totalAmount = cart.products.reduce((sum, item) => {
             return sum + item.product.price * item.quantity;
         }, 0);
+        let discountAmount = 0;
+        let couponId = null;
+        // دعم الكوبون
+        if (req.body.couponCode) {
+            const coupon = await Coupon.findOne({ code: req.body.couponCode, isActive: true });
+            if (!coupon) {
+                return res.status(400).json({ message: 'Invalid or inactive coupon code' });
+            }
+            // تحقق من تاريخ الانتهاء
+            if (coupon.expiresAt < new Date()) {
+                return res.status(400).json({ message: 'Coupon has expired' });
+            }
+            // تحقق من حدود الاستخدام الكلي
+            if (coupon.usageLimit > 0 && coupon.usedBy.length >= coupon.usageLimit) {
+                return res.status(400).json({ message: 'Coupon usage limit reached' });
+            }
+            // تحقق من حدود الاستخدام لكل مستخدم
+            const userUsedCount = coupon.usedBy.filter(u => u.toString() === user._id.toString()).length;
+            if (coupon.usageLimitPerUser > 0 && userUsedCount >= coupon.usageLimitPerUser) {
+                return res.status(400).json({ message: 'You have already used this coupon the maximum allowed times' });
+            }
+            // حساب قيمة الخصم
+            if (coupon.discountType === 'percentage') {
+                discountAmount = totalAmount * (coupon.discountValue / 100);
+            } else {
+                discountAmount = coupon.discountValue;
+            }
+            // لا يتجاوز الخصم المجموع الكلي
+            if (discountAmount > totalAmount) discountAmount = totalAmount;
+            couponId = coupon._id;
+            // تحديث الكوبون (إضافة المستخدم لقائمة المستخدمين الذين استخدموا الكوبون)
+            coupon.usedBy.push(user._id);
+            await coupon.save();
+        }
+        const finalAmount = totalAmount - discountAmount;
         // دعم هيكل العنوان الجديد من الواجهة الأمامية (city, area, street, building, ...)
         const delivery = req.body.deliveryAddress || {};
         const addressString = delivery.address
-            || [delivery.area, delivery.street, delivery.building].filter(Boolean).join('، ')
+            || [delivery.area, delivery.street, delivery.building].filter(Boolean).join(', ')
             || '';
         // إنشاء الطلب الجديد
         const order = await Order.create({
             user: user._id,
             products: orderProducts,
             totalAmount,
+            discountAmount,
+            finalAmount,
+            coupon: couponId,
             paymentMethod: req.body.paymentMethod,
             orderNumber: formattedOrderNumber,
             phoneNumber: delivery.phone,
@@ -144,7 +183,7 @@ export const createOrder = async (req, res) => {
                 userName: user.fullName || user.name || '',
                 orderNumber: formattedOrderNumber,
                 status: 'بانتظار التأكيد',
-                totalAmount,
+                totalAmount: finalAmount,
                 products: cart.products.map(item => ({
                     name: item.product.name,
                     quantity: item.quantity,

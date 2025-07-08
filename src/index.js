@@ -16,6 +16,7 @@ import NotificationsRoutes from './routes/notifications.route.js';
 import bannerRoutes from './routes/banners.route.js';
 import wishlistRoutes from './routes/wishlist.route.js';
 import addressRoutes from './routes/address.route.js';
+import couponRoutes from './routes/coupons.route.js';
 dotenv.config();
 
 const app = express();
@@ -49,6 +50,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/banners', bannerRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
+app.use('/api/coupons', couponRoutes);
 
 // 🟢 بدء السيرفر
 const PORT = process.env.PORT || 5000;

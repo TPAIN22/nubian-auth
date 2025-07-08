@@ -64,7 +64,20 @@ const orderSchema = new mongoose.Schema({
     orderNumber: {
     type: String,
     unique: true,
-}
+},
+coupon: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Coupon',
+    default: null
+},
+discountAmount: {
+    type: Number,
+    default: 0
+},
+finalAmount: {
+    type: Number,
+    default: 0
+},
 });
 
 orderSchema.pre('save', function (next) {
