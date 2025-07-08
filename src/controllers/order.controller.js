@@ -117,6 +117,11 @@ export const createOrder = async (req, res) => {
         const totalAmount = cart.products.reduce((sum, item) => {
             return sum + item.product.price * item.quantity;
         }, 0);
+        // دعم هيكل العنوان الجديد من الواجهة الأمامية (city, area, street, building, ...)
+        const delivery = req.body.deliveryAddress || {};
+        const addressString = delivery.address
+            || [delivery.area, delivery.street, delivery.building].filter(Boolean).join('، ')
+            || '';
         // إنشاء الطلب الجديد
         const order = await Order.create({
             user: user._id,
@@ -124,9 +129,9 @@ export const createOrder = async (req, res) => {
             totalAmount,
             paymentMethod: req.body.paymentMethod,
             orderNumber: formattedOrderNumber,
-            phoneNumber: req.body.deliveryAddress.phone,
-            city: req.body.deliveryAddress.city,
-            address: req.body.deliveryAddress.address
+            phoneNumber: delivery.phone,
+            city: delivery.city,
+            address: addressString
         });
         await Cart.findOneAndDelete({ user: user._id });
         if (!order) {
