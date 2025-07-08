@@ -1,3 +1,4 @@
+import User from '../models/user.model.js';
 import Wishlist from '../models/wishlist.model.js';
 import { getAuth } from '@clerk/express';
 
@@ -15,10 +16,11 @@ export const getWishlist = async (req, res) => {
 export const addToWishlist = async (req, res) => {
   const { userId } = getAuth(req);
   const { productId } = req.params;
+  const user = await User.findOne({ clerkId: userId });
   try {
-    let wishlist = await Wishlist.findOne({ user: userId });
+    let wishlist = await Wishlist.findOne({ user });
     if (!wishlist) {
-      wishlist = await Wishlist.create({ user: userId, products: [productId] });
+      wishlist = await Wishlist.create({ user, products: [productId] });
     } else if (!wishlist.products.includes(productId)) {
       wishlist.products.push(productId);
       await wishlist.save();
