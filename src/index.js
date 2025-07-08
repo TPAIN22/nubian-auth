@@ -14,6 +14,7 @@ import webhookRoutes from './routes/webhook.routes.js';
 import { clerkMiddleware } from '@clerk/express';
 import NotificationsRoutes from './routes/notifications.route.js';
 import bannerRoutes from './routes/banners.route.js';
+import wishlistRoutes from './routes/wishlist.route.js';
 dotenv.config();
 
 const app = express();
@@ -45,6 +46,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/brands', brandRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/banners', bannerRoutes);
+app.use('/api/wishlist', wishlistRoutes);
 
 // 🟢 بدء السيرفر
 const PORT = process.env.PORT || 5000;
