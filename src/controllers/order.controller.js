@@ -2,6 +2,7 @@ import Order from '../models/orders.model.js';
 import Cart from '../models/carts.model.js';
 import { getAuth } from '@clerk/express';
 import User from '../models/user.model.js';
+import { sendOrderEmail } from '../lib/mail.js';
 
 export const updateOrderStatus = async (req, res) => {
     try {
@@ -130,6 +131,23 @@ export const createOrder = async (req, res) => {
         await Cart.findOneAndDelete({ user: user._id });
         if (!order) {
             return res.status(404).json({ message: 'Order not found' });
+        }
+        // إرسال الإيميل للمستخدم بعد إنشاء الطلب
+        try {
+            await sendOrderEmail({
+                to: user.emailAddress || user.email, // دعم الحقلين
+                userName: user.fullName || user.name || '',
+                orderNumber: formattedOrderNumber,
+                status: 'بانتظار التأكيد',
+                totalAmount,
+                products: cart.products.map(item => ({
+                    name: item.product.name,
+                    quantity: item.quantity,
+                    price: item.product.price
+                }))
+            });
+        } catch (mailErr) {
+            console.error('فشل إرسال الإيميل:', mailErr);
         }
         res.status(201).json(order);
     } catch (error) {
