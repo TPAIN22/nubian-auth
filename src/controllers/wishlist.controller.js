@@ -20,7 +20,7 @@ export const addToWishlist = async (req, res) => {
   try {
     let wishlist = await Wishlist.findOne({ user: user._id });
     if (!wishlist) {
-      wishlist = await Wishlist.create({ user, products: [productId] });
+      wishlist = await Wishlist.create({ user:user._id , products: [productId] });
     } else if (!wishlist.products.includes(productId)) {
       wishlist.products.push(productId);
       await wishlist.save();
