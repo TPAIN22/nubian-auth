@@ -232,7 +232,14 @@ export const getOrders = async (req, res) => {
                 stock: item.product?.stock || 0,
                 quantity: item.quantity,
                 totalPrice: (item.product?.price || 0) * item.quantity
-            }))
+            })),
+            discountAmount: order.discountAmount,
+            finalAmount: order.finalAmount,
+            orderSummary: {
+                subtotal: order.totalAmount,
+                discount: order.discountAmount,
+                total: order.finalAmount
+            }
         }));
         res.status(200).json(enhancedOrders);
     } catch (error) {
@@ -282,11 +289,12 @@ export const getOrderById = async (req, res) => {
                 totalPrice: (item.product?.price || 0) * item.quantity,
                 isAvailable: (item.product?.stock || 0) > 0
             })),
+            discountAmount: order.discountAmount,
+            finalAmount: order.finalAmount,
             orderSummary: {
                 subtotal: order.totalAmount,
-                tax: 0, // يمكن إضافة حساب الضريبة هنا
-                shipping: 0, // يمكن إضافة رسوم الشحن هنا
-                total: order.totalAmount
+                discount: order.discountAmount,
+                total: order.finalAmount
             }
         };
 
