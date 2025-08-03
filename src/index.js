@@ -26,7 +26,7 @@ const app = express();
 // 🧩 middlewares العامة
 app.use(cors(
   {
-    origin: ['http://localhost:3000', "http://192.168.56.1:3000", 'http://localhost:3001', 'http://localhost:8081'],
+    origin: ['http://localhost:3000', "http://192.168.56.1:3000", 'http://localhost:3001', 'http://localhost:8081', "https://www.nubian-sd.store", "https://nubian-sd.store"],
     methods: ['GET', 'POST', 'PUT', 'DELETE' , 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
