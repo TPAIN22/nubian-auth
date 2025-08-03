@@ -161,7 +161,6 @@ export const updateCart = async (req, res) => {
   const sizeFromRequest = req.body.size;
   const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
 
-  console.log('updateCart called with:', { productId, quantity, sizeFromRequest, normalizedSize });
 
   if (!productId || !quantity) {
     return res
@@ -182,12 +181,6 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "Cart not found for this user." });
     }
 
-    console.log('Cart products before update:', cart.products.map(item => ({
-      productId: item.product.toString(),
-      size: item.size,
-      quantity: item.quantity
-    })));
-
     const productIndex = cart.products.findIndex(
       (item) => {
         // توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة
@@ -196,22 +189,13 @@ export const updateCart = async (req, res) => {
         const isProductIdMatch = item.product.toString() === productId.toString();
         const isSizeMatch = itemNormalizedSize === normalizedSize;
 
-        console.log('Comparing:', {
-          itemProductId: item.product.toString(),
-          requestProductId: productId.toString(),
-          itemSize: item.size,
-          itemNormalizedSize,
-          requestSize: sizeFromRequest,
-          normalizedSize,
-          isProductIdMatch,
-          isSizeMatch
-        });
+      
 
         return isProductIdMatch && isSizeMatch;
       }
     );
     
-    console.log('Product index found:', productIndex);
+    
     
     if (productIndex === -1) {
       return res
@@ -220,14 +204,12 @@ export const updateCart = async (req, res) => {
     }
     const currentItem = cart.products[productIndex];
     const newQuantity = currentItem.quantity + quantity;
-    console.log('Current quantity:', currentItem.quantity, 'Change:', quantity, 'New quantity:', newQuantity);
-    
     if (newQuantity <= 0) {
       cart.products.splice(productIndex, 1);
-      console.log('Product removed from cart');
+      
+      
     } else {
       cart.products[productIndex].quantity = newQuantity;
-      console.log('Product quantity updated');
     }
     cart.totalQuantity = cart.products.reduce(
       (acc, item) => acc + item.quantity,
