@@ -4,11 +4,14 @@ export const isAuthenticated = requireAuth(); // يحمي الراوت
 
 export const isAdmin = async (req, res, next) => {
   try {
-    const userId = req.auth.userId; // لاحظ هنا req.auth
+    const userId = req.auth.userId;
     const user = await clerkClient.users.getUser(userId);
 
+
     if (user.publicMetadata.role !== 'admin') {
+      console.log("unotherized")
       return res.status(403).json({ message: 'Admins only' });
+      
     }
 
     next();

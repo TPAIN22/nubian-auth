@@ -188,9 +188,6 @@ export const updateCart = async (req, res) => {
 
         const isProductIdMatch = item.product.toString() === productId.toString();
         const isSizeMatch = itemNormalizedSize === normalizedSize;
-
-      
-
         return isProductIdMatch && isSizeMatch;
       }
     );
