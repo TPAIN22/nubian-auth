@@ -62,22 +62,33 @@ const orderSchema = new mongoose.Schema({
         default: Date.now,
     },
     orderNumber: {
-    type: String,
-    unique: true,
-},
-coupon: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Coupon',
-    default: null
-},
-discountAmount: {
-    type: Number,
-    default: 0
-},
-finalAmount: {
-    type: Number,
-    default: 0
-},
+        type: String,
+        unique: true,
+    },
+    coupon: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Coupon',
+        default: null
+    },
+    discountAmount: {
+        type: Number,
+        default: 0
+    },
+    finalAmount: {
+        type: Number,
+        default: 0
+    },
+
+    // ⬇⬇⬇ الحقول الجديدة
+    marketer: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Marketer',
+        default: null
+    },
+    marketerCommission: {
+        type: Number,
+        default: 0
+    }
 });
 
 orderSchema.pre('save', function (next) {
