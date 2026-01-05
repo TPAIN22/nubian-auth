@@ -1,43 +1,34 @@
 # Use Node.js LTS version
-FROM node:20-alpine AS base
+FROM node:20-alpine
 
-# Install dependencies only when needed
-FROM base AS deps
-RUN apk add --no-cache libc6-compat
 WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache libc6-compat
+
+# Create non-root user first
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nodejs
 
 # Copy package files
 COPY package.json package-lock.json* ./
-RUN npm ci
 
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+# Install dependencies
+RUN npm ci --only=production && npm cache clean --force
 
-# Production image
-FROM base AS runner
-WORKDIR /app
+# Copy application files
+COPY --chown=nodejs:nodejs ./src ./src
 
-ENV NODE_ENV=production
-
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nodejs
-
-# Copy built application
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/package.json ./package.json
-
-# Create logs directory
-RUN mkdir -p logs && chown -R nodejs:nodejs logs
+# Create logs directory and set permissions for node_modules and logs
+RUN mkdir -p logs && \
+    chown -R nodejs:nodejs /app
 
 USER nodejs
 
-EXPOSE 5000
-
+ENV NODE_ENV=production
 ENV PORT=5000
+
+EXPOSE 5000
 
 CMD ["node", "src/index.js"]
 
