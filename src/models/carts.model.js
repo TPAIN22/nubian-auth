@@ -44,5 +44,8 @@ const cartSchema = new mongoose.Schema({
   },
 });
 
+// Indexes for frequently queried fields
+cartSchema.index({ user: 1 }, { unique: true }); // Each user has one cart, frequently queried
+
 const Cart = mongoose.model("Cart", cartSchema);
 export default Cart;

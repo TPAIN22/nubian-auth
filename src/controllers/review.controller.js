@@ -2,6 +2,7 @@ import Review from '../models/reviews.model.js'
 import Product from '../models/product.model.js'
 import User from '../models/user.model.js'
 import { getAuth } from '@clerk/express'
+import logger from '../lib/logger.js'
 
 export const getReviews = async (req, res) => {
     try {
@@ -34,8 +35,12 @@ export const getReviews = async (req, res) => {
         
         res.status(200).json(reviews)
     } catch (error) {
-        console.error('Error in getReviews:', error);
-        res.status(500).json({ message: error.message })
+        logger.error('Error in getReviews', {
+            requestId: req.requestId,
+            error: error.message,
+            stack: error.stack,
+        });
+        res.status(500).json({ message: 'Internal server error' })
     }
 }
 
@@ -107,7 +112,11 @@ export const getAllReviews = async (req, res) => {
         
         res.status(200).json(reviews)
     } catch (error) {
-        console.error('Error in getAllReviews:', error);
-        res.status(500).json({ message: error.message })
+        logger.error('Error in getAllReviews', {
+            requestId: req.requestId,
+            error: error.message,
+            stack: error.stack,
+        });
+        res.status(500).json({ message: 'Internal server error' })
     }
 }

@@ -34,7 +34,12 @@ const reviewSchema = new mongoose.Schema({
 reviewSchema.pre('save', function(next) {
     this.updatedAt = Date.now();
     next();
-}); 
+});
+
+// Indexes for frequently queried fields
+reviewSchema.index({ product: 1 }); // For filtering reviews by product
+reviewSchema.index({ user: 1 }); // For filtering reviews by user
+reviewSchema.index({ createdAt: -1 }); // For sorting by newest
 
 const Review = mongoose.model('Review', reviewSchema);
 

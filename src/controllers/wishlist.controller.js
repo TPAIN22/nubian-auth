@@ -1,6 +1,7 @@
 import User from '../models/user.model.js';
 import Wishlist from '../models/wishlist.model.js';
 import { getAuth } from '@clerk/express';
+import logger from '../lib/logger.js';
 
 export const getWishlist = async (req, res) => {
   try {
@@ -22,7 +23,11 @@ export const getWishlist = async (req, res) => {
 
     res.status(200).json(wishlist.products);
   } catch (error) {
-    console.error('Error in getWishlist:', error);
+    logger.error('Error in getWishlist', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
     res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -55,7 +60,12 @@ export const addToWishlist = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Product added to wishlist' });
   } catch (error) {
-    console.error('Error in addToWishlist:', error);
+    logger.error('Error in addToWishlist', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+      productId: req.params.productId,
+    });
     res.status(500).json({ message: 'Internal server error' });
   }
 };
@@ -88,7 +98,12 @@ export const removeFromWishlist = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Product removed from wishlist' });
   } catch (error) {
-    console.error('Error in removeFromWishlist:', error);
+    logger.error('Error in removeFromWishlist', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+      productId: req.params.productId,
+    });
     res.status(500).json({ message: 'Internal server error' });
   }
 }; 

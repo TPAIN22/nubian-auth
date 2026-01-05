@@ -5,6 +5,7 @@ import User from "../models/user.model.js";
 import { sendOrderEmail } from "../lib/mail.js";
 import Coupon from "../models/coupon.model.js";
 import Marketer from "../models/marketer.model.js";
+import logger from "../lib/logger.js";
 
 export const updateOrderStatus = async (req, res) => {
   try {
@@ -227,7 +228,12 @@ export const createOrder = async (req, res) => {
         })),
       });
     } catch (mailErr) {
-      console.error("فشل إرسال الإيميل:", mailErr);
+      logger.error("Failed to send order email", {
+        requestId: req.requestId,
+        error: mailErr.message,
+        stack: mailErr.stack,
+        orderNumber: formattedOrderNumber,
+      });
     }
 
     res.status(201).json(order);

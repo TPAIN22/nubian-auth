@@ -31,6 +31,12 @@ const productSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// Indexes for frequently queried fields
+productSchema.index({ category: 1 }); // For category filtering
+productSchema.index({ isActive: 1 }); // For active products filtering
+productSchema.index({ name: 'text', description: 'text' }); // Text search index
+productSchema.index({ createdAt: -1 }); // For sorting by newest
+
 const Product = mongoose.model('Product', productSchema);
 
 export default Product;

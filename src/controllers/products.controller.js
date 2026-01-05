@@ -1,8 +1,12 @@
 import Product from '../models/product.model.js'
 export const getProducts = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 100;
+    // Pagination validation with max limits
+    const MAX_LIMIT = 100;
+    const MAX_PAGE = 10000;
+    const DEFAULT_LIMIT = 100; // Maintain backward compatibility with existing API clients
+    const page = Math.max(1, Math.min(parseInt(req.query.page) || 1, MAX_PAGE));
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
     const skip = (page - 1) * limit;
 
     const { category } = req.query;

@@ -30,5 +30,9 @@ const userSchema = new mongoose.Schema({
   }
 } , {timestamps:true});
 
+// Indexes for frequently queried fields
+userSchema.index({ clerkId: 1 }, { unique: true }); // Already unique, but explicit index
+userSchema.index({ emailAddress: 1 }); // For email lookups
+
 const User = mongoose.model("User", userSchema);
 export default User;

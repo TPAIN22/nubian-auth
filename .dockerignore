@@ -1,0 +1,14 @@
+node_modules
+npm-debug.log
+.env
+.env.local
+.env.*.local
+logs
+*.log
+.DS_Store
+.git
+.gitignore
+README.md
+.prettierrc
+.eslintrc*
+

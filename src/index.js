@@ -1,6 +1,8 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { connect } from './lib/db.js';
 
 import productRoutes from './routes/products.route.js';
@@ -17,25 +19,88 @@ import bannerRoutes from './routes/banners.route.js';
 import wishlistRoutes from './routes/wishlist.route.js';
 import addressRoutes from './routes/address.route.js';
 import couponRoutes from './routes/coupons.route.js';
+import healthRoutes from './routes/health.route.js';
+import { requestLogger } from './middleware/logger.middleware.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
+import logger from './lib/logger.js';
+import { validateEnv } from './lib/envValidator.js';
 dotenv.config();
+
+// Validate environment variables on startup
+try {
+  validateEnv();
+} catch (error) {
+  logger.error('Environment validation failed', { error: error.message });
+  process.exit(1);
+}
 
 const app = express();
 
-// 🛡️ Clerk middleware لتفعيل التوثيق
+// 🛡️ Security: Helmet.js for security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Disable if causing issues with external resources
+}));
 
-// 🧩 middlewares العامة
+// 🛡️ Security: Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
+// Stricter rate limit for authentication-related endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 requests per windowMs
+  message: 'Too many authentication attempts, please try again later.',
+});
+
+// 🧩 CORS Configuration (configurable via environment variables)
+const corsOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+  : ['http://localhost:3000', 'http://localhost:3001', 'https://www.nubian-sd.store', 'https://nubian-sd.store'];
+
 app.use(cors(
   {
-    origin: ['http://localhost:3000', "http://192.168.56.1:3000", 'http://localhost:3001', 'http://localhost:8081', "https://www.nubian-sd.store", "https://nubian-sd.store"],
-    methods: ['GET', 'POST', 'PUT', 'DELETE' , 'PATCH'],
+    origin: corsOrigins,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true
   }
 ));
-app.get("/ping", (_, res) => res.send("pong"));
-app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
 
-app.use(express.json());
+// Request logging middleware (must be before routes)
+app.use(requestLogger);
+
+// Health check endpoints (before authentication and body parsing)
+app.use('/', healthRoutes);
+app.get("/ping", (_, res) => res.send("pong"));
+
+// ⚠️ IMPORTANT: Webhook routes must be registered BEFORE express.json()
+// Webhooks need raw body for signature verification - express.json() consumes the body stream
+// Apply stricter rate limiting to authentication-related endpoints
+// Webhooks handle authentication events (user.created, user.updated, user.deleted)
+app.use('/api/webhooks', authLimiter, express.raw({ type: 'application/json' }), webhookRoutes);
+
+// 🛡️ Security: Request size limits (prevent large payload attacks)
+// Register body parsers AFTER webhook routes so webhooks can access raw body
+// These parsers will apply to all subsequent routes
+app.use(express.json({ limit: '10mb' })); // Limit JSON payload to 10MB
+app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Limit URL-encoded payload to 10MB
+
+// Apply general rate limiting to all other API routes
+// This applies to routes that don't match the more specific routes above
+app.use('/api/', limiter);
 
 
 app.use(clerkMiddleware());
@@ -52,8 +117,34 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/coupons', couponRoutes);
 
+// 404 handler (must be before error handler)
+app.use(notFoundHandler);
+
+// Error handler middleware (must be last)
+app.use(errorHandler);
+
 // 🟢 بدء السيرفر
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
-  connect();
-});
+
+// Start server only after database connection is established
+(async () => {
+  try {
+    // Connect to database first
+    await connect();
+    
+    // Start server only after successful database connection
+    app.listen(PORT, '0.0.0.0', () => {
+      logger.info(`Server started on port ${PORT}`, { 
+        port: PORT, 
+        env: process.env.NODE_ENV || 'development',
+        database: 'connected'
+      });
+    });
+  } catch (error) {
+    logger.error('Failed to start server', {
+      error: error.message,
+      port: PORT,
+    });
+    process.exit(1);
+  }
+})();

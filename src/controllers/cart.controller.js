@@ -2,6 +2,7 @@ import Cart from "../models/carts.model.js";
 import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
 import Product from "../models/product.model.js";
+import logger from "../lib/logger.js";
 
 // GET USER'S CART
 export const getCart = async (req, res) => {
@@ -229,12 +230,15 @@ export const updateCart = async (req, res) => {
     );
     res.status(200).json(populatedCart);
   } catch (error) {
-    console.error('Error in updateCart:', error);
+    logger.error('Error in updateCart', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
     res
       .status(500)
       .json({
         message: "Server error while updating cart.",
-        error: error.message,
       });
   }
 };

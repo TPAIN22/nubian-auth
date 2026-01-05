@@ -39,6 +39,10 @@ categorySchema.pre('save', function(next) {
     next();
 });
 
+// Indexes for frequently queried fields
+categorySchema.index({ parent: 1 }); // For hierarchical category queries
+categorySchema.index({ isActive: 1 }); // For filtering active categories
+
 const Category = mongoose.model('Category', categorySchema);
 
 export default Category;
