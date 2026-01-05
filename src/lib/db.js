@@ -115,7 +115,6 @@ export const connect = async (retries = MAX_RETRIES) => {
       // Heartbeat settings
       heartbeatFrequencyMS: 10000, // Check server status every 10 seconds
       // Buffer settings
-      bufferMaxEntries: 0, // Disable mongoose buffering; throw immediately if not connected
       bufferCommands: false, // Disable mongoose buffering
     };
 
