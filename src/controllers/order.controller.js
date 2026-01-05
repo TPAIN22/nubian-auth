@@ -1,11 +1,14 @@
 import Order from "../models/orders.model.js";
 import Cart from "../models/carts.model.js";
+import Product from "../models/product.model.js";
+import Merchant from "../models/merchant.model.js";
 import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
 import { sendOrderEmail } from "../lib/mail.js";
 import Coupon from "../models/coupon.model.js";
 import Marketer from "../models/marketer.model.js";
 import logger from "../lib/logger.js";
+import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden } from '../lib/response.js';
 
 export const updateOrderStatus = async (req, res) => {
   try {
@@ -19,25 +22,39 @@ export const updateOrderStatus = async (req, res) => {
 
     if (status !== undefined) {
       if (!allowedStatuses.includes(status)) {
-        return res.status(400).json({ message: "Invalid status value" });
+        return sendError(res, {
+          message: "Invalid status value",
+          code: 'INVALID_STATUS',
+          statusCode: 400,
+          details: { allowedStatuses },
+        });
       }
       updateData.status = status;
     }
 
     if (paymentStatus !== undefined) {
       if (!allowedPaymentStatus.includes(paymentStatus)) {
-        return res.status(400).json({ message: "Invalid payment status value" });
+        return sendError(res, {
+          message: "Invalid payment status value",
+          code: 'INVALID_PAYMENT_STATUS',
+          statusCode: 400,
+          details: { allowedPaymentStatus },
+        });
       }
       updateData.paymentStatus = paymentStatus;
     }
 
     if (Object.keys(updateData).length === 0) {
-      return res.status(400).json({ message: "No valid data to update" });
+      return sendError(res, {
+        message: "No valid data to update",
+        code: 'NO_UPDATE_DATA',
+        statusCode: 400,
+      });
     }
 
     const oldOrder = await Order.findById(id);
     if (!oldOrder) {
-      return res.status(404).json({ message: "Order not found" });
+      return sendNotFound(res, 'Order');
     }
 
     const order = await Order.findByIdAndUpdate(id, updateData, { new: true })
@@ -62,9 +79,13 @@ export const updateOrderStatus = async (req, res) => {
       }
     }
 
-    res.status(200).json(order);
+    return sendSuccess(res, {
+      data: order,
+      message: 'Order status updated successfully',
+    });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    // Let error handler middleware handle the response
+    throw error;
   }
 };
 
@@ -127,7 +148,12 @@ export const createOrder = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const cart = await Cart.findOne({ user: user._id }).populate("products.product");
+    const cart = await Cart.findOne({ user: user._id }).populate({
+      path: "products.product",
+      populate: {
+        path: "merchant",
+      },
+    });
     if (!cart || cart.products.length === 0) {
       return res.status(400).json({ message: "Cart is empty or not found" });
     }
@@ -140,6 +166,60 @@ export const createOrder = async (req, res) => {
     let totalAmount = cart.products.reduce((sum, item) => {
       return sum + item.product.price * item.quantity;
     }, 0);
+
+    // Track merchants and calculate merchant revenue
+    const merchantMap = new Map(); // merchantId -> { amount, products }
+    const merchantIds = new Set();
+    const unmerchantedProducts = []; // Track products without merchants
+    let merchantTotalAmount = 0; // Total amount from products WITH merchants
+    let platformTotalAmount = 0; // Total amount from products WITHOUT merchants
+    
+    for (const item of cart.products) {
+      const productMerchant = item.product.merchant;
+      const itemTotal = item.product.price * item.quantity;
+      
+      if (productMerchant) {
+        const merchantId = productMerchant._id ? productMerchant._id.toString() : productMerchant.toString();
+        merchantIds.add(merchantId);
+        merchantTotalAmount += itemTotal;
+        
+        if (!merchantMap.has(merchantId)) {
+          merchantMap.set(merchantId, { amount: 0, products: [] });
+        }
+        const merchantData = merchantMap.get(merchantId);
+        merchantData.amount += itemTotal;
+        merchantData.products.push({
+          product: item.product._id,
+          quantity: item.quantity,
+          price: item.product.price,
+        });
+      } else {
+        // Track products without merchants
+        platformTotalAmount += itemTotal;
+        unmerchantedProducts.push({
+          product: item.product._id,
+          name: item.product.name,
+          quantity: item.quantity,
+          price: item.product.price,
+          total: itemTotal,
+        });
+      }
+    }
+
+    // Log warning if unmerchanted products are found
+    if (unmerchantedProducts.length > 0) {
+      logger.warn('Order contains products without merchants', {
+        requestId: req.requestId,
+        orderNumber: formattedOrderNumber,
+        unmerchantedCount: unmerchantedProducts.length,
+        platformTotalAmount,
+        products: unmerchantedProducts.map(p => ({
+          productId: p.product.toString(),
+          name: p.name,
+          quantity: p.quantity,
+        })),
+      });
+    }
 
     let discountAmount = 0;
     let couponId = null;
@@ -188,6 +268,36 @@ export const createOrder = async (req, res) => {
     let finalAmount = totalAmount - discountAmount;
     if (finalAmount < 0) finalAmount = 0;
 
+    // Calculate merchant revenue (proportional to their products' share)
+    // Only apply discount to merchant products, not platform products
+    const merchantRevenue = Array.from(merchantMap.entries()).map(([merchantId, data]) => {
+      // Calculate merchant's share of the discount proportionally
+      // Use merchantTotalAmount instead of totalAmount to exclude platform products from discount calculation
+      // This ensures discounts only reduce merchant revenue, not platform revenue
+      const merchantDiscount = merchantTotalAmount > 0 
+        ? (data.amount / merchantTotalAmount) * discountAmount
+        : 0;
+      const merchantFinalAmount = data.amount - merchantDiscount;
+      
+      return {
+        merchant: merchantId,
+        amount: Math.max(0, merchantFinalAmount),
+      };
+    });
+
+    // Log data integrity check
+    if (merchantTotalAmount + platformTotalAmount !== totalAmount) {
+      logger.error('Order amount mismatch detected', {
+        requestId: req.requestId,
+        orderNumber: formattedOrderNumber,
+        totalAmount,
+        merchantTotalAmount,
+        platformTotalAmount,
+        sum: merchantTotalAmount + platformTotalAmount,
+        difference: totalAmount - (merchantTotalAmount + platformTotalAmount),
+      });
+    }
+
     const delivery = req.body.deliveryAddress || {};
     const addressString =
       delivery.address ||
@@ -210,6 +320,8 @@ export const createOrder = async (req, res) => {
         ? (await Marketer.findOne({ code: req.body.marketerCode.toUpperCase() }))?._id
         : null,
       marketerCommission: 0, // هتحسب لاحقًا عند التسليم
+      merchants: Array.from(merchantIds),
+      merchantRevenue: merchantRevenue,
     });
 
     await Cart.findOneAndDelete({ user: user._id });
@@ -361,6 +473,139 @@ export const getOrderStats = async (req, res) => {
       totalOrders,
       totalRevenue: totalRevenue[0]?.total || 0,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Get merchant's orders
+export const getMerchantOrders = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    
+    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    if (!merchant) {
+      return res.status(403).json({ message: 'Merchant not found or not approved' });
+    }
+    
+    const { status } = req.query;
+    
+    // Build filter - status is validated by middleware
+    const filter = { merchants: merchant._id };
+    if (status) {
+      filter.status = status; // Safe: validated as one of allowed statuses
+    }
+    
+    const orders = await Order.find(filter)
+      .populate({
+        path: 'user',
+        select: 'fullName emailAddress phoneNumber',
+      })
+      .populate({
+        path: 'products.product',
+        select: 'name price images category description stock merchant',
+        populate: {
+          path: 'merchant',
+          select: 'businessName',
+        },
+      })
+      .sort({ orderDate: -1 });
+    
+    // Filter products to only show merchant's products and calculate merchant revenue
+    const enhancedOrders = orders.map((order) => {
+      const merchantProducts = order.products.filter((item) => {
+        const productMerchant = item.product?.merchant;
+        return productMerchant && productMerchant._id.toString() === merchant._id.toString();
+      });
+      
+      const merchantRevenueEntry = order.merchantRevenue?.find(
+        (mr) => mr.merchant.toString() === merchant._id.toString()
+      );
+      
+      const merchantOrderTotal = merchantProducts.reduce((sum, item) => {
+        return sum + (item.product?.price || 0) * item.quantity;
+      }, 0);
+      
+      return {
+        ...order.toObject(),
+        products: merchantProducts,
+        productsCount: merchantProducts.length,
+        merchantRevenue: merchantRevenueEntry?.amount || merchantOrderTotal,
+        customerInfo: {
+          name: order.user?.fullName || 'غير محدد',
+          email: order.user?.emailAddress || 'غير محدد',
+          phone: order.phoneNumber,
+        },
+        productsDetails: merchantProducts.map((item) => ({
+          productId: item.product?._id || null,
+          name: item.product?.name || '',
+          price: item.product?.price || 0,
+          images: item.product?.images || [],
+          quantity: item.quantity,
+          totalPrice: (item.product?.price || 0) * item.quantity,
+        })),
+      };
+    });
+    
+    res.status(200).json(enhancedOrders);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Get merchant order statistics
+export const getMerchantOrderStats = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    
+    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    if (!merchant) {
+      return res.status(403).json({ message: 'Merchant not found or not approved' });
+    }
+    
+    const orders = await Order.find({ merchants: merchant._id })
+      .populate('products.product', 'merchant price');
+    
+    const stats = {
+      totalOrders: orders.length,
+      totalRevenue: 0,
+      statusStats: {
+        pending: 0,
+        confirmed: 0,
+        shipped: 0,
+        delivered: 0,
+        cancelled: 0,
+      },
+      revenueByStatus: {
+        pending: 0,
+        confirmed: 0,
+        shipped: 0,
+        delivered: 0,
+        cancelled: 0,
+      },
+    };
+    
+    orders.forEach((order) => {
+      const merchantRevenueEntry = order.merchantRevenue?.find(
+        (mr) => mr.merchant.toString() === merchant._id.toString()
+      );
+      
+      const merchantRevenue = merchantRevenueEntry?.amount || 0;
+      
+      stats.totalRevenue += merchantRevenue;
+      stats.statusStats[order.status] = (stats.statusStats[order.status] || 0) + 1;
+      stats.revenueByStatus[order.status] = (stats.revenueByStatus[order.status] || 0) + merchantRevenue;
+    });
+    
+    res.status(200).json(stats);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

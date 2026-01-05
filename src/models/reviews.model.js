@@ -40,6 +40,13 @@ reviewSchema.pre('save', function(next) {
 reviewSchema.index({ product: 1 }); // For filtering reviews by product
 reviewSchema.index({ user: 1 }); // For filtering reviews by user
 reviewSchema.index({ createdAt: -1 }); // For sorting by newest
+reviewSchema.index({ rating: -1 }); // For sorting by rating
+
+// Compound indexes for common query patterns
+reviewSchema.index({ product: 1, createdAt: -1 }); // Product reviews sorted by newest
+reviewSchema.index({ product: 1, rating: -1 }); // Product reviews sorted by rating
+reviewSchema.index({ user: 1, createdAt: -1 }); // User reviews sorted by newest
+reviewSchema.index({ product: 1, user: 1 }, { unique: true }); // One review per user per product
 
 const Review = mongoose.model('Review', reviewSchema);
 

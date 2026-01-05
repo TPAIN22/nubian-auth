@@ -88,7 +88,23 @@ const orderSchema = new mongoose.Schema({
     marketerCommission: {
         type: Number,
         default: 0
-    }
+    },
+    // Merchant tracking - array of merchants whose products are in this order
+    merchants: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Merchant',
+    }],
+    // Merchant revenue breakdown - how much each merchant earned from this order
+    merchantRevenue: [{
+        merchant: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Merchant',
+        },
+        amount: {
+            type: Number,
+            default: 0,
+        },
+    }],
 });
 
 orderSchema.pre('save', function (next) {
@@ -100,8 +116,19 @@ orderSchema.pre('save', function (next) {
 orderSchema.index({ user: 1 }); // Frequently queried for user orders
 orderSchema.index({ orderNumber: 1 }, { unique: true }); // Already unique, but explicit index
 orderSchema.index({ status: 1 }); // For filtering by status
+orderSchema.index({ merchants: 1 }); // For filtering by merchant
 orderSchema.index({ orderDate: -1 }); // For sorting by newest orders
 orderSchema.index({ createdAt: -1 }); // For sorting by creation date
+orderSchema.index({ paymentStatus: 1 }); // For filtering by payment status
+
+// Compound indexes for common query patterns
+orderSchema.index({ user: 1, status: 1 }); // User orders by status (e.g., get user's pending orders)
+orderSchema.index({ user: 1, orderDate: -1 }); // User orders sorted by date
+orderSchema.index({ merchants: 1, status: 1 }); // Merchant orders by status (e.g., merchant's pending orders)
+orderSchema.index({ merchants: 1, orderDate: -1 }); // Merchant orders sorted by date
+orderSchema.index({ status: 1, paymentStatus: 1 }); // Orders by status and payment status
+orderSchema.index({ status: 1, orderDate: -1 }); // Orders by status sorted by date
+orderSchema.index({ marketer: 1, status: 1 }); // Marketer orders by status
 
 const Order = mongoose.model('Order', orderSchema);
 

@@ -26,6 +26,11 @@ const marketerSchema = new mongoose.Schema({
         default: Date.now
     }
 });
+
+// Indexes for frequently queried fields
+marketerSchema.index({ code: 1 }, { unique: true }); // Already unique, but explicit index for code lookups
+marketerSchema.index({ createdAt: -1 }); // For sorting by creation date
+
 const Marketer = mongoose.model('Marketer', marketerSchema);
 
 export default Marketer; 

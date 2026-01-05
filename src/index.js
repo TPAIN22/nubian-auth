@@ -19,6 +19,7 @@ import bannerRoutes from './routes/banners.route.js';
 import wishlistRoutes from './routes/wishlist.route.js';
 import addressRoutes from './routes/address.route.js';
 import couponRoutes from './routes/coupons.route.js';
+import merchantRoutes from './routes/merchant.route.js';
 import healthRoutes from './routes/health.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
@@ -66,16 +67,37 @@ const authLimiter = rateLimit({
 });
 
 // 🧩 CORS Configuration (configurable via environment variables)
+// CORS_ORIGINS can be set in .env as comma-separated list
+// Example: CORS_ORIGINS=http://localhost:3000,https://nubian-sd.store
 const corsOrigins = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)
   : ['http://localhost:3000', 'http://localhost:3001', 'https://www.nubian-sd.store', 'https://nubian-sd.store'];
+
+logger.info('CORS configuration', {
+  origins: corsOrigins,
+  count: corsOrigins.length,
+  configured: !!process.env.CORS_ORIGINS,
+});
 
 app.use(cors(
   {
-    origin: corsOrigins,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (corsOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        logger.warn('CORS blocked origin', { origin, allowedOrigins: corsOrigins });
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-ID'],
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+    maxAge: 86400, // 24 hours
   }
 ));
 
@@ -103,7 +125,11 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Limit URL-enc
 app.use('/api/', limiter);
 
 
-app.use(clerkMiddleware());
+// Configure Clerk middleware to handle Bearer tokens from Authorization header
+app.use(clerkMiddleware({
+  // Clerk will automatically check Authorization header for Bearer tokens
+  // This allows both session-based and token-based authentication
+}));
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', NotificationsRoutes);
 app.use('/api/carts', cartRoutes); 
@@ -116,6 +142,7 @@ app.use('/api/banners', bannerRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/coupons', couponRoutes);
+app.use('/api/merchants', merchantRoutes);
 
 // 404 handler (must be before error handler)
 app.use(notFoundHandler);
