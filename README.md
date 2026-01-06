@@ -122,7 +122,7 @@ The server will start on `http://localhost:5000` (or the PORT specified in your 
 - `GET /api/reviews/all` - Get all reviews (admin only)
 
 ### Other Endpoints
-- Categories, Brands, Coupons, Wishlist, Addresses, Banners, Notifications
+- Categories, merchant, Coupons, Wishlist, Addresses, Banners, Notifications
 
 ## Security Features
 

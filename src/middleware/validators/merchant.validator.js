@@ -47,3 +47,15 @@ export const validateMerchantStatusUpdate = [
   handleValidationErrors,
 ];
 
+/**
+ * Validation for merchant suspension
+ */
+export const validateMerchantSuspension = [
+  body('suspensionReason')
+    .trim()
+    .escape()
+    .isLength({ min: 1, max: 500 })
+    .withMessage('Suspension reason is required and must be less than 500 characters'),
+  handleValidationErrors,
+];
+

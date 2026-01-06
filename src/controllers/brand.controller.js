@@ -1,10 +1,10 @@
-import Brand from '../models/brands.model.js'
+import Brand from '../models/merchant.model.js'
 
 // الحصول على كل العلامات التجارية
-export const getBrands = async (req, res) => {
+export const getmerchant = async (req, res) => {
     try {
-        const brands = await Brand.find()
-        res.status(200).json(brands)
+        const merchant = await Brand.find()
+        res.status(200).json(merchant)
     } catch (error) {
         res.status(500).json({ message: error.message })
     }

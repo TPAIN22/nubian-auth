@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const brandSchema = new mongoose.Schema({
+const merchantchema = new mongoose.Schema({
     name: {
         type: String,
         required: true,
@@ -29,11 +29,11 @@ const brandSchema = new mongoose.Schema({
     },
 });
 
-brandSchema.pre('save', function(next) {
+merchantchema.pre('save', function(next) {
     this.updatedAt = Date.now();
     next();
 });
 
-const Brand = mongoose.model('Brand', brandSchema);
+const Brand = mongoose.model('Brand', merchantchema);
 export default Brand;
 

@@ -34,4 +34,115 @@ export async function sendOrderEmail({ to, userName, orderNumber, status, totalA
     subject: `تم إنشاء طلبك رقم #${orderNumber}`,
     html,
   });
+}
+
+/**
+ * Send merchant suspension notification email
+ * @param {Object} params
+ * @param {string} params.to - Merchant email address
+ * @param {string} params.businessName - Merchant business name
+ * @param {string} params.suspensionReason - Reason for suspension
+ * @param {Date} params.suspendedAt - Suspension date
+ */
+export async function sendMerchantSuspensionEmail({ to, businessName, suspensionReason, suspendedAt }) {
+  const html = `
+    <div dir="rtl" style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background-color: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+        <h2 style="color: #856404; margin-top: 0;">⚠️ تم تعليق حسابك التجاري</h2>
+      </div>
+      
+      <p>مرحباً <b>${businessName}</b>,</p>
+      
+      <p>نود إعلامك بأن حسابك التجاري قد تم تعليقه من قبل الإدارة.</p>
+      
+      <div style="background-color: #f8f9fa; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+        <h3 style="margin-top: 0; color: #856404;">سبب التعليق:</h3>
+        <p style="margin-bottom: 0;">${suspensionReason}</p>
+      </div>
+      
+      <p><strong>تاريخ التعليق:</strong> ${new Date(suspendedAt).toLocaleDateString('ar-SA', { 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })}</p>
+      
+      <div style="background-color: #e7f3ff; border-left: 4px solid #2196F3; padding: 15px; margin: 20px 0;">
+        <h3 style="margin-top: 0; color: #1976D2;">ما الذي يعنيه هذا؟</h3>
+        <ul>
+          <li>لن تتمكن من إضافة أو تعديل المنتجات</li>
+          <li>لن تتمكن من إدارة الطلبات</li>
+          <li>سيتم إخفاء منتجاتك مؤقتاً من الموقع</li>
+        </ul>
+      </div>
+      
+      <p>إذا كان لديك أي استفسارات أو ترغب في مناقشة سبب التعليق، يرجى التواصل معنا.</p>
+      
+      <p>مع أطيب التحيات،<br>فريق نوبيان</p>
+      
+      <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+      <p style="color: #666; font-size: 12px;">هذه رسالة تلقائية، يرجى عدم الرد على هذا البريد الإلكتروني.</p>
+    </div>
+  `;
+  
+  try {
+    return await resend.emails.send({
+      from: 'Nubian <nubiang@nubian-sd.info>',
+      to,
+      subject: `تم تعليق حسابك التجاري - ${businessName}`,
+      html,
+    });
+  } catch (error) {
+    console.error('Error sending suspension email:', error);
+    throw error;
+  }
+}
+
+/**
+ * Send merchant unsuspension notification email
+ * @param {Object} params
+ * @param {string} params.to - Merchant email address
+ * @param {string} params.businessName - Merchant business name
+ */
+export async function sendMerchantUnsuspensionEmail({ to, businessName }) {
+  const html = `
+    <div dir="rtl" style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background-color: #d4edda; border: 1px solid #28a745; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+        <h2 style="color: #155724; margin-top: 0;">✅ تم إلغاء تعليق حسابك التجاري</h2>
+      </div>
+      
+      <p>مرحباً <b>${businessName}</b>,</p>
+      
+      <p>نود إعلامك بأن تعليق حسابك التجاري قد تم إلغاؤه، ويمكنك الآن متابعة نشاطك التجاري بشكل طبيعي.</p>
+      
+      <div style="background-color: #e7f3ff; border-left: 4px solid #2196F3; padding: 15px; margin: 20px 0;">
+        <h3 style="margin-top: 0; color: #1976D2;">يمكنك الآن:</h3>
+        <ul>
+          <li>إضافة وتعديل المنتجات</li>
+          <li>إدارة الطلبات</li>
+          <li>متابعة مبيعاتك</li>
+        </ul>
+      </div>
+      
+      <p>نشكرك على صبرك وتعاونك.</p>
+      
+      <p>مع أطيب التحيات،<br>فريق نوبيان</p>
+      
+      <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+      <p style="color: #666; font-size: 12px;">هذه رسالة تلقائية، يرجى عدم الرد على هذا البريد الإلكتروني.</p>
+    </div>
+  `;
+  
+  try {
+    return await resend.emails.send({
+      from: 'Nubian <nubiang@nubian-sd.info>',
+      to,
+      subject: `تم إلغاء تعليق حسابك التجاري - ${businessName}`,
+      html,
+    });
+  } catch (error) {
+    console.error('Error sending unsuspension email:', error);
+    throw error;
+  }
 } 

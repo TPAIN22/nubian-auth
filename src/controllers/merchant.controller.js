@@ -1,8 +1,10 @@
 import Merchant from "../models/merchant.model.js";
+import Notify from "../models/notify.model.js";
 import { clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
 import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden } from '../lib/response.js';
+import { sendMerchantSuspensionEmail, sendMerchantUnsuspensionEmail } from '../lib/mail.js';
 
 /**
  * Apply to become a merchant
@@ -110,7 +112,7 @@ export const getAllMerchants = async (req, res) => {
     const { status } = req.query;
     
     const query = {};
-    if (status && ['PENDING', 'APPROVED', 'REJECTED'].includes(status)) {
+    if (status && ['PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED'].includes(status)) {
       query.status = status;
     }
 
@@ -281,6 +283,246 @@ export const getMyMerchantProfile = async (req, res) => {
       error: error.message,
     });
     res.status(500).json({ message: error.message });
+  }
+};
+
+/**
+ * Suspend merchant (Admin only)
+ */
+export const suspendMerchant = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+    const { suspensionReason } = req.body;
+
+    if (!suspensionReason || !suspensionReason.trim()) {
+      return sendError(res, {
+        message: "Suspension reason is required",
+        code: 'VALIDATION_ERROR',
+        statusCode: 400,
+      });
+    }
+
+    const merchant = await Merchant.findById(id);
+
+    if (!merchant) {
+      return sendNotFound(res, "Merchant not found");
+    }
+
+    if (merchant.status === "SUSPENDED") {
+      return sendError(res, {
+        message: "Merchant is already suspended",
+        code: 'ALREADY_SUSPENDED',
+        statusCode: 400,
+      });
+    }
+
+    if (merchant.status !== "APPROVED") {
+      return sendError(res, {
+        message: "Only approved merchants can be suspended",
+        code: 'INVALID_STATUS',
+        statusCode: 400,
+      });
+    }
+
+    // Update merchant status
+    merchant.status = "SUSPENDED";
+    merchant.suspensionReason = suspensionReason.trim();
+    merchant.suspendedAt = new Date();
+    await merchant.save();
+
+    logger.info('Merchant suspended', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      clerkId: merchant.clerkId,
+      suspendedBy: adminId,
+      reason: suspensionReason,
+    });
+
+    // Send email notification to merchant
+    try {
+      await sendMerchantSuspensionEmail({
+        to: merchant.businessEmail,
+        businessName: merchant.businessName,
+        suspensionReason: merchant.suspensionReason,
+        suspendedAt: merchant.suspendedAt,
+      });
+      logger.info('Suspension email sent to merchant', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        email: merchant.businessEmail,
+      });
+    } catch (emailError) {
+      logger.error('Failed to send suspension email', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: emailError.message,
+      });
+      // Don't fail the request if email fails
+    }
+
+    // Create in-app notification for merchant
+    try {
+      await Notify.create({
+        title: 'تم تعليق حسابك التجاري',
+        body: `تم تعليق حسابك التجاري "${merchant.businessName}". السبب: ${merchant.suspensionReason}`,
+        userId: merchant.clerkId,
+        read: false,
+      });
+      logger.info('Suspension notification created', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        clerkId: merchant.clerkId,
+      });
+    } catch (notifyError) {
+      logger.error('Failed to create suspension notification', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: notifyError.message,
+      });
+      // Don't fail the request if notification fails
+    }
+
+    return sendSuccess(res, merchant, "Merchant suspended successfully");
+  } catch (error) {
+    logger.error('Error suspending merchant', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Unsuspend merchant (Admin only)
+ */
+export const unsuspendMerchant = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+
+    const merchant = await Merchant.findById(id);
+
+    if (!merchant) {
+      return sendNotFound(res, "Merchant not found");
+    }
+
+    if (merchant.status !== "SUSPENDED") {
+      return sendError(res, {
+        message: "Merchant is not suspended",
+        code: 'NOT_SUSPENDED',
+        statusCode: 400,
+      });
+    }
+
+    // Restore merchant to approved status
+    merchant.status = "APPROVED";
+    merchant.suspensionReason = undefined;
+    merchant.suspendedAt = undefined;
+    await merchant.save();
+
+    logger.info('Merchant unsuspended', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      clerkId: merchant.clerkId,
+      unsuspendedBy: adminId,
+    });
+
+    // Send email notification to merchant
+    try {
+      await sendMerchantUnsuspensionEmail({
+        to: merchant.businessEmail,
+        businessName: merchant.businessName,
+      });
+      logger.info('Unsuspension email sent to merchant', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        email: merchant.businessEmail,
+      });
+    } catch (emailError) {
+      logger.error('Failed to send unsuspension email', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: emailError.message,
+      });
+      // Don't fail the request if email fails
+    }
+
+    // Create in-app notification for merchant
+    try {
+      await Notify.create({
+        title: 'تم إلغاء تعليق حسابك التجاري',
+        body: `تم إلغاء تعليق حسابك التجاري "${merchant.businessName}". يمكنك الآن متابعة نشاطك التجاري بشكل طبيعي.`,
+        userId: merchant.clerkId,
+        read: false,
+      });
+      logger.info('Unsuspension notification created', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        clerkId: merchant.clerkId,
+      });
+    } catch (notifyError) {
+      logger.error('Failed to create unsuspension notification', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: notifyError.message,
+      });
+      // Don't fail the request if notification fails
+    }
+
+    return sendSuccess(res, merchant, "Merchant unsuspended successfully");
+  } catch (error) {
+    logger.error('Error unsuspending merchant', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Delete merchant (Admin only)
+ */
+export const deleteMerchant = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+
+    const merchant = await Merchant.findById(id);
+
+    if (!merchant) {
+      return sendNotFound(res, "Merchant not found");
+    }
+
+    // Log before deletion for audit trail
+    logger.info('Merchant deletion initiated', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      clerkId: merchant.clerkId,
+      businessName: merchant.businessName,
+      status: merchant.status,
+      deletedBy: adminId,
+    });
+
+    // Delete the merchant
+    await Merchant.findByIdAndDelete(id);
+
+    logger.info('Merchant deleted successfully', {
+      requestId: req.requestId,
+      merchantId: id,
+      deletedBy: adminId,
+    });
+
+    return sendSuccess(res, { id }, "Merchant deleted successfully");
+  } catch (error) {
+    logger.error('Error deleting merchant', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
   }
 };
 
