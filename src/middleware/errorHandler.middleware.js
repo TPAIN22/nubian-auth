@@ -41,6 +41,10 @@ export const errorHandler = (err, req, res, next) => {
     statusCode = 401;
     code = 'UNAUTHORIZED';
     message = 'Authentication required';
+    // For mobile apps, provide clearer error message
+    if (!req.headers.origin) {
+      message = 'Invalid or expired authentication token. Please sign in again.';
+    }
   } else if (err.name === 'ForbiddenError') {
     statusCode = 403;
     code = 'FORBIDDEN';

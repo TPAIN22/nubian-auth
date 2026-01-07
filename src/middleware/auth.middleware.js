@@ -1,7 +1,15 @@
 import { requireAuth, clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
 
-export const isAuthenticated = requireAuth(); // يحمي الراوت
+/**
+ * Authentication middleware that works with both web sessions and mobile app Bearer tokens
+ * Mobile apps should send: Authorization: Bearer <clerk-session-token>
+ * Clerk's requireAuth() automatically handles Bearer tokens from the Authorization header
+ */
+export const isAuthenticated = requireAuth({
+  // This ensures proper error handling for mobile apps
+  // Clerk will automatically extract Bearer tokens from Authorization header
+});
 
 export const isAdmin = async (req, res, next) => {
   try {

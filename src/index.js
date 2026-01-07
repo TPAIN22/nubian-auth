@@ -82,10 +82,18 @@ logger.info('CORS configuration', {
 app.use(cors(
   {
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
+      // Allow requests with no origin (like mobile apps, React Native, or curl requests)
+      // Mobile apps don't send an origin header, so we must allow null origins
+      if (!origin) {
+        logger.debug('CORS: Allowing request with no origin (mobile app)', { 
+          hasOrigin: false,
+          userAgent: 'mobile-app'
+        });
+        return callback(null, true);
+      }
       
       if (corsOrigins.includes(origin)) {
+        logger.debug('CORS: Allowing origin', { origin });
         callback(null, true);
       } else {
         logger.warn('CORS blocked origin', { origin, allowedOrigins: corsOrigins });
@@ -93,11 +101,21 @@ app.use(cors(
       }
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Request-ID'],
+    allowedHeaders: [
+      'Content-Type', 
+      'Authorization', 
+      'X-Requested-With', 
+      'X-Request-ID',
+      'Accept',
+      'Accept-Language',
+      'Cache-Control'
+    ],
     credentials: true,
     preflightContinue: false,
     optionsSuccessStatus: 204,
     maxAge: 86400, // 24 hours
+    // Expose headers that mobile apps might need
+    exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining', 'X-RateLimit-Reset']
   }
 ));
 
@@ -126,9 +144,12 @@ app.use('/api/', limiter);
 
 
 // Configure Clerk middleware to handle Bearer tokens from Authorization header
+// This is essential for mobile app authentication
 app.use(clerkMiddleware({
   // Clerk will automatically check Authorization header for Bearer tokens
   // This allows both session-based and token-based authentication
+  // Mobile apps send tokens in the Authorization: Bearer <token> header
+  // The middleware will automatically extract and validate these tokens
 }));
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', NotificationsRoutes);
