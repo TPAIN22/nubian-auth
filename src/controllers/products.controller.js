@@ -3,6 +3,7 @@ import Merchant from '../models/merchant.model.js'
 import { getAuth } from '@clerk/express'
 import { clerkClient } from '@clerk/express'
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendForbidden } from '../lib/response.js'
+import logger from '../lib/logger.js'
 
 export const getProducts = async (req, res) => {
   try {
@@ -70,27 +71,106 @@ export const createProduct = async (req, res) => {
     try {
         const { userId } = getAuth(req);
         
-        // If user is a merchant, auto-assign merchant to product
-        if (userId) {
-            try {
-                const user = await clerkClient.users.getUser(userId);
-                if (user.publicMetadata?.role === 'merchant') {
-                    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
-                    if (merchant) {
-                        req.body.merchant = merchant._id;
-                    }
-                }
-            } catch (error) {
-                // If merchant lookup fails, continue without auto-assignment
+        if (!userId) {
+            return sendError(res, {
+                message: 'Unauthorized',
+                statusCode: 401,
+                code: 'UNAUTHORIZED',
+            });
+        }
+        
+        // Check user role and authorization
+        let user;
+        try {
+            user = await clerkClient.users.getUser(userId);
+        } catch (error) {
+            logger.error('Failed to get user from Clerk', { error: error.message, userId });
+            return sendError(res, {
+                message: 'Failed to verify user',
+                statusCode: 500,
+                code: 'USER_VERIFICATION_ERROR',
+            });
+        }
+        
+        const userRole = user.publicMetadata?.role;
+        
+        // Only allow admin or approved merchant to create products
+        if (userRole !== 'admin' && userRole !== 'merchant') {
+            logger.warn('Unauthorized product creation attempt', {
+                userId,
+                role: userRole,
+                url: req.url,
+            });
+            return sendForbidden(res, 'Only admins and merchants can create products');
+        }
+        
+        // If user is a merchant, check if they are approved
+        if (userRole === 'merchant') {
+            const merchant = await Merchant.findOne({ clerkId: userId });
+            
+            if (!merchant) {
+                logger.warn('Merchant not found in database', {
+                    userId,
+                    url: req.url,
+                });
+                return sendForbidden(res, 'Merchant profile not found. Please complete your merchant application.');
             }
+            
+            if (merchant.status !== 'APPROVED') {
+                logger.warn('Merchant not approved - product creation denied', {
+                    userId,
+                    merchantStatus: merchant.status,
+                    url: req.url,
+                });
+                return sendForbidden(res, `Merchant application status: ${merchant.status}. Only approved merchants can create products.`);
+            }
+            
+            // Auto-assign merchant to product
+            req.body.merchant = merchant._id;
+        }
+        
+        // Log received data for debugging
+        logger.info('Creating product', {
+            userId,
+            userRole,
+            merchantId: req.body.merchant,
+            hasCategory: !!req.body.category,
+            hasImages: Array.isArray(req.body.images),
+            imagesCount: Array.isArray(req.body.images) ? req.body.images.length : 0,
+        });
+        
+        // Validate required fields match schema
+        if (!req.body.category) {
+            return sendError(res, {
+                message: 'Category is required',
+                statusCode: 400,
+                code: 'VALIDATION_ERROR',
+            });
+        }
+        
+        if (!req.body.images || !Array.isArray(req.body.images) || req.body.images.length === 0) {
+            return sendError(res, {
+                message: 'At least one image is required',
+                statusCode: 400,
+                code: 'VALIDATION_ERROR',
+            });
         }
         
         const product = await Product.create(req.body)
-        await product.populate('merchant', 'businessName businessEmail')
+        
+        // Populate multiple fields - when using populate on a document (not query), need to await it
+        const populatedProduct = await Product.findById(product._id)
+            .populate('merchant', 'businessName businessEmail')
             .populate('category', 'name');
         
-        return sendCreated(res, product, 'Product created successfully');
+        return sendCreated(res, populatedProduct, 'Product created successfully');
     } catch (error) {
+        logger.error('Error creating product', {
+            error: error.message,
+            errorName: error.name,
+            errorStack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+            body: req.body,
+        });
         // Let error handler middleware handle the response
         throw error;
     }

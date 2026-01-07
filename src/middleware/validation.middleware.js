@@ -14,6 +14,7 @@ export const handleValidationErrors = (req, res, next) => {
       errors: errors.array(),
       method: req.method,
       url: req.url,
+      body: req.body, // Log the actual request body for debugging
     });
 
     return res.status(400).json({
