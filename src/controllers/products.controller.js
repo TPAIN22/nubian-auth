@@ -79,61 +79,25 @@ export const createProduct = async (req, res) => {
             });
         }
         
-        // Check user role and authorization
-        let user;
-        try {
-            user = await clerkClient.users.getUser(userId);
-        } catch (error) {
-            logger.error('Failed to get user from Clerk', { error: error.message, userId });
-            return sendError(res, {
-                message: 'Failed to verify user',
-                statusCode: 500,
-                code: 'USER_VERIFICATION_ERROR',
-            });
-        }
+        // Middleware (isAdminOrApprovedMerchant) already checked:
+        // - User is authenticated
+        // - User is either admin or approved merchant
+        // - If merchant, req.merchant is set and approved
         
-        const userRole = user.publicMetadata?.role;
-        
-        // Only allow admin or approved merchant to create products
-        if (userRole !== 'admin' && userRole !== 'merchant') {
-            logger.warn('Unauthorized product creation attempt', {
-                userId,
-                role: userRole,
-                url: req.url,
-            });
-            return sendForbidden(res, 'Only admins and merchants can create products');
+        // Auto-assign merchant to product if user is a merchant
+        // For admins, merchant field can be null or set explicitly
+        if (req.merchant) {
+            // User is an approved merchant - auto-assign merchant to product
+            req.body.merchant = req.merchant._id;
         }
-        
-        // If user is a merchant, check if they are approved
-        if (userRole === 'merchant') {
-            const merchant = await Merchant.findOne({ clerkId: userId });
-            
-            if (!merchant) {
-                logger.warn('Merchant not found in database', {
-                    userId,
-                    url: req.url,
-                });
-                return sendForbidden(res, 'Merchant profile not found. Please complete your merchant application.');
-            }
-            
-            if (merchant.status !== 'APPROVED') {
-                logger.warn('Merchant not approved - product creation denied', {
-                    userId,
-                    merchantStatus: merchant.status,
-                    url: req.url,
-                });
-                return sendForbidden(res, `Merchant application status: ${merchant.status}. Only approved merchants can create products.`);
-            }
-            
-            // Auto-assign merchant to product
-            req.body.merchant = merchant._id;
-        }
+        // For admins, req.merchant will be undefined, and merchant can be set explicitly or left null
         
         // Log received data for debugging
         logger.info('Creating product', {
             userId,
-            userRole,
-            merchantId: req.body.merchant,
+            isMerchant: !!req.merchant,
+            isAdmin: !req.merchant, // If no merchant, user is admin (middleware guarantees this)
+            merchantId: req.body.merchant || req.merchant?._id,
             hasCategory: !!req.body.category,
             hasImages: Array.isArray(req.body.images),
             imagesCount: Array.isArray(req.body.images) ? req.body.images.length : 0,

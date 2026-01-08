@@ -1,6 +1,6 @@
 import express from 'express'
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js'
-import { isApprovedMerchant } from '../middleware/merchant.middleware.js'
+import { isApprovedMerchant, isAdminOrApprovedMerchant } from '../middleware/merchant.middleware.js'
 import {
   getProducts,
   getProductById,
@@ -20,7 +20,7 @@ router.get('/', validatePagination, validateCategoryFilter, validateMerchantFilt
 router.get('/merchant/my-products', isAuthenticated, isApprovedMerchant, validatePagination, validateCategoryFilter, getMerchantProducts)
 router.get('/:id', ...validateObjectId('id'), getProductById)
 // Allow both admin and approved merchants to create products
-router.post('/', isAuthenticated, validateProductCreate, createProduct)
+router.post('/', isAuthenticated, isAdminOrApprovedMerchant, validateProductCreate, createProduct)
 // Allow both admin and approved merchants to update products (ownership checked in controller)
 router.put('/:id', isAuthenticated, ...validateObjectId('id'), validateProductUpdate, updateProduct)
 // Allow both admin and approved merchants to delete products (ownership checked in controller)
