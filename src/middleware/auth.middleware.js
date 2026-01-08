@@ -161,35 +161,9 @@ export const isAuthenticated = (req, res, next) => {
       });
     }
     
-    // If requireAuth doesn't call the callback and doesn't send a response,
-    // we need to handle it after a timeout to prevent hanging
-    // This is a safety measure for edge cases
-    setTimeout(() => {
-      if (!responseSent) {
-        // Restore original methods
-        res.end = originalEnd;
-        res.json = originalJson;
-        res.send = originalSend;
-        
-        logger.warn('requireAuth did not call callback or send response - sending 401', {
-          requestId: req.requestId,
-          url: req.url,
-          method: req.method,
-        });
-        
-        if (!res.headersSent) {
-          return res.status(401).json({
-            success: false,
-            error: {
-              code: "UNAUTHORIZED",
-              message: "Authentication required.",
-              requestId: req.requestId || 'unknown',
-            },
-            timestamp: new Date().toISOString(),
-          });
-        }
-      }
-    }, 5000); // 5 second timeout - should never happen, but safety net
+    // Note: requireAuth should always call the callback or send a response
+    // If it doesn't, there's an issue with Clerk configuration
+    // The error handlers above should catch all cases
     
   } catch (error) {
     // Restore original methods
