@@ -1,2 +1,7 @@
 node_modules
 .env
+
+# Log files - should not be committed to version control
+logs/
+*.log
+*.log.*
