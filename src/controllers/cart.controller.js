@@ -3,6 +3,16 @@ import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
 import Product from "../models/product.model.js";
 import logger from "../lib/logger.js";
+import { sendError, sendSuccess, sendNotFound, sendUnauthorized } from "../lib/response.js";
+import {
+  normalizeAttributes,
+  mergeSizeAndAttributes,
+  generateCartItemKey,
+  areAttributesEqual,
+  validateRequiredAttributes,
+  objectToMap,
+  mapToObject,
+} from "../utils/cartUtils.js";
 
 // GET USER'S CART
 export const getCart = async (req, res) => {
@@ -40,7 +50,7 @@ export const getCart = async (req, res) => {
       authData,
       reqAuth: req.auth,
     });
-    return res.status(401).json({ message: "Authentication required." });
+    return sendUnauthorized(res, "Authentication required.");
   }
   
   try {
@@ -51,27 +61,41 @@ export const getCart = async (req, res) => {
         userId,
         clerkId: userId,
       });
-      return res.status(404).json({ message: "User not found." });
+      return sendNotFound(res, "User");
     }
 
     const cart = await Cart.findOne({ user: user._id }).populate({
-    path:"products.product",
-    select:"name price images"
-    }
-    );
+      path: "products.product",
+      select: "name price images description stock sizes colors attributes",
+    });
 
     if (!cart) {
-      return res.status(404).json({ message: "Cart not found for this user." });
+      // Return empty cart structure instead of 404 for better UX
+      return sendSuccess(res, {
+        data: {
+          products: [],
+          totalQuantity: 0,
+          totalPrice: 0,
+        },
+        message: "Cart is empty",
+      });
     }
 
-    res.status(200).json(cart);
+    return sendSuccess(res, {
+      data: cart,
+      message: "Cart retrieved successfully",
+    });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Server error while fetching cart.",
-        error: error.message,
-      });
+    logger.error('Error fetching cart', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return sendError(res, {
+      message: "Server error while fetching cart.",
+      code: "INTERNAL_ERROR",
+      statusCode: 500,
+    });
   }
 };
 
@@ -120,14 +144,13 @@ export const addToCart = async (req, res) => {
         authData,
         reqAuth: req.auth,
       });
-      return res.status(401).json({ message: "Authentication required." });
+      return sendUnauthorized(res, "Authentication required.");
     }
 
-    const { productId, quantity } = req.body;
-    // 1. توحيد قيمة 'size' المستلمة من الطلب:
-    //    تحويلها إلى String، إزالة المسافات البيضاء، وتحويل 'null' أو 'undefined' إلى سلسلة نصية فارغة.
-    const sizeFromRequest = req.body.size;
-    const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
+    const { productId, quantity, size, attributes } = req.body;
+    
+    // Merge legacy size with new attributes format for backward compatibility
+    const mergedAttributes = mergeSizeAndAttributes(size, attributes);
 
     // Basic input validation
     if (!productId || !quantity) {
@@ -137,9 +160,11 @@ export const addToCart = async (req, res) => {
         hasProductId: !!productId,
         hasQuantity: !!quantity,
       });
-      return res
-        .status(400)
-        .json({ message: "Product ID and quantity are required." });
+      return sendError(res, {
+        message: "Product ID and quantity are required.",
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+      });
     }
     if (typeof quantity !== "number" || quantity <= 0) {
       logger.warn('Add to cart failed: Invalid quantity', {
@@ -149,9 +174,11 @@ export const addToCart = async (req, res) => {
         quantity,
         quantityType: typeof quantity,
       });
-      return res
-        .status(400)
-        .json({ message: "Quantity must be a positive number." });
+      return sendError(res, {
+        message: "Quantity must be a positive number.",
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+      });
     }
 
     // Find the user in your database
@@ -162,7 +189,7 @@ export const addToCart = async (req, res) => {
         userId,
         clerkId: userId,
       });
-      return res.status(404).json({ message: "User not found." });
+      return sendNotFound(res, "User");
     }
 
     // Check if the product exists and get its price
@@ -173,18 +200,46 @@ export const addToCart = async (req, res) => {
         userId,
         productId,
       });
-      return res.status(404).json({ message: "Product not found." });
+      return sendNotFound(res, "Product");
+    }
+
+    // Validate required attributes if product has attribute definitions
+    if (productExists.attributes && Array.isArray(productExists.attributes) && productExists.attributes.length > 0) {
+      const validation = validateRequiredAttributes(productExists.attributes, mergedAttributes);
+      if (!validation.valid) {
+        logger.warn('Add to cart failed: Missing required attributes', {
+          requestId: req.requestId,
+          userId,
+          productId,
+          missing: validation.missing,
+        });
+        return sendError(res, {
+          message: `Missing required attributes: ${validation.missing.join(', ')}`,
+          code: "VALIDATION_ERROR",
+          statusCode: 400,
+          details: { missingAttributes: validation.missing },
+        });
+      }
     }
 
     // Find the user's cart
     // **مهم:** لا تقم بعمل populate هنا. نحتاج إلى الـ ObjectId الخام للمقارنة.
     let cart = await Cart.findOne({ user: user._id });
 
+    // Generate cart item key for comparison
+    const newItemKey = generateCartItemKey(productId.toString(), mergedAttributes);
+
     // If no cart exists, create a new one
     if (!cart) {
+      const attributesMap = objectToMap(mergedAttributes);
       const newCart = new Cart({
         user: user._id,
-        products: [{ product: productId, quantity, size: normalizedSize }], // استخدم normalizedSize هنا
+        products: [{
+          product: productId,
+          quantity,
+          size: mergedAttributes.size || '', // Keep legacy size for backward compatibility
+          attributes: attributesMap,
+        }],
         totalQuantity: quantity,
         totalPrice: productExists.price * quantity,
       });
@@ -193,33 +248,45 @@ export const addToCart = async (req, res) => {
       // Populate the newly created cart before sending it back
       const populatedCart = await Cart.findById(newCart._id).populate({
         path: "products.product",
-        select: "name price images description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
+        select: "name price images description stock sizes colors attributes",
       });
-      return res.status(201).json(populatedCart);
+      return sendSuccess(res, {
+        data: populatedCart,
+        message: "Product added to cart successfully",
+        statusCode: 201,
+      });
     }
 
-    // If cart exists, check if the product (with the specific size) is already in it
+    // If cart exists, check if the product with the same attributes is already in it
+    const productIndex = cart.products.findIndex((item) => {
+      const isProductIdMatch = item.product.toString() === productId.toString();
+      if (!isProductIdMatch) return false;
 
-    const productIndex = cart.products.findIndex(
-      (item) => {
-        // 2. توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة:
-        const itemNormalizedSize = (item.size === null || item.size === undefined || String(item.size).toLowerCase() === 'null' || String(item.size).toLowerCase() === 'undefined' ? "" : String(item.size)).trim();
-
-        const isProductIdMatch = item.product.toString() === productId.toString();
-        const isSizeMatch = itemNormalizedSize === normalizedSize;
-
-
-        return isProductIdMatch && isSizeMatch;
+      // Get attributes from item (support both new Map format and legacy size)
+      let itemAttributes = {};
+      if (item.attributes && item.attributes instanceof Map) {
+        itemAttributes = mapToObject(item.attributes);
+      } else if (item.size) {
+        // Legacy: convert size to attributes format
+        itemAttributes = { size: item.size };
       }
-    );
 
+      // Compare attributes
+      return areAttributesEqual(itemAttributes, mergedAttributes);
+    });
 
     if (productIndex > -1) {
-      // Product with the same ID and size exists, update its quantity
+      // Product with the same ID and attributes exists, update its quantity
       cart.products[productIndex].quantity += quantity;
     } else {
-      // Product not found or has a different size, add it as a new item
-      cart.products.push({ product: productId, quantity, size: normalizedSize }); // استخدم normalizedSize هنا
+      // Product not found or has different attributes, add it as a new item
+      const attributesMap = objectToMap(mergedAttributes);
+      cart.products.push({
+        product: productId,
+        quantity,
+        size: mergedAttributes.size || '', // Keep legacy size for backward compatibility
+        attributes: attributesMap,
+      });
     }
 
     // Recalculate total quantity and total price for the entire cart
@@ -245,16 +312,23 @@ export const addToCart = async (req, res) => {
     // Populate the updated cart before sending the response
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
-      select: "name price images description stock sizes", // تأكد من تحديد كل الحقول التي تحتاجها هنا
+      select: "name price images description stock sizes colors attributes",
     });
-    res.status(200).json(populatedCart);
+    return sendSuccess(res, {
+      data: populatedCart,
+      message: "Product added to cart successfully",
+    });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Server error while adding item to cart.",
-        error: error.message,
-      });
+    logger.error('Error adding to cart', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return sendError(res, {
+      message: "Server error while adding item to cart.",
+      code: "INTERNAL_ERROR",
+      statusCode: 500,
+    });
   }
 };
 
@@ -269,12 +343,10 @@ export const updateCart = async (req, res) => {
     return res.status(401).json({ message: "Authentication required." });
   }
   
-  const { productId, quantity } = req.body;
+  const { productId, quantity, size, attributes } = req.body;
   
-  // توحيد قيمة 'size' المستلمة من الطلب
-  const sizeFromRequest = req.body.size;
-  const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
-
+  // Merge legacy size with new attributes format
+  const mergedAttributes = mergeSizeAndAttributes(size, attributes);
 
   if (!productId || !quantity) {
     return res
@@ -295,16 +367,22 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "Cart not found for this user." });
     }
 
-    const productIndex = cart.products.findIndex(
-      (item) => {
-        // توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة
-        const itemNormalizedSize = (item.size === null || item.size === undefined || String(item.size).toLowerCase() === 'null' || String(item.size).toLowerCase() === 'undefined' ? "" : String(item.size)).trim();
+    const productIndex = cart.products.findIndex((item) => {
+      const isProductIdMatch = item.product.toString() === productId.toString();
+      if (!isProductIdMatch) return false;
 
-        const isProductIdMatch = item.product.toString() === productId.toString();
-        const isSizeMatch = itemNormalizedSize === normalizedSize;
-        return isProductIdMatch && isSizeMatch;
+      // Get attributes from item (support both new Map format and legacy size)
+      let itemAttributes = {};
+      if (item.attributes && item.attributes instanceof Map) {
+        itemAttributes = mapToObject(item.attributes);
+      } else if (item.size) {
+        // Legacy: convert size to attributes format
+        itemAttributes = { size: item.size };
       }
-    );
+
+      // Compare attributes
+      return areAttributesEqual(itemAttributes, mergedAttributes);
+    });
     
     
     
@@ -335,12 +413,10 @@ export const updateCart = async (req, res) => {
     }
     cart.totalPrice = recalculatedTotalPrice;
     await cart.save();
-    const populatedCart = await Cart.findOne({ user: user._id }).populate(
-      {
-        path:"products.product",
-        select:"name price images"
-      }
-    );
+    const populatedCart = await Cart.findOne({ user: user._id }).populate({
+      path: "products.product",
+      select: "name price images description stock sizes colors attributes",
+    });
     res.status(200).json(populatedCart);
   } catch (error) {
     logger.error('Error in updateCart', {
@@ -365,11 +441,10 @@ export const removeFromCart = async (req, res) => {
     return res.status(401).json({ message: "Authentication required." });
   }
   
-  const { productId } = req.body;
+  const { productId, size, attributes } = req.body;
   
-  // توحيد قيمة 'size' المستلمة من الطلب
-  const sizeFromRequest = req.body.size;
-  const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
+  // Merge legacy size with new attributes format
+  const mergedAttributes = mergeSizeAndAttributes(size, attributes);
 
   if (!productId) {
     return res
@@ -389,18 +464,22 @@ export const removeFromCart = async (req, res) => {
     }
 
     const initialLength = cart.products.length;
-    cart.products = cart.products.filter(
-      (item) => {
-        // توحيد قيمة 'item.size' من قاعدة البيانات للمقارنة
-        const itemNormalizedSize = (item.size === null || item.size === undefined || String(item.size).toLowerCase() === 'null' || String(item.size).toLowerCase() === 'undefined' ? "" : String(item.size)).trim();
+    cart.products = cart.products.filter((item) => {
+      const isProductIdMatch = item.product.toString() === productId.toString();
+      if (!isProductIdMatch) return true; // Keep items with different product IDs
 
-        const isProductIdMatch = item.product.toString() === productId.toString();
-        const isSizeMatch = itemNormalizedSize === normalizedSize;
-
-        // نعيد false إذا كان المنتج والحجم متطابقان (لنحذفه)
-        return !(isProductIdMatch && isSizeMatch);
+      // Get attributes from item (support both new Map format and legacy size)
+      let itemAttributes = {};
+      if (item.attributes && item.attributes instanceof Map) {
+        itemAttributes = mapToObject(item.attributes);
+      } else if (item.size) {
+        // Legacy: convert size to attributes format
+        itemAttributes = { size: item.size };
       }
-    );
+
+      // Remove item if product ID and attributes match
+      return !areAttributesEqual(itemAttributes, mergedAttributes);
+    });
 
     if (cart.products.length === initialLength) {
       return res
@@ -426,12 +505,10 @@ export const removeFromCart = async (req, res) => {
 
     await cart.save();
 
-    const populatedCart = await Cart.findOne({ user: user._id }).populate(
-      {
-        path:"products.product",
-        select:"name price images"
-      }
-    );
+    const populatedCart = await Cart.findOne({ user: user._id }).populate({
+      path: "products.product",
+      select: "name price images description stock sizes colors attributes",
+    });
     res.status(200).json(populatedCart);
   } catch (error) {
     res

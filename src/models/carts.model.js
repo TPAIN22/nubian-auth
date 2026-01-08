@@ -19,10 +19,17 @@ const cartSchema = new mongoose.Schema({
         default: 1,
         min: 1,
       },
+      // Legacy field - kept for backward compatibility
       size: {
         type: String,
         default: '',
         required: false,
+      },
+      // New generic attributes field - supports any key-value pairs
+      attributes: {
+        type: Map,
+        of: String,
+        default: {},
       },
     },
   ],

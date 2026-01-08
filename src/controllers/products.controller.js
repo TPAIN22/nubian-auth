@@ -156,6 +156,35 @@ export const createProduct = async (req, res) => {
             });
         }
         
+        // Validate variants if provided
+        if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
+            // Check SKU uniqueness within the product
+            const skus = new Set();
+            for (const variant of req.body.variants) {
+                const sku = variant.sku?.trim().toUpperCase();
+                if (!sku) {
+                    return sendError(res, {
+                        message: 'All variants must have a SKU',
+                        statusCode: 400,
+                        code: 'VALIDATION_ERROR',
+                    });
+                }
+                if (skus.has(sku)) {
+                    return sendError(res, {
+                        message: `Duplicate SKU found: ${variant.sku}`,
+                        statusCode: 400,
+                        code: 'VALIDATION_ERROR',
+                    });
+                }
+                skus.add(sku);
+                
+                // Convert attributes object to Map for MongoDB
+                if (variant.attributes && typeof variant.attributes === 'object' && !(variant.attributes instanceof Map)) {
+                    variant.attributes = new Map(Object.entries(variant.attributes));
+                }
+            }
+        }
+        
         const product = await Product.create(req.body)
         
         // Populate multiple fields - when using populate on a document (not query), need to await it
@@ -196,6 +225,35 @@ export const updateProduct = async (req, res) => {
                 }
             } catch (error) {
                 // Continue if check fails
+            }
+        }
+        
+        // Validate variants if provided in update
+        if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
+            // Check SKU uniqueness within the product
+            const skus = new Set();
+            for (const variant of req.body.variants) {
+                const sku = variant.sku?.trim().toUpperCase();
+                if (!sku) {
+                    return sendError(res, {
+                        message: 'All variants must have a SKU',
+                        statusCode: 400,
+                        code: 'VALIDATION_ERROR',
+                    });
+                }
+                if (skus.has(sku)) {
+                    return sendError(res, {
+                        message: `Duplicate SKU found: ${variant.sku}`,
+                        statusCode: 400,
+                        code: 'VALIDATION_ERROR',
+                    });
+                }
+                skus.add(sku);
+                
+                // Convert attributes object to Map for MongoDB
+                if (variant.attributes && typeof variant.attributes === 'object' && !(variant.attributes instanceof Map)) {
+                    variant.attributes = new Map(Object.entries(variant.attributes));
+                }
             }
         }
         

@@ -3,17 +3,111 @@ import mongoose from 'mongoose';
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   description: { type: String, required: true, trim: true },
-  price: { type: Number, required: true, min: [0.01, 'Price must be greater than 0'] },
-  discountPrice: { type: Number, default: 0 },
+  
+  // Pricing - required for simple products, optional for variant-based products
+  price: { 
+    type: Number, 
+    required: function() {
+      // Price is required if product has no variants
+      return !this.variants || this.variants.length === 0;
+    },
+    min: [0.01, 'Price must be greater than 0'],
+    default: undefined
+  },
+  discountPrice: { type: Number, default: 0, min: [0, 'Discount price cannot be negative'] },
+  
+  // Stock - required for simple products, optional for variant-based products
+  stock: { 
+    type: Number, 
+    required: function() {
+      // Stock is required if product has no variants
+      return !this.variants || this.variants.length === 0;
+    },
+    min: [0, 'Stock cannot be negative'],
+    default: undefined
+  },
+  
+  // Legacy sizes field - kept for backward compatibility
+  // No longer has enum restriction - can be any string array
   sizes: { 
     type: [String], 
-    enum: {
-      values: ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'xxxl'],
-      message: 'Size must be one of: XS, S, M, L, XL, XXL, xxxl'
-    },
     default: []
   },
-  stock: { type: Number, required: true, min: [0, 'Stock cannot be negative'] },
+  
+  // Legacy colors field - kept for backward compatibility
+  colors: {
+    type: [String],
+    default: []
+  },
+  
+  // New flexible attributes system - defines what attributes this product supports
+  attributes: [{
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    displayName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    type: {
+      type: String,
+      enum: ['select', 'text', 'number'],
+      default: 'select',
+    },
+    required: {
+      type: Boolean,
+      default: false,
+    },
+    options: {
+      type: [String],
+      default: [],
+    },
+  }],
+  
+  // Product variants - each variant has its own price, stock, and attributes
+  variants: [{
+    sku: {
+      type: String,
+      required: true,
+      trim: true,
+      // SKU uniqueness will be validated at application level (not schema level)
+      // because we need to check uniqueness per product, not globally
+    },
+    attributes: {
+      type: Map,
+      of: String,
+      required: true,
+      // Attributes must match the product's attribute definitions
+    },
+    price: {
+      type: Number,
+      required: true,
+      min: [0.01, 'Variant price must be greater than 0'],
+    },
+    discountPrice: {
+      type: Number,
+      default: 0,
+      min: [0, 'Variant discount price cannot be negative'],
+    },
+    stock: {
+      type: Number,
+      required: true,
+      min: [0, 'Variant stock cannot be negative'],
+    },
+    images: {
+      type: [String],
+      default: [],
+      // Variant-specific images (optional, falls back to product images)
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+  }],
+  
   isActive: { type: Boolean, default: true },
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
   images: {
@@ -43,6 +137,39 @@ const productSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// Pre-save middleware to auto-populate legacy fields from variants
+productSchema.pre('save', function(next) {
+  // If product has variants, auto-populate sizes and colors from variants
+  if (this.variants && this.variants.length > 0) {
+    const sizesSet = new Set();
+    const colorsSet = new Set();
+    
+    this.variants.forEach(variant => {
+      if (variant.attributes) {
+        // Convert Map to object if needed
+        const attrs = variant.attributes instanceof Map 
+          ? Object.fromEntries(variant.attributes) 
+          : variant.attributes;
+        
+        // Extract size and color from attributes
+        if (attrs.size) sizesSet.add(attrs.size);
+        if (attrs.color) colorsSet.add(attrs.color);
+        if (attrs.Color) colorsSet.add(attrs.Color); // Case-insensitive
+      }
+    });
+    
+    // Update legacy fields
+    this.sizes = Array.from(sizesSet);
+    this.colors = Array.from(colorsSet);
+    
+    // Calculate total stock from variants
+    const totalStock = this.variants.reduce((sum, variant) => sum + (variant.stock || 0), 0);
+    this.stock = totalStock;
+  }
+  
+  next();
+});
+
 // Indexes for frequently queried fields
 productSchema.index({ category: 1 }); // For category filtering
 productSchema.index({ isActive: 1 }); // For active products filtering
@@ -51,6 +178,10 @@ productSchema.index({ name: 'text', description: 'text' }); // Text search index
 productSchema.index({ createdAt: -1 }); // For sorting by newest
 productSchema.index({ price: 1 }); // For price sorting/filtering
 productSchema.index({ averageRating: -1 }); // For rating sorting
+
+// Variant-specific indexes
+productSchema.index({ 'variants.sku': 1 }); // For SKU lookups
+productSchema.index({ 'variants.isActive': 1 }); // For active variant filtering
 
 // Compound indexes for common query patterns
 productSchema.index({ category: 1, isActive: 1 }); // Active products in category
