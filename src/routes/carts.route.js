@@ -25,6 +25,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 // Debug route to check if routes are being registered (no auth required)
+// Available in production for troubleshooting
 router.get("/debug", (req, res) => {
   res.json({
     message: "Cart routes debug",
@@ -35,6 +36,7 @@ router.get("/debug", (req, res) => {
     url: req.url,
     hasAuth: !!req.auth,
     authUserId: req.auth?.userId,
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -71,11 +73,36 @@ const logRoute = (req, res, next) => {
   next();
 };
 
-// IMPORTANT: Register routes in order - more specific first
-// The "/add" route must be registered before any catch-all routes
+// IMPORTANT: Register routes in order - specific routes BEFORE root route
+// Express matches routes in order, so "/add" must come before "/"
+
+// Health check route (no auth) - helps verify deployment
+router.get("/health", (req, res) => {
+  logger.info('Health check route called', {
+    requestId: req.requestId,
+    method: req.method,
+    path: req.path,
+    originalUrl: req.originalUrl,
+  });
+  res.json({
+    status: "ok",
+    service: "cart-api",
+    timestamp: new Date().toISOString(),
+    routes: {
+      "GET /api/carts": "Get user cart",
+      "POST /api/carts/add": "Add to cart",
+      "PUT /api/carts/update": "Update cart",
+      "DELETE /api/carts/remove": "Remove from cart",
+    }
+  });
+});
+
+// Specific routes first (before root route)
 router.post("/add", logRoute, isAuthenticated, addToCart);
-router.get("/", logRoute, isAuthenticated, getCart);  // Matches GET /api/carts
 router.put("/update", logRoute, isAuthenticated, updateCart);
 router.delete("/remove", logRoute, isAuthenticated, removeFromCart);
+
+// Root route last (catches GET /api/carts)
+router.get("/", logRoute, isAuthenticated, getCart);
 
 export default router;
