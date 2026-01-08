@@ -98,11 +98,13 @@ router.get("/health", (req, res) => {
 });
 
 // Specific routes first (before root route)
+// IMPORTANT: logRoute must come before isAuthenticated to ensure route matching is logged
 router.post("/add", logRoute, isAuthenticated, addToCart);
 router.put("/update", logRoute, isAuthenticated, updateCart);
 router.delete("/remove", logRoute, isAuthenticated, removeFromCart);
 
 // Root route last (catches GET /api/carts)
+// GET /api/carts
 router.get("/", logRoute, isAuthenticated, getCart);
 
 export default router;

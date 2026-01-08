@@ -19,16 +19,13 @@ export const isAuthenticated = (req, res, next) => {
     routeMatched: true, // This confirms the route was matched
   });
 
-  // IMPORTANT: If requireAuth sends a response but doesn't call next(),
-  // the route handler won't be reached. We need to ensure next() is called
-  // or a proper error response is sent.
-
   // Store the original end/send methods to detect if response was sent
   const originalEnd = res.end;
   const originalJson = res.json;
+  const originalSend = res.send;
   let responseSent = false;
 
-  // Override res.end to detect if response was sent by requireAuth
+  // Override response methods to detect if response was sent by requireAuth
   res.end = function(...args) {
     responseSent = true;
     return originalEnd.apply(this, args);
@@ -37,6 +34,11 @@ export const isAuthenticated = (req, res, next) => {
   res.json = function(...args) {
     responseSent = true;
     return originalJson.apply(this, args);
+  };
+
+  res.send = function(...args) {
+    responseSent = true;
+    return originalSend.apply(this, args);
   };
 
   // Use requireAuth middleware with proper error handling
@@ -50,10 +52,13 @@ export const isAuthenticated = (req, res, next) => {
   // Wrap requireAuth to catch errors and return proper status codes
   try {
     // Call the auth middleware
+    // IMPORTANT: Always ensure a response is sent (either success or error)
+    // This prevents Express from falling through to 404 handler
     const result = authMiddleware(req, res, (err) => {
       // Restore original methods
       res.end = originalEnd;
       res.json = originalJson;
+      res.send = originalSend;
 
       // If response was already sent by requireAuth, the route was matched
       // but auth failed - this is OK, just return (don't call next)
@@ -128,6 +133,11 @@ export const isAuthenticated = (req, res, next) => {
     // Handle case where requireAuth might return a promise
     if (result && typeof result.then === 'function') {
       result.catch((error) => {
+        // Restore original methods
+        res.end = originalEnd;
+        res.json = originalJson;
+        res.send = originalSend;
+        
         logger.error('requireAuth promise rejected', {
           requestId: req.requestId,
           error: error.message,
@@ -135,10 +145,8 @@ export const isAuthenticated = (req, res, next) => {
           method: req.method,
           path: req.path,
         });
-        // Restore original methods
-        res.end = originalEnd;
-        res.json = originalJson;
         
+        // ALWAYS send a response to prevent 404
         if (!responseSent) {
           return res.status(401).json({
             success: false,
@@ -152,10 +160,42 @@ export const isAuthenticated = (req, res, next) => {
         }
       });
     }
+    
+    // If requireAuth doesn't call the callback and doesn't send a response,
+    // we need to handle it after a timeout to prevent hanging
+    // This is a safety measure for edge cases
+    setTimeout(() => {
+      if (!responseSent) {
+        // Restore original methods
+        res.end = originalEnd;
+        res.json = originalJson;
+        res.send = originalSend;
+        
+        logger.warn('requireAuth did not call callback or send response - sending 401', {
+          requestId: req.requestId,
+          url: req.url,
+          method: req.method,
+        });
+        
+        if (!res.headersSent) {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: "UNAUTHORIZED",
+              message: "Authentication required.",
+              requestId: req.requestId || 'unknown',
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    }, 5000); // 5 second timeout - should never happen, but safety net
+    
   } catch (error) {
     // Restore original methods
     res.end = originalEnd;
     res.json = originalJson;
+    res.send = originalSend;
 
     logger.error('Error in authentication middleware', {
       requestId: req.requestId,
@@ -164,10 +204,16 @@ export const isAuthenticated = (req, res, next) => {
       url: req.url,
     });
 
-    if (!responseSent) {
+    // ALWAYS send a response to prevent 404
+    if (!responseSent && !res.headersSent) {
       return res.status(401).json({ 
-        message: "Authentication required.",
-        code: "UNAUTHORIZED"
+        success: false,
+        error: {
+          code: "UNAUTHORIZED",
+          message: "Authentication required.",
+          requestId: req.requestId || 'unknown',
+        },
+        timestamp: new Date().toISOString(),
       });
     }
   }
