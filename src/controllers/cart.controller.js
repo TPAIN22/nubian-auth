@@ -6,10 +6,51 @@ import logger from "../lib/logger.js";
 
 // GET USER'S CART
 export const getCart = async (req, res) => {
-  const { userId } = getAuth(req);
+  logger.info('Get cart request received', {
+    requestId: req.requestId,
+    method: req.method,
+    url: req.url,
+    path: req.path,
+    originalUrl: req.originalUrl,
+    hasAuth: !!req.auth,
+    authKeys: req.auth ? Object.keys(req.auth) : [],
+    headers: {
+      authorization: req.headers.authorization ? 'present' : 'missing',
+    },
+  });
+
+  // Try to get userId from getAuth, fallback to req.auth.userId
+  const authData = getAuth(req);
+  const userId = authData?.userId || req.auth?.userId;
+  
+  logger.info('Auth data extracted in getCart', {
+    requestId: req.requestId,
+    hasAuthData: !!authData,
+    authDataKeys: authData ? Object.keys(authData) : [],
+    userId,
+    reqAuthUserId: req.auth?.userId,
+  });
+  
+  // Check if userId is available (authentication check)
+  if (!userId) {
+    logger.warn('Get cart failed: No userId found', {
+      requestId: req.requestId,
+      hasAuth: !!req.auth,
+      hasAuthData: !!authData,
+      authData,
+      reqAuth: req.auth,
+    });
+    return res.status(401).json({ message: "Authentication required." });
+  }
+  
   try {
     const user = await User.findOne({ clerkId: userId });
     if (!user) {
+      logger.warn('Get cart failed: User not found in database', {
+        requestId: req.requestId,
+        userId,
+        clerkId: userId,
+      });
       return res.status(404).json({ message: "User not found." });
     }
 
@@ -38,36 +79,100 @@ export const getCart = async (req, res) => {
 // ADD PRODUCT TO CART
 // ADD PRODUCT TO CART
 export const addToCart = async (req, res) => {
-  const { userId } = getAuth(req); // Get Clerk userId from authentication
-
-  const { productId, quantity } = req.body;
-  // 1. توحيد قيمة 'size' المستلمة من الطلب:
-  //    تحويلها إلى String، إزالة المسافات البيضاء، وتحويل 'null' أو 'undefined' إلى سلسلة نصية فارغة.
-  const sizeFromRequest = req.body.size;
-  const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
-
-  // Basic input validation
-  if (!productId || !quantity) {
-    return res
-      .status(400)
-      .json({ message: "Product ID and quantity are required." });
-  }
-  if (typeof quantity !== "number" || quantity <= 0) {
-    return res
-      .status(400)
-      .json({ message: "Quantity must be a positive number." });
-  }
-
   try {
+    logger.info('Add to cart request received', {
+      requestId: req.requestId,
+      method: req.method,
+      url: req.url,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      hasAuth: !!req.auth,
+      authKeys: req.auth ? Object.keys(req.auth) : [],
+      headers: {
+        authorization: req.headers.authorization ? 'present' : 'missing',
+        'content-type': req.headers['content-type'],
+      },
+      body: {
+        productId: req.body?.productId,
+        quantity: req.body?.quantity,
+        size: req.body?.size,
+      },
+    });
+
+    // Try to get userId from getAuth, fallback to req.auth.userId
+    const authData = getAuth(req);
+    const userId = authData?.userId || req.auth?.userId;
+
+    logger.info('Auth data extracted', {
+      requestId: req.requestId,
+      hasAuthData: !!authData,
+      authDataKeys: authData ? Object.keys(authData) : [],
+      userId,
+      reqAuthUserId: req.auth?.userId,
+    });
+
+    // Check if userId is available (authentication check)
+    if (!userId) {
+      logger.warn('Add to cart failed: No userId found', {
+        requestId: req.requestId,
+        hasAuth: !!req.auth,
+        hasAuthData: !!authData,
+        authData,
+        reqAuth: req.auth,
+      });
+      return res.status(401).json({ message: "Authentication required." });
+    }
+
+    const { productId, quantity } = req.body;
+    // 1. توحيد قيمة 'size' المستلمة من الطلب:
+    //    تحويلها إلى String، إزالة المسافات البيضاء، وتحويل 'null' أو 'undefined' إلى سلسلة نصية فارغة.
+    const sizeFromRequest = req.body.size;
+    const normalizedSize = (sizeFromRequest === null || sizeFromRequest === undefined || String(sizeFromRequest).toLowerCase() === 'null' || String(sizeFromRequest).toLowerCase() === 'undefined' ? "" : String(sizeFromRequest)).trim();
+
+    // Basic input validation
+    if (!productId || !quantity) {
+      logger.warn('Add to cart failed: Missing required fields', {
+        requestId: req.requestId,
+        userId,
+        hasProductId: !!productId,
+        hasQuantity: !!quantity,
+      });
+      return res
+        .status(400)
+        .json({ message: "Product ID and quantity are required." });
+    }
+    if (typeof quantity !== "number" || quantity <= 0) {
+      logger.warn('Add to cart failed: Invalid quantity', {
+        requestId: req.requestId,
+        userId,
+        productId,
+        quantity,
+        quantityType: typeof quantity,
+      });
+      return res
+        .status(400)
+        .json({ message: "Quantity must be a positive number." });
+    }
+
     // Find the user in your database
     const user = await User.findOne({ clerkId: userId });
     if (!user) {
+      logger.warn('Add to cart failed: User not found in database', {
+        requestId: req.requestId,
+        userId,
+        clerkId: userId,
+      });
       return res.status(404).json({ message: "User not found." });
     }
 
     // Check if the product exists and get its price
     const productExists = await Product.findById(productId);
     if (!productExists) {
+      logger.warn('Add to cart failed: Product not found', {
+        requestId: req.requestId,
+        userId,
+        productId,
+      });
       return res.status(404).json({ message: "Product not found." });
     }
 
@@ -155,7 +260,15 @@ export const addToCart = async (req, res) => {
 
 
 export const updateCart = async (req, res) => {
-  const { userId } = getAuth(req); // Get Clerk userId from authentication
+  // Try to get userId from getAuth, fallback to req.auth.userId
+  const authData = getAuth(req);
+  const userId = authData?.userId || req.auth?.userId;
+  
+  // Check if userId is available (authentication check)
+  if (!userId) {
+    return res.status(401).json({ message: "Authentication required." });
+  }
+  
   const { productId, quantity } = req.body;
   
   // توحيد قيمة 'size' المستلمة من الطلب
@@ -243,7 +356,15 @@ export const updateCart = async (req, res) => {
   }
 };
 export const removeFromCart = async (req, res) => {
-  const { userId } = getAuth(req);
+  // Try to get userId from getAuth, fallback to req.auth.userId
+  const authData = getAuth(req);
+  const userId = authData?.userId || req.auth?.userId;
+  
+  // Check if userId is available (authentication check)
+  if (!userId) {
+    return res.status(401).json({ message: "Authentication required." });
+  }
+  
   const { productId } = req.body;
   
   // توحيد قيمة 'size' المستلمة من الطلب
