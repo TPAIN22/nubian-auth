@@ -1,5 +1,5 @@
 import Cart from "../models/carts.model.js";
-import { getAuth } from "@clerk/express";
+import { getAuth, clerkClient } from "@clerk/express";
 import User from "../models/user.model.js";
 import Product from "../models/product.model.js";
 import logger from "../lib/logger.js";
@@ -13,6 +13,53 @@ import {
   objectToMap,
   mapToObject,
 } from "../utils/cartUtils.js";
+
+/**
+ * Helper function to get or create user in database
+ * Handles cases where user exists in Clerk but not in MongoDB (webhook delay/failure)
+ */
+async function getOrCreateUser(clerkId, requestId) {
+  let user = await User.findOne({ clerkId });
+  
+  if (!user) {
+    logger.info('User not found in database, creating from Clerk', {
+      requestId,
+      clerkId,
+    });
+    
+    try {
+      // Get user data from Clerk
+      const clerkUser = await clerkClient.users.getUser(clerkId);
+      
+      // Create user in database
+      user = new User({
+        clerkId: clerkUser.id,
+        fullName: clerkUser.firstName && clerkUser.lastName 
+          ? `${clerkUser.firstName} ${clerkUser.lastName}` 
+          : clerkUser.username || clerkUser.emailAddresses?.[0]?.emailAddress || 'User',
+        emailAddress: clerkUser.emailAddresses?.[0]?.emailAddress || '',
+        phone: clerkUser.phoneNumbers?.[0]?.phoneNumber || '',
+      });
+      await user.save();
+      
+      logger.info('User created successfully in database', {
+        requestId,
+        userId: user._id,
+        clerkId: clerkUser.id,
+      });
+    } catch (createError) {
+      logger.error('Failed to create user in database', {
+        requestId,
+        clerkId,
+        error: createError.message,
+        stack: createError.stack,
+      });
+      throw new Error(`Failed to initialize user account: ${createError.message}`);
+    }
+  }
+  
+  return user;
+}
 
 // GET USER'S CART
 export const getCart = async (req, res) => {
@@ -54,15 +101,8 @@ export const getCart = async (req, res) => {
   }
   
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (!user) {
-      logger.warn('Get cart failed: User not found in database', {
-        requestId: req.requestId,
-        userId,
-        clerkId: userId,
-      });
-      return sendNotFound(res, "User");
-    }
+    // Get or create user (handles webhook delay/failure)
+    const user = await getOrCreateUser(userId, req.requestId);
 
     const cart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
@@ -181,15 +221,21 @@ export const addToCart = async (req, res) => {
       });
     }
 
-    // Find the user in your database
-    const user = await User.findOne({ clerkId: userId });
-    if (!user) {
-      logger.warn('Add to cart failed: User not found in database', {
+    // Get or create user (handles webhook delay/failure)
+    let user;
+    try {
+      user = await getOrCreateUser(userId, req.requestId);
+    } catch (createError) {
+      logger.error('Failed to get or create user', {
         requestId: req.requestId,
         userId,
-        clerkId: userId,
+        error: createError.message,
       });
-      return sendNotFound(res, "User");
+      return sendError(res, {
+        message: "Failed to initialize user account. Please try again.",
+        code: "USER_CREATION_FAILED",
+        statusCode: 500,
+      });
     }
 
     // Check if the product exists and get its price
@@ -358,10 +404,8 @@ export const updateCart = async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (!user) {
-      return res.status(404).json({ message: "User not found." });
-    }
+    // Get or create user (handles webhook delay/failure)
+    const user = await getOrCreateUser(userId, req.requestId);
     const cart = await Cart.findOne({ user: user._id });
     if (!cart) {
       return res.status(404).json({ message: "Cart not found for this user." });
@@ -453,11 +497,8 @@ export const removeFromCart = async (req, res) => {
   }
 
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (!user) {
-      return res.status(404).json({ message: "User not found." });
-    }
-
+    // Get or create user (handles webhook delay/failure)
+    const user = await getOrCreateUser(userId, req.requestId);
     const cart = await Cart.findOne({ user: user._id });
     if (!cart) {
       return res.status(404).json({ message: "Cart not found for this user." });

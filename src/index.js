@@ -145,15 +145,43 @@ app.use('/api/', limiter);
 
 // Configure Clerk middleware to handle Bearer tokens from Authorization header
 // This is essential for mobile app authentication
+// Note: clerkMiddleware should NOT block routes - it just adds auth context
 app.use(clerkMiddleware({
   // Clerk will automatically check Authorization header for Bearer tokens
   // This allows both session-based and token-based authentication
   // Mobile apps send tokens in the Authorization: Bearer <token> header
   // The middleware will automatically extract and validate these tokens
 }));
+
+// Debug middleware to log all incoming API requests
+app.use('/api', (req, res, next) => {
+  logger.info('Incoming API request', {
+    requestId: req.requestId,
+    method: req.method,
+    url: req.url,
+    path: req.path,
+    originalUrl: req.originalUrl,
+    baseUrl: req.baseUrl,
+    route: req.route?.path,
+  });
+  next();
+});
+
+// API routes - order matters, more specific routes first
+// Log route registration for debugging
+logger.info('Registering API routes', {
+  routes: [
+    '/api/reviews',
+    '/api/notifications',
+    '/api/carts',
+    '/api/orders',
+    '/api/products',
+  ]
+});
+
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', NotificationsRoutes);
-app.use('/api/carts', cartRoutes); 
+app.use('/api/carts', cartRoutes);  // POST /api/carts/add -> router.post("/add", ...)
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);
@@ -164,6 +192,27 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/merchants', merchantRoutes);
+
+// Debug: Log all unmatched routes before 404 handler
+app.use((req, res, next) => {
+  // Only log if it's an API route that didn't match
+  if (req.path.startsWith('/api/')) {
+    logger.warn('API route not matched - will return 404', {
+      requestId: req.requestId,
+      method: req.method,
+      url: req.originalUrl,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      registeredRoutes: [
+        '/api/carts/add (POST)',
+        '/api/carts (GET)',
+        '/api/carts/update (PUT)',
+        '/api/carts/remove (DELETE)',
+      ],
+    });
+  }
+  next();
+});
 
 // 404 handler (must be before error handler)
 app.use(notFoundHandler);
@@ -181,12 +230,25 @@ const PORT = process.env.PORT || 5000;
     await connect();
     
     // Start server only after successful database connection
-    app.listen(PORT, '0.0.0.0', () => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
+      const address = server.address();
       logger.info(`Server started on port ${PORT}`, { 
         port: PORT, 
         env: process.env.NODE_ENV || 'development',
-        database: 'connected'
+        database: 'connected',
+        address: address ? `${address.address}:${address.port}` : 'unknown',
+        listening: true
       });
+    });
+
+    // Handle server errors (must be set before listen callback)
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        logger.error(`Port ${PORT} is already in use`, { port: PORT });
+      } else {
+        logger.error('Server error', { error: error.message, code: error.code });
+      }
+      process.exit(1);
     });
   } catch (error) {
     logger.error('Failed to start server', {

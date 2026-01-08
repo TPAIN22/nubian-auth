@@ -13,9 +13,15 @@ export const isAuthenticated = (req, res, next) => {
     url: req.url,
     path: req.path,
     originalUrl: req.originalUrl,
+    baseUrl: req.baseUrl,
     hasAuthHeader: !!req.headers.authorization,
     authHeaderPrefix: req.headers.authorization?.substring(0, 20),
+    routeMatched: true, // This confirms the route was matched
   });
+
+  // IMPORTANT: If requireAuth sends a response but doesn't call next(),
+  // the route handler won't be reached. We need to ensure next() is called
+  // or a proper error response is sent.
 
   // Store the original end/send methods to detect if response was sent
   const originalEnd = res.end;
@@ -34,6 +40,8 @@ export const isAuthenticated = (req, res, next) => {
   };
 
   // Use requireAuth middleware with proper error handling
+  // IMPORTANT: requireAuth may send a response directly if auth fails
+  // We need to ensure the route is still considered "matched" even if auth fails
   const authMiddleware = requireAuth({
     // This ensures proper error handling for mobile apps
     // Clerk will automatically extract Bearer tokens from Authorization header
@@ -41,17 +49,23 @@ export const isAuthenticated = (req, res, next) => {
 
   // Wrap requireAuth to catch errors and return proper status codes
   try {
-    return authMiddleware(req, res, (err) => {
+    // Call the auth middleware
+    const result = authMiddleware(req, res, (err) => {
       // Restore original methods
       res.end = originalEnd;
       res.json = originalJson;
 
-      // If response was already sent by requireAuth, don't do anything
+      // If response was already sent by requireAuth, the route was matched
+      // but auth failed - this is OK, just return (don't call next)
       if (responseSent) {
-        logger.info('Response already sent by requireAuth', {
+        logger.info('Response already sent by requireAuth - route matched but auth failed', {
           requestId: req.requestId,
           url: req.url,
+          method: req.method,
+          path: req.path,
+          status: 'auth_failed_but_route_matched',
         });
+        // Route was matched, auth just failed - this prevents 404
         return;
       }
 
@@ -62,13 +76,21 @@ export const isAuthenticated = (req, res, next) => {
           errorName: err.name,
           statusCode: err.statusCode || err.status,
           url: req.url,
+          method: req.method,
+          path: req.path,
           hasAuthHeader: !!req.headers.authorization,
           stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
         });
         // Return proper 401 instead of letting it become 404
+        // Use standardized error response
         return res.status(401).json({ 
-          message: "Authentication required.",
-          code: "UNAUTHORIZED"
+          success: false,
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Authentication required.",
+            requestId: req.requestId || 'unknown',
+          },
+          timestamp: new Date().toISOString(),
         });
       }
       
@@ -79,10 +101,17 @@ export const isAuthenticated = (req, res, next) => {
           hasAuth: !!req.auth,
           authKeys: req.auth ? Object.keys(req.auth) : [],
           url: req.url,
+          method: req.method,
+          path: req.path,
         });
         return res.status(401).json({ 
-          message: "Authentication required.",
-          code: "UNAUTHORIZED"
+          success: false,
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Authentication required.",
+            requestId: req.requestId || 'unknown',
+          },
+          timestamp: new Date().toISOString(),
         });
       }
 
@@ -90,9 +119,39 @@ export const isAuthenticated = (req, res, next) => {
         requestId: req.requestId,
         userId: req.auth.userId,
         url: req.url,
+        method: req.method,
+        path: req.path,
       });
       next();
     });
+
+    // Handle case where requireAuth might return a promise
+    if (result && typeof result.then === 'function') {
+      result.catch((error) => {
+        logger.error('requireAuth promise rejected', {
+          requestId: req.requestId,
+          error: error.message,
+          url: req.url,
+          method: req.method,
+          path: req.path,
+        });
+        // Restore original methods
+        res.end = originalEnd;
+        res.json = originalJson;
+        
+        if (!responseSent) {
+          return res.status(401).json({
+            success: false,
+            error: {
+              code: "UNAUTHORIZED",
+              message: "Authentication required.",
+              requestId: req.requestId || 'unknown',
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+      });
+    }
   } catch (error) {
     // Restore original methods
     res.end = originalEnd;

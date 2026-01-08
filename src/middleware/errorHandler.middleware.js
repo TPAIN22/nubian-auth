@@ -1,6 +1,8 @@
 import logger from '../lib/logger.js';
 import { sendError } from '../lib/response.js';
 
+// Note: logger is already imported above
+
 /**
  * Centralized error handling middleware
  * Sanitizes error messages and provides consistent error responses
@@ -105,8 +107,18 @@ export const errorHandler = (err, req, res, next) => {
 
 /**
  * 404 handler
+ * Only called if no route matches the request
  */
 export const notFoundHandler = (req, res, next) => {
+  logger.warn('Route not found', {
+    requestId: req.requestId,
+    method: req.method,
+    url: req.originalUrl,
+    path: req.path,
+    baseUrl: req.baseUrl,
+    hasAuth: !!req.auth,
+  });
+  
   const error = new Error(`Route ${req.originalUrl} not found`);
   error.statusCode = 404;
   error.code = 'NOT_FOUND';
