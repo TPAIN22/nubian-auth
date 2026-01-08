@@ -6,7 +6,7 @@ import logger from '../lib/logger.js';
  * Mobile apps should send: Authorization: Bearer <clerk-session-token>
  * Clerk's requireAuth() automatically handles Bearer tokens from the Authorization header
  */
-export const isAuthenticated = async (req, res, next) => {
+export const isAuthenticated = (req, res, next) => {
   logger.info('Authentication middleware called', {
     requestId: req.requestId,
     method: req.method,
