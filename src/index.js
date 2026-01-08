@@ -145,6 +145,10 @@ app.use('/api/', limiter);
 
 // Configure Clerk middleware to handle Bearer tokens from Authorization header
 // This is essential for mobile app authentication
+// Trust proxy for proper IP detection behind reverse proxy (Render)
+// This fixes the rate limiting warning about X-Forwarded-For header
+app.set('trust proxy', true);
+
 // Note: clerkMiddleware should NOT block routes - it just adds auth context
 app.use(clerkMiddleware({
   // Clerk will automatically check Authorization header for Bearer tokens

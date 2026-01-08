@@ -6,7 +6,7 @@ import logger from '../lib/logger.js';
  * Mobile apps should send: Authorization: Bearer <clerk-session-token>
  * Clerk's requireAuth() automatically handles Bearer tokens from the Authorization header
  */
-export const isAuthenticated = (req, res, next) => {
+export const isAuthenticated = async (req, res, next) => {
   logger.info('Authentication middleware called', {
     requestId: req.requestId,
     method: req.method,
@@ -51,10 +51,10 @@ export const isAuthenticated = (req, res, next) => {
 
   // Wrap requireAuth to catch errors and return proper status codes
   try {
-    // Call the auth middleware
+    // Call the auth middleware and await if it's async
     // IMPORTANT: Always ensure a response is sent (either success or error)
     // This prevents Express from falling through to 404 handler
-    const result = authMiddleware(req, res, (err) => {
+    const callback = (err) => {
       // Restore original methods
       res.end = originalEnd;
       res.json = originalJson;
@@ -128,11 +128,16 @@ export const isAuthenticated = (req, res, next) => {
         path: req.path,
       });
       next();
-    });
+    };
+
+    // Call the auth middleware and handle async/await
+    const result = authMiddleware(req, res, callback);
 
     // Handle case where requireAuth might return a promise
     if (result && typeof result.then === 'function') {
-      result.catch((error) => {
+      try {
+        await result;
+      } catch (error) {
         // Restore original methods
         res.end = originalEnd;
         res.json = originalJson;
@@ -144,10 +149,11 @@ export const isAuthenticated = (req, res, next) => {
           url: req.url,
           method: req.method,
           path: req.path,
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
         });
         
         // ALWAYS send a response to prevent 404
-        if (!responseSent) {
+        if (!responseSent && !res.headersSent) {
           return res.status(401).json({
             success: false,
             error: {
@@ -158,12 +164,11 @@ export const isAuthenticated = (req, res, next) => {
             timestamp: new Date().toISOString(),
           });
         }
-      });
+      }
+    } else {
+      // If requireAuth doesn't return a promise, it should call the callback synchronously
+      // The callback will handle the response
     }
-    
-    // Note: requireAuth should always call the callback or send a response
-    // If it doesn't, there's an issue with Clerk configuration
-    // The error handlers above should catch all cases
     
   } catch (error) {
     // Restore original methods
