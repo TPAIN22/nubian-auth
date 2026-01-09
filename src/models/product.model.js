@@ -170,6 +170,26 @@ productSchema.pre('save', function(next) {
   next();
 });
 
+// Transform to JSON - ensure Map objects (variant attributes) are properly serialized
+productSchema.set('toJSON', {
+  transform: function(doc, ret) {
+    // Convert variant attributes Map to plain object for JSON serialization
+    if (ret.variants && Array.isArray(ret.variants)) {
+      ret.variants = ret.variants.map(variant => {
+        if (variant.attributes instanceof Map) {
+          variant.attributes = Object.fromEntries(variant.attributes);
+        }
+        return variant;
+      });
+    }
+    // Ensure _id is included and properly formatted
+    if (ret._id) {
+      ret._id = ret._id.toString();
+    }
+    return ret;
+  }
+});
+
 // Indexes for frequently queried fields
 productSchema.index({ category: 1 }); // For category filtering
 productSchema.index({ isActive: 1 }); // For active products filtering

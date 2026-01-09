@@ -187,6 +187,62 @@ function objectToMap(obj) {
   return map;
 }
 
+/**
+ * Finds a matching variant for a product based on attributes
+ * 
+ * @param {Object} product - Product document with variants
+ * @param {Object} attributes - Selected attributes to match
+ * @returns {Object|null} - Matching variant or null
+ */
+function findMatchingVariant(product, attributes) {
+  if (!product || !product.variants || !Array.isArray(product.variants) || product.variants.length === 0) {
+    return null;
+  }
+  
+  const normalizedAttrs = normalizeAttributes(attributes || {});
+  
+  // Find variant where all attributes match
+  return product.variants.find(variant => {
+    if (!variant.isActive) return false;
+    
+    const variantAttrs = variant.attributes instanceof Map 
+      ? Object.fromEntries(variant.attributes)
+      : (variant.attributes || {});
+    
+    // Check if all provided attributes match the variant
+    const providedKeys = Object.keys(normalizedAttrs);
+    if (providedKeys.length === 0) return false;
+    
+    return providedKeys.every(key => {
+      return variantAttrs[key] === normalizedAttrs[key];
+    });
+  }) || null;
+}
+
+/**
+ * Gets the price for a product, using variant price if variant exists, otherwise product price
+ * 
+ * @param {Object} product - Product document
+ * @param {Object} attributes - Selected attributes (optional)
+ * @returns {number} - Price to use
+ */
+function getProductPrice(product, attributes = null) {
+  if (!product) {
+    return 0;
+  }
+  
+  // If attributes provided and product has variants, try to find matching variant
+  if (attributes && product.variants && product.variants.length > 0) {
+    const variant = findMatchingVariant(product, attributes);
+    if (variant && variant.price) {
+      return variant.price;
+    }
+  }
+  
+  // Fall back to product price
+  return product.price || 0;
+}
+
 export {
   normalizeAttributeValue,
   normalizeAttributes,
@@ -197,4 +253,6 @@ export {
   validateRequiredAttributes,
   mapToObject,
   objectToMap,
+  findMatchingVariant,
+  getProductPrice,
 };

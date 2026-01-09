@@ -18,7 +18,7 @@ export const getProducts = async (req, res) => {
     const { category, merchant } = req.query;
 
     // Build filter - values are already validated as MongoDB ObjectIds by middleware
-    const filter = {};
+    const filter = { isActive: true }; // Only return active products by default
     if (category) {
       filter.category = category; // Safe: validated as MongoDB ObjectId
     }
@@ -28,6 +28,7 @@ export const getProducts = async (req, res) => {
 
     const products = await Product.find(filter)
       .populate('merchant', 'businessName businessEmail')
+      .populate('category', 'name')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -57,6 +58,9 @@ export const getProductById = async (req, res) => {
         if (!product) {
             return sendNotFound(res, 'Product');
         }
+        
+        // Return product even if inactive (for admin/merchant viewing)
+        // Frontend can check isActive to handle display
         
         return sendSuccess(res, {
             data: product,

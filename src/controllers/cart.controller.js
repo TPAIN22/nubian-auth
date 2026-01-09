@@ -12,6 +12,8 @@ import {
   validateRequiredAttributes,
   objectToMap,
   mapToObject,
+  findMatchingVariant,
+  getProductPrice,
 } from "../utils/cartUtils.js";
 
 /**
@@ -106,7 +108,14 @@ export const getCart = async (req, res) => {
 
     const cart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
-      select: "name price images description stock sizes colors attributes",
+      // Return all product fields including _id, discountPrice, variants, category, merchant, etc.
+      // No select() means all fields are returned (better for frontend)
+    }).populate({
+      path: "products.product.category",
+      select: "name",
+    }).populate({
+      path: "products.product.merchant",
+      select: "businessName businessEmail",
     });
 
     if (!cart) {
@@ -268,6 +277,59 @@ export const addToCart = async (req, res) => {
       }
     }
 
+    // For variant-based products, validate that a matching variant exists
+    if (productExists.variants && Array.isArray(productExists.variants) && productExists.variants.length > 0) {
+      if (Object.keys(mergedAttributes).length > 0) {
+        const matchingVariant = findMatchingVariant(productExists, mergedAttributes);
+        if (!matchingVariant) {
+          logger.warn('Add to cart failed: No matching variant found', {
+            requestId: req.requestId,
+            userId,
+            productId,
+            attributes: mergedAttributes,
+          });
+          return sendError(res, {
+            message: "No matching variant found for the selected attributes.",
+            code: "VALIDATION_ERROR",
+            statusCode: 400,
+            details: { attributes: mergedAttributes },
+          });
+        }
+        if (!matchingVariant.isActive || matchingVariant.stock <= 0) {
+          logger.warn('Add to cart failed: Variant not available', {
+            requestId: req.requestId,
+            userId,
+            productId,
+            variantSku: matchingVariant.sku,
+            isActive: matchingVariant.isActive,
+            stock: matchingVariant.stock,
+          });
+          return sendError(res, {
+            message: "Selected variant is not available.",
+            code: "VALIDATION_ERROR",
+            statusCode: 400,
+          });
+        }
+      }
+    }
+
+    // Get the correct price (variant price if variant exists, otherwise product price)
+    const itemPrice = getProductPrice(productExists, mergedAttributes);
+    if (!itemPrice || itemPrice <= 0) {
+      logger.warn('Add to cart failed: Invalid price', {
+        requestId: req.requestId,
+        userId,
+        productId,
+        price: itemPrice,
+        hasVariants: !!(productExists.variants && productExists.variants.length > 0),
+      });
+      return sendError(res, {
+        message: "Product price is invalid. Please contact support.",
+        code: "VALIDATION_ERROR",
+        statusCode: 400,
+      });
+    }
+
     // Find the user's cart
     // **مهم:** لا تقم بعمل populate هنا. نحتاج إلى الـ ObjectId الخام للمقارنة.
     let cart = await Cart.findOne({ user: user._id });
@@ -287,14 +349,20 @@ export const addToCart = async (req, res) => {
           attributes: attributesMap,
         }],
         totalQuantity: quantity,
-        totalPrice: productExists.price * quantity,
+        totalPrice: itemPrice * quantity,
       });
       await newCart.save();
 
       // Populate the newly created cart before sending it back
       const populatedCart = await Cart.findById(newCart._id).populate({
         path: "products.product",
-        select: "name price images description stock sizes colors attributes",
+        // Return all product fields
+      }).populate({
+        path: "products.product.category",
+        select: "name",
+      }).populate({
+        path: "products.product.merchant",
+        select: "businessName businessEmail",
       });
       return sendSuccess(res, {
         data: populatedCart,
@@ -346,8 +414,16 @@ export const addToCart = async (req, res) => {
       // Fetch product to get its current price (important if prices change)
       const p = await Product.findById(item.product);
       if (p) {
-        // Ensure product still exists
-        recalculatedTotalPrice += p.price * item.quantity;
+        // Get attributes from item to find variant price if applicable
+        let itemAttributes = {};
+        if (item.attributes && item.attributes instanceof Map) {
+          itemAttributes = mapToObject(item.attributes);
+        } else if (item.size) {
+          itemAttributes = { size: item.size };
+        }
+        // Get correct price (variant or product price)
+        const itemPrice = getProductPrice(p, itemAttributes);
+        recalculatedTotalPrice += itemPrice * item.quantity;
       }
     }
     cart.totalPrice = recalculatedTotalPrice;
@@ -358,7 +434,13 @@ export const addToCart = async (req, res) => {
     // Populate the updated cart before sending the response
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
-      select: "name price images description stock sizes colors attributes",
+      // Return all product fields
+    }).populate({
+      path: "products.product.category",
+      select: "name",
+    }).populate({
+      path: "products.product.merchant",
+      select: "businessName businessEmail",
     });
     return sendSuccess(res, {
       data: populatedCart,
@@ -452,14 +534,29 @@ export const updateCart = async (req, res) => {
     for (const item of cart.products) {
       const p = await Product.findById(item.product);
       if (p) {
-        recalculatedTotalPrice += p.price * item.quantity;
+        // Get attributes from item to find variant price if applicable
+        let itemAttributes = {};
+        if (item.attributes && item.attributes instanceof Map) {
+          itemAttributes = mapToObject(item.attributes);
+        } else if (item.size) {
+          itemAttributes = { size: item.size };
+        }
+        // Get correct price (variant or product price)
+        const itemPrice = getProductPrice(p, itemAttributes);
+        recalculatedTotalPrice += itemPrice * item.quantity;
       }
     }
     cart.totalPrice = recalculatedTotalPrice;
     await cart.save();
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
-      select: "name price images description stock sizes colors attributes",
+      // Return all product fields
+    }).populate({
+      path: "products.product.category",
+      select: "name",
+    }).populate({
+      path: "products.product.merchant",
+      select: "businessName businessEmail",
     });
     res.status(200).json(populatedCart);
   } catch (error) {
@@ -539,7 +636,16 @@ export const removeFromCart = async (req, res) => {
     for (const item of cart.products) {
       const p = await Product.findById(item.product);
       if (p) {
-        recalculatedTotalPrice += p.price * item.quantity;
+        // Get attributes from item to find variant price if applicable
+        let itemAttributes = {};
+        if (item.attributes && item.attributes instanceof Map) {
+          itemAttributes = mapToObject(item.attributes);
+        } else if (item.size) {
+          itemAttributes = { size: item.size };
+        }
+        // Get correct price (variant or product price)
+        const itemPrice = getProductPrice(p, itemAttributes);
+        recalculatedTotalPrice += itemPrice * item.quantity;
       }
     }
     cart.totalPrice = recalculatedTotalPrice;
@@ -548,7 +654,13 @@ export const removeFromCart = async (req, res) => {
 
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
-      select: "name price images description stock sizes colors attributes",
+      // Return all product fields
+    }).populate({
+      path: "products.product.category",
+      select: "name",
+    }).populate({
+      path: "products.product.merchant",
+      select: "businessName businessEmail",
     });
     res.status(200).json(populatedCart);
   } catch (error) {
