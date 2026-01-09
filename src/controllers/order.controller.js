@@ -9,6 +9,7 @@ import Coupon from "../models/coupon.model.js";
 import Marketer from "../models/marketer.model.js";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden } from '../lib/response.js';
+import { getProductPrice, mapToObject } from '../utils/cartUtils.js';
 
 export const updateOrderStatus = async (req, res) => {
   try {
@@ -101,7 +102,7 @@ export const getUserOrders = async (req, res) => {
     const orders = await Order.find({ user: user._id })
       .populate({
         path: "products.product",
-        select: "name price images category description stock createdAt",
+        select: "name price discountPrice images category description stock createdAt",
       })
       .populate("user", "fullName emailAddress phoneNumber")
       .sort({ orderDate: -1 });
@@ -109,17 +110,24 @@ export const getUserOrders = async (req, res) => {
     const enhancedOrders = orders.map((order) => ({
       ...order.toObject(),
       productsCount: order.products.length,
-      productsDetails: order.products.map((item) => ({
-        productId: item.product?._id || null,
-        name: item.product?.name || "",
-        price: item.product?.price || 0,
-        images: item.product?.images || [],
-        category: item.product?.category || "",
-        description: item.product?.description || "",
-        stock: item.product?.stock || 0,
-        quantity: item.quantity,
-        totalPrice: (item.product?.price || 0) * item.quantity,
-      })),
+      productsDetails: order.products.map((item) => {
+        // Use stored price from order (final price at time of order) or fallback to product price
+        // The order stores the final selling price (discountPrice if existed, else price)
+        const finalPrice = item.price || item.product?.price || 0;
+        return {
+          productId: item.product?._id || null,
+          name: item.product?.name || "",
+          price: finalPrice, // Final price charged (discountPrice if existed, else price)
+          discountPrice: item.discountPrice, // Store original discountPrice for display
+          originalPrice: item.originalPrice || item.product?.price || 0, // Original price before discount
+          images: item.product?.images || [],
+          category: item.product?.category || "",
+          description: item.product?.description || "",
+          stock: item.product?.stock || 0,
+          quantity: item.quantity,
+          totalPrice: finalPrice * item.quantity,
+        };
+      }),
     }));
 
     res.status(200).json(enhancedOrders);
@@ -163,9 +171,9 @@ export const createOrder = async (req, res) => {
       quantity: item.quantity,
     }));
 
-    let totalAmount = cart.products.reduce((sum, item) => {
-      return sum + item.product.price * item.quantity;
-    }, 0);
+    // Use cart.totalPrice which is already calculated correctly using getProductPrice
+    // But recalculate to get per-item prices for merchant tracking and consistency
+    let totalAmount = 0;
 
     // Track merchants and calculate merchant revenue
     const merchantMap = new Map(); // merchantId -> { amount, products }
@@ -175,8 +183,21 @@ export const createOrder = async (req, res) => {
     let platformTotalAmount = 0; // Total amount from products WITHOUT merchants
     
     for (const item of cart.products) {
+      // Get attributes from cart item to calculate correct price (for variant products)
+      let itemAttributes = {};
+      if (item.attributes && item.attributes instanceof Map) {
+        itemAttributes = mapToObject(item.attributes);
+      } else if (item.size) {
+        // Legacy: convert size to attributes format
+        itemAttributes = { size: item.size };
+      }
+      
+      // Use getProductPrice to get final price (discountPrice if exists, else price)
+      const itemPrice = getProductPrice(item.product, itemAttributes);
+      const itemTotal = itemPrice * item.quantity;
+      totalAmount += itemTotal;
+      
       const productMerchant = item.product.merchant;
-      const itemTotal = item.product.price * item.quantity;
       
       if (productMerchant) {
         const merchantId = productMerchant._id ? productMerchant._id.toString() : productMerchant.toString();
@@ -191,7 +212,7 @@ export const createOrder = async (req, res) => {
         merchantData.products.push({
           product: item.product._id,
           quantity: item.quantity,
-          price: item.product.price,
+          price: itemPrice, // Final price (discountPrice if exists, else price)
         });
       } else {
         // Track products without merchants
@@ -200,10 +221,16 @@ export const createOrder = async (req, res) => {
           product: item.product._id,
           name: item.product.name,
           quantity: item.quantity,
-          price: item.product.price,
+          price: itemPrice, // Final price (discountPrice if exists, else price)
           total: itemTotal,
         });
       }
+    }
+    
+    // Use cart.totalPrice if it exists and matches our calculation (for consistency)
+    // Otherwise use our calculated totalAmount
+    if (cart.totalPrice && Math.abs(cart.totalPrice - totalAmount) < 0.01) {
+      totalAmount = cart.totalPrice;
     }
 
     // Log warning if unmerchanted products are found
@@ -333,11 +360,21 @@ export const createOrder = async (req, res) => {
         orderNumber: formattedOrderNumber,
         status: "بانتظار التأكيد",
         totalAmount: finalAmount,
-        products: cart.products.map((item) => ({
-          name: item.product.name,
-          quantity: item.quantity,
-          price: item.product.price,
-        })),
+        products: cart.products.map((item) => {
+          // Get attributes to calculate correct price
+          let itemAttributes = {};
+          if (item.attributes && item.attributes instanceof Map) {
+            itemAttributes = mapToObject(item.attributes);
+          } else if (item.size) {
+            itemAttributes = { size: item.size };
+          }
+          const itemPrice = getProductPrice(item.product, itemAttributes);
+          return {
+            name: item.product.name,
+            quantity: item.quantity,
+            price: itemPrice, // Final price (discountPrice if exists, else price)
+          };
+        }),
       });
     } catch (mailErr) {
       logger.error("Failed to send order email", {
@@ -363,7 +400,7 @@ export const getOrders = async (req, res) => {
       })
       .populate({
         path: "products.product",
-        select: "name price images category description stock createdAt",
+        select: "name price discountPrice images category description stock createdAt",
       })
       .sort({ orderDate: -1 });
 
@@ -375,17 +412,25 @@ export const getOrders = async (req, res) => {
         email: order.user?.emailAddress || "غير محدد",
         phone: order.phoneNumber,
       },
-      productsDetails: order.products.map((item) => ({
-        productId: item.product?._id || null,
-        name: item.product?.name || "",
-        price: item.product?.price || 0,
-        images: item.product?.images || [],
-        category: item.product?.category || "",
-        description: item.product?.description || "",
-        stock: item.product?.stock || 0,
-        quantity: item.quantity,
-        totalPrice: (item.product?.price || 0) * item.quantity,
-      })),
+      productsDetails: order.products.map((item) => {
+        // Calculate price using getProductPrice (considers discountPrice)
+        // Note: This uses current product price, not historical order price
+        // For accurate historical prices, order schema should store price per item
+        const finalPrice = item.product ? getProductPrice(item.product, {}) : 0;
+        return {
+          productId: item.product?._id || null,
+          name: item.product?.name || "",
+          price: finalPrice, // Final price (discountPrice if exists, else price)
+          originalPrice: item.product?.price || 0, // Original price
+          discountPrice: item.product?.discountPrice || undefined, // Discount price if exists
+          images: item.product?.images || [],
+          category: item.product?.category || "",
+          description: item.product?.description || "",
+          stock: item.product?.stock || 0,
+          quantity: item.quantity,
+          totalPrice: finalPrice * item.quantity,
+        };
+      }),
       orderSummary: {
         subtotal: order.totalAmount,
         discount: order.discountAmount,
@@ -411,7 +456,7 @@ export const getOrderById = async (req, res) => {
       .populate("user", "fullName emailAddress phoneNumber")
       .populate({
         path: "products.product",
-        select: "name price images category description stock createdAt updatedAt",
+        select: "name price discountPrice images category description stock createdAt updatedAt",
       });
 
     if (!order) {
@@ -425,17 +470,23 @@ export const getOrderById = async (req, res) => {
     const enhancedOrder = {
       ...order.toObject(),
       productsCount: order.products.length,
-      productsDetails: order.products.map((item) => ({
-        productId: item.product?._id || null,
-        name: item.product?.name || "",
-        price: item.product?.price || 0,
-        images: item.product?.images || [],
-        category: item.product?.category || "",
-        description: item.product?.description || "",
-        stock: item.product?.stock || 0,
-        quantity: item.quantity,
-        totalPrice: (item.product?.price || 0) * item.quantity,
-        isAvailable: (item.product?.stock || 0) > 0,
+      productsDetails: order.products.map((item) => {
+        // Calculate price using getProductPrice (considers discountPrice)
+        // Note: This uses current product price, not historical order price
+        const finalPrice = item.product ? getProductPrice(item.product, {}) : 0;
+        return {
+          productId: item.product?._id || null,
+          name: item.product?.name || "",
+          price: finalPrice, // Final price (discountPrice if exists, else price)
+          originalPrice: item.product?.price || 0, // Original price
+          discountPrice: item.product?.discountPrice || undefined, // Discount price if exists
+          images: item.product?.images || [],
+          category: item.product?.category || "",
+          description: item.product?.description || "",
+          stock: item.product?.stock || 0,
+          quantity: item.quantity,
+          totalPrice: finalPrice * item.quantity,
+          isAvailable: (item.product?.stock || 0) > 0,
       })),
       orderSummary: {
         subtotal: order.totalAmount,
