@@ -109,6 +109,24 @@ const productSchema = new mongoose.Schema({
   }],
   
   isActive: { type: Boolean, default: true },
+  
+  // Ranking system fields (Admin-controlled)
+  // priorityScore: Admin-assigned priority (0-100, default 0)
+  // Higher values = higher priority in ranking
+  priorityScore: { 
+    type: Number, 
+    default: 0, 
+    min: [0, 'Priority score cannot be negative'],
+    max: [100, 'Priority score cannot exceed 100'],
+  },
+  
+  // featured: Admin can mark products as featured for maximum visibility
+  // Featured products get a massive boost in ranking (always appear first)
+  featured: { 
+    type: Boolean, 
+    default: false,
+  },
+  
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
   images: {
     type: [String],
@@ -214,6 +232,11 @@ productSchema.index({ averageRating: -1 }); // For rating sorting
 productSchema.index({ 'variants.sku': 1 }); // For SKU lookups
 productSchema.index({ 'variants.isActive': 1 }); // For active variant filtering
 
+// Ranking system indexes
+productSchema.index({ featured: -1, priorityScore: -1 }); // For featured + priority sorting
+productSchema.index({ priorityScore: -1 }); // For priority-based ranking
+productSchema.index({ featured: -1, priorityScore: -1, createdAt: -1 }); // Compound for ranking queries
+
 // Compound indexes for common query patterns
 productSchema.index({ category: 1, isActive: 1, deletedAt: 1 }); // Active, non-deleted products in category
 productSchema.index({ merchant: 1, isActive: 1, deletedAt: 1 }); // Merchant's active, non-deleted products
@@ -222,6 +245,10 @@ productSchema.index({ merchant: 1, deletedAt: 1, createdAt: -1 }); // Merchant p
 productSchema.index({ category: 1, deletedAt: 1, createdAt: -1 }); // Category products sorted by newest (non-deleted)
 productSchema.index({ isActive: 1, deletedAt: 1, createdAt: -1 }); // Active, non-deleted products sorted by newest
 productSchema.index({ isActive: 1, deletedAt: 1, averageRating: -1 }); // Active, non-deleted products sorted by rating
+
+// Ranking compound indexes for home page queries
+productSchema.index({ isActive: 1, deletedAt: 1, featured: -1, priorityScore: -1, createdAt: -1 }); // Main ranking query index
+productSchema.index({ category: 1, isActive: 1, deletedAt: 1, featured: -1, priorityScore: -1, createdAt: -1 }); // Category ranking
 
 const Product = mongoose.model('Product', productSchema);
 

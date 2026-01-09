@@ -12,6 +12,7 @@ import {
   toggleProductActive,
   restoreProduct,
   hardDeleteProduct,
+  updateProductRanking,
 } from '../controllers/products.controller.js'
 import { validateProductCreate, validateProductUpdate } from '../middleware/validators/product.validator.js'
 import { validatePagination } from '../middleware/validators/pagination.validator.js'
@@ -33,6 +34,7 @@ router.delete('/:id', isAuthenticated, ...validateObjectId('id'), deleteProduct)
 // Admin-only routes for managing all products
 router.get('/admin/all', isAuthenticated, isAdmin, validatePagination, validateCategoryFilter, validateMerchantFilter, getAllProductsAdmin)
 router.patch('/admin/:id/toggle-active', isAuthenticated, isAdmin, ...validateObjectId('id'), toggleProductActive)
+router.patch('/admin/:id/ranking', isAuthenticated, isAdmin, ...validateObjectId('id'), updateProductRanking)
 router.patch('/admin/:id/restore', isAuthenticated, isAdmin, ...validateObjectId('id'), restoreProduct)
 router.delete('/admin/:id/hard-delete', isAuthenticated, isAdmin, ...validateObjectId('id'), hardDeleteProduct)
 

@@ -1,9 +1,11 @@
+import mongoose from 'mongoose'
 import Product from '../models/product.model.js'
 import Merchant from '../models/merchant.model.js'
 import { getAuth } from '@clerk/express'
 import { clerkClient } from '@clerk/express'
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendForbidden } from '../lib/response.js'
 import logger from '../lib/logger.js'
+import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productRanking.js'
 
 export const getProducts = async (req, res) => {
   try {
@@ -17,6 +19,9 @@ export const getProducts = async (req, res) => {
 
     const { category, merchant } = req.query;
 
+    // Get user preferred categories for personalization (optional, safe fallback)
+    const preferredCategories = getUserPreferredCategories(req);
+
     // Build filter - values are already validated as MongoDB ObjectIds by middleware
     const filter = { 
       isActive: true, // Only return active products by default
@@ -29,23 +34,205 @@ export const getProducts = async (req, res) => {
       filter.merchant = merchant; // Safe: validated as MongoDB ObjectId
     }
 
-    const products = await Product.find(filter)
-      .populate('merchant', 'businessName businessEmail')
-      .populate('category', 'name')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+    // Calculate ranking using aggregation pipeline for efficient sorting
+    // This ensures ranking is computed server-side and pagination works correctly
+    const now = new Date();
+    const FRESHNESS_MAX_DAYS = RANKING_CONSTANTS.FRESHNESS_MAX_DAYS;
+    const FRESHNESS_BOOST_MAX = RANKING_CONSTANTS.FRESHNESS_BOOST_MAX;
+    const STOCK_BOOST_THRESHOLD = RANKING_CONSTANTS.STOCK_BOOST_THRESHOLD;
+    const STOCK_BOOST_MAX = RANKING_CONSTANTS.STOCK_BOOST_MAX;
+    const PERSONALIZATION_BOOST = RANKING_CONSTANTS.PERSONALIZATION_BOOST;
+    const FEATURED_BOOST = RANKING_CONSTANTS.FEATURED_BOOST;
+    const PRIORITY_WEIGHT = RANKING_CONSTANTS.PRIORITY_WEIGHT;
 
+    // Convert preferred categories to ObjectIds for matching
+    const preferredCategoryIds = preferredCategories.map(cat => {
+      try {
+        return new mongoose.Types.ObjectId(cat);
+      } catch (e) {
+        return null;
+      }
+    }).filter(id => id !== null);
+
+    // Build aggregation pipeline for ranking computation
+    const pipeline = [
+      // Match filter (same as before)
+      { $match: filter },
+      
+      // Add computed ranking fields
+      {
+        $addFields: {
+          // Featured boost (admin-controlled)
+          featuredBoost: {
+            $cond: [{ $ifNull: ['$featured', false] }, FEATURED_BOOST, 0]
+          },
+          
+          // Priority boost (admin-controlled)
+          priorityBoost: {
+            $multiply: [
+              { $ifNull: ['$priorityScore', 0] },
+              PRIORITY_WEIGHT
+            ]
+          },
+          
+          // Freshness boost (days since creation)
+          daysSinceCreation: {
+            $divide: [
+              { $subtract: [now, '$createdAt'] },
+              1000 * 60 * 60 * 24 // Convert milliseconds to days
+            ]
+          },
+          
+          // Stock boost (products with good stock)
+          stockValue: { $ifNull: ['$stock', 0] },
+        }
+      },
+      
+      // Calculate freshness boost
+      {
+        $addFields: {
+          freshnessBoost: {
+            $cond: [
+              { $lte: ['$daysSinceCreation', FRESHNESS_MAX_DAYS] },
+              {
+                $max: [
+                  0,
+                  {
+                    $round: {
+                      $multiply: [
+                        FRESHNESS_BOOST_MAX,
+                        {
+                          $subtract: [
+                            1,
+                            { $divide: ['$daysSinceCreation', FRESHNESS_MAX_DAYS] }
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              0
+            ]
+          }
+        }
+      },
+      
+      // Calculate stock boost
+      {
+        $addFields: {
+          stockBoost: {
+            $cond: [
+              { $gte: ['$stockValue', STOCK_BOOST_THRESHOLD] },
+              {
+                $round: {
+                  $multiply: [
+                    STOCK_BOOST_MAX,
+                    {
+                      $min: [
+                        1,
+                        {
+                          $divide: [
+                            { $min: ['$stockValue', STOCK_BOOST_THRESHOLD * 2] },
+                            STOCK_BOOST_THRESHOLD * 2
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              0
+            ]
+          }
+        }
+      }
+    ];
+
+    // Add personalization boost stage only if we have preferred categories
+    if (preferredCategoryIds.length > 0) {
+      pipeline.push({
+        $addFields: {
+          personalizationBoost: {
+            $cond: [
+              { $in: ['$category', preferredCategoryIds] },
+              PERSONALIZATION_BOOST,
+              0
+            ]
+          }
+        }
+      });
+    } else {
+      // No preferred categories - set personalization boost to 0
+      pipeline.push({
+        $addFields: {
+          personalizationBoost: 0
+        }
+      });
+    }
+
+    // Calculate total ranking score
+    pipeline.push({
+      $addFields: {
+        rankingScore: {
+          $add: [
+            '$featuredBoost',
+            '$priorityBoost',
+            '$freshnessBoost',
+            '$stockBoost',
+            '$personalizationBoost'
+          ]
+        }
+      }
+    });
+
+    // Sort by ranking score (descending), then by createdAt (descending) for tie-breaking
+    pipeline.push({
+      $sort: {
+        rankingScore: -1,
+        createdAt: -1
+      }
+    });
+
+    // Skip and limit for pagination
+    pipeline.push({ $skip: skip });
+    pipeline.push({ $limit: limit });
+
+    // Execute aggregation
+    const products = await Product.aggregate(pipeline);
+
+    // Get total count for pagination
     const totalProducts = await Product.countDocuments(filter);
 
+    // Populate referenced fields (merchant, category)
+    // Note: Aggregation doesn't populate, so we need to manually populate
+    const populatedProducts = await Product.populate(products, [
+      { path: 'merchant', select: 'businessName businessEmail' },
+      { path: 'category', select: 'name' }
+    ]);
+
+    logger.debug('Products retrieved with ranking', {
+      requestId: req.requestId,
+      total: totalProducts,
+      returned: populatedProducts.length,
+      page,
+      limit,
+      hasPersonalization: preferredCategories.length > 0,
+    });
+
     return sendPaginated(res, {
-      data: products,
+      data: populatedProducts,
       page,
       limit,
       total: totalProducts,
       message: 'Products retrieved successfully',
     });
   } catch (error) {
+    logger.error('Error retrieving products with ranking', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
     // Let error handler middleware handle the response
     throw error;
   }
@@ -487,9 +674,18 @@ export const getAllProductsAdmin = async (req, res) => {
 
         // Build sort object
         const sort = {};
-        const validSortFields = ['createdAt', 'name', 'price', 'averageRating', 'isActive'];
+        const validSortFields = ['createdAt', 'name', 'price', 'averageRating', 'isActive', 'priorityScore', 'featured'];
         const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
-        sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+        
+        // Special handling for featured/priorityScore combo (admin ranking view)
+        if (sortBy === 'priorityScore' || sortBy === 'featured') {
+            // Sort by featured first (boolean), then priorityScore, then createdAt
+            sort.featured = -1; // Featured products first
+            sort.priorityScore = sortOrder === 'asc' ? 1 : -1;
+            sort.createdAt = -1; // Tie-breaker
+        } else {
+            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+        }
 
         const products = await Product.find(filter)
             .populate('merchant', 'businessName businessEmail status')
@@ -658,6 +854,92 @@ export const hardDeleteProduct = async (req, res) => {
         });
     } catch (error) {
         logger.error('Error hard deleting product', {
+            requestId: req.requestId,
+            productId: req.params.id,
+            error: error.message,
+        });
+        throw error;
+    }
+};
+
+/**
+ * Admin: Update product ranking fields (priorityScore and featured)
+ * This endpoint allows admins to control product ranking/ordering
+ */
+export const updateProductRanking = async (req, res) => {
+    try {
+        const { userId } = getAuth(req);
+        const { id } = req.params;
+        const { priorityScore, featured } = req.body;
+
+        // Validate that at least one ranking field is provided
+        if (priorityScore === undefined && featured === undefined) {
+            return sendError(res, {
+                message: 'At least one ranking field (priorityScore or featured) must be provided',
+                statusCode: 400,
+                code: 'VALIDATION_ERROR',
+            });
+        }
+
+        // Validate priorityScore if provided
+        if (priorityScore !== undefined) {
+            const score = parseInt(priorityScore);
+            if (isNaN(score) || score < 0 || score > 100) {
+                return sendError(res, {
+                    message: 'priorityScore must be a number between 0 and 100',
+                    statusCode: 400,
+                    code: 'VALIDATION_ERROR',
+                });
+            }
+        }
+
+        // Validate featured if provided
+        if (featured !== undefined && typeof featured !== 'boolean') {
+            return sendError(res, {
+                message: 'featured must be a boolean value',
+                statusCode: 400,
+                code: 'VALIDATION_ERROR',
+            });
+        }
+
+        const product = await Product.findOne({
+            _id: id,
+            deletedAt: null, // Only allow updating non-deleted products
+        });
+
+        if (!product) {
+            return sendNotFound(res, 'Product');
+        }
+
+        // Update ranking fields
+        if (priorityScore !== undefined) {
+            product.priorityScore = priorityScore;
+        }
+        if (featured !== undefined) {
+            product.featured = featured;
+        }
+
+        await product.save();
+
+        logger.info('Product ranking updated by admin', {
+            requestId: req.requestId,
+            userId: userId,
+            productId: product._id,
+            priorityScore: product.priorityScore,
+            featured: product.featured,
+        });
+
+        // Populate for response
+        const populatedProduct = await Product.findById(product._id)
+            .populate('merchant', 'businessName businessEmail')
+            .populate('category', 'name');
+
+        return sendSuccess(res, {
+            data: populatedProduct,
+            message: 'Product ranking updated successfully',
+        });
+    } catch (error) {
+        logger.error('Error updating product ranking', {
             requestId: req.requestId,
             productId: req.params.id,
             error: error.message,
