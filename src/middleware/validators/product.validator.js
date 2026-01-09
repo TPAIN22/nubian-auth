@@ -121,7 +121,7 @@ const validateVariants = body('variants')
         throw new Error('Each variant must have a non-negative integer stock value');
       }
       
-      // Validate discount price if provided
+      // Validate discountPrice if provided
       if (variant.discountPrice !== undefined) {
         if (typeof variant.discountPrice !== 'number' || variant.discountPrice < 0) {
           throw new Error('Variant discountPrice must be a non-negative number');

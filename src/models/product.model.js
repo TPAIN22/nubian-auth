@@ -14,7 +14,7 @@ const productSchema = new mongoose.Schema({
     min: [0.01, 'Price must be greater than 0'],
     default: undefined
   },
-  discountPrice: { type: Number, default: 0, min: [0, 'Discount price cannot be negative'] },
+  discountPrice: { type: Number, default: 0, min: [0, 'DiscountPrice cannot be negative'] },
   
   // Stock - required for simple products, optional for variant-based products
   stock: { 
@@ -90,7 +90,7 @@ const productSchema = new mongoose.Schema({
     discountPrice: {
       type: Number,
       default: 0,
-      min: [0, 'Variant discount price cannot be negative'],
+      min: [0, 'Variant discountPrice cannot be negative'],
     },
     stock: {
       type: Number,
