@@ -182,9 +182,30 @@ export const isAdminOrApprovedMerchant = async (req, res, next) => {
   } catch (error) {
     logger.error('Error in isAdminOrApprovedMerchant middleware', {
       requestId: req.requestId,
+      userId: req.auth?.userId || null,
       error: error.message,
-      stack: error.stack,
+      errorName: error.name,
+      errorCode: error.code,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      url: req.url,
+      method: req.method,
     });
-    res.status(500).json({ message: 'Server error' });
+    
+    // Check if it's a Clerk API error
+    if (error.status || error.statusCode || error.code) {
+      return res.status(503).json({ 
+        success: false,
+        message: 'Authentication service temporarily unavailable',
+        code: 'CLERK_ERROR',
+        requestId: req.requestId,
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error',
+      code: 'INTERNAL_ERROR',
+      requestId: req.requestId,
+    });
   }
 };

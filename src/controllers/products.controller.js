@@ -82,10 +82,38 @@ export const createProduct = async (req, res) => {
         const { userId } = getAuth(req);
         
         if (!userId) {
+            logger.warn('Product creation failed: No userId', {
+                requestId: req.requestId,
+                hasAuth: !!req.auth,
+            });
             return sendError(res, {
                 message: 'Unauthorized',
                 statusCode: 401,
                 code: 'UNAUTHORIZED',
+            });
+        }
+        
+        // Verify user role to ensure middleware passed correctly
+        let userRole = null;
+        try {
+            const user = await clerkClient.users.getUser(userId);
+            userRole = user.publicMetadata?.role;
+            logger.debug('User role verified for product creation', {
+                requestId: req.requestId,
+                userId,
+                userRole,
+                hasMerchant: !!req.merchant,
+            });
+        } catch (clerkError) {
+            logger.error('Failed to verify user role in createProduct', {
+                requestId: req.requestId,
+                userId,
+                error: clerkError.message,
+            });
+            return sendError(res, {
+                message: 'Failed to verify user permissions',
+                statusCode: 500,
+                code: 'CLERK_ERROR',
             });
         }
         
@@ -94,20 +122,45 @@ export const createProduct = async (req, res) => {
         // - User is either admin or approved merchant
         // - If merchant, req.merchant is set and approved
         
+        // Verify admin or merchant access
+        if (userRole !== 'admin' && userRole !== 'merchant') {
+            logger.warn('Unauthorized product creation attempt', {
+                requestId: req.requestId,
+                userId,
+                userRole,
+            });
+            return sendError(res, {
+                message: 'Only admins and approved merchants can create products',
+                statusCode: 403,
+                code: 'FORBIDDEN',
+            });
+        }
+        
         // Auto-assign merchant to product if user is a merchant
         // For admins, merchant field can be null or set explicitly
         if (req.merchant) {
             // User is an approved merchant - auto-assign merchant to product
             req.body.merchant = req.merchant._id;
+            logger.debug('Auto-assigning merchant to product', {
+                requestId: req.requestId,
+                merchantId: req.merchant._id,
+            });
+        } else if (userRole === 'admin') {
+            // Admin can set merchant explicitly or leave null for general products
+            logger.debug('Admin creating product - merchant can be set explicitly or left null', {
+                requestId: req.requestId,
+                providedMerchantId: req.body.merchant,
+            });
         }
-        // For admins, req.merchant will be undefined, and merchant can be set explicitly or left null
         
         // Log received data for debugging
         logger.info('Creating product', {
+            requestId: req.requestId,
             userId,
+            userRole,
             isMerchant: !!req.merchant,
-            isAdmin: !req.merchant, // If no merchant, user is admin (middleware guarantees this)
-            merchantId: req.body.merchant || req.merchant?._id,
+            isAdmin: userRole === 'admin',
+            merchantId: req.body.merchant || req.merchant?._id || null,
             hasCategory: !!req.body.category,
             hasImages: Array.isArray(req.body.images),
             imagesCount: Array.isArray(req.body.images) ? req.body.images.length : 0,
@@ -159,7 +212,24 @@ export const createProduct = async (req, res) => {
             }
         }
         
+        logger.debug('Attempting to create product in database', {
+            requestId: req.requestId,
+            userId,
+            productName: req.body.name,
+            categoryId: req.body.category,
+            merchantId: req.body.merchant || null,
+        });
+
         const product = await Product.create(req.body)
+        
+        logger.info('Product created successfully in database', {
+            requestId: req.requestId,
+            userId,
+            productId: product._id,
+            productName: product.name,
+            userRole,
+            merchantId: product.merchant || null,
+        });
         
         // Populate multiple fields - when using populate on a document (not query), need to await it
         const populatedProduct = await Product.findById(product._id)
@@ -169,10 +239,19 @@ export const createProduct = async (req, res) => {
         return sendCreated(res, populatedProduct, 'Product created successfully');
     } catch (error) {
         logger.error('Error creating product', {
+            requestId: req.requestId,
+            userId,
             error: error.message,
             errorName: error.name,
+            errorCode: error.code,
             errorStack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-            body: req.body,
+            body: {
+                name: req.body.name,
+                category: req.body.category,
+                merchant: req.body.merchant,
+                hasImages: Array.isArray(req.body.images),
+                imagesCount: Array.isArray(req.body.images) ? req.body.images.length : 0,
+            },
         });
         // Let error handler middleware handle the response
         throw error;
