@@ -487,7 +487,8 @@ export const getOrderById = async (req, res) => {
           quantity: item.quantity,
           totalPrice: finalPrice * item.quantity,
           isAvailable: (item.product?.stock || 0) > 0,
-      })),
+        };
+      }),
       orderSummary: {
         subtotal: order.totalAmount,
         discount: order.discountAmount,
