@@ -18,7 +18,10 @@ export const getProducts = async (req, res) => {
     const { category, merchant } = req.query;
 
     // Build filter - values are already validated as MongoDB ObjectIds by middleware
-    const filter = { isActive: true }; // Only return active products by default
+    const filter = { 
+      isActive: true, // Only return active products by default
+      deletedAt: null, // Exclude soft-deleted products
+    };
     if (category) {
       filter.category = category; // Safe: validated as MongoDB ObjectId
     }
@@ -51,7 +54,10 @@ export const getProducts = async (req, res) => {
 
 export const getProductById = async (req, res) => {
     try {
-        const product = await Product.findById(req.params.id)
+        const product = await Product.findOne({
+            _id: req.params.id,
+            deletedAt: null, // Exclude soft-deleted products
+        })
             .populate('merchant', 'businessName businessEmail')
             .populate('category', 'name');
         
@@ -241,7 +247,10 @@ export const updateProduct = async (req, res) => {
 export const deleteProduct = async (req, res) => {
     try {
         const { userId } = getAuth(req);
-        const product = await Product.findById(req.params.id);
+        const product = await Product.findOne({
+            _id: req.params.id,
+            deletedAt: null, // Only find non-deleted products
+        });
         
         if (!product) {
             return sendNotFound(res, 'Product');
@@ -262,12 +271,26 @@ export const deleteProduct = async (req, res) => {
             }
         }
         
-        await Product.findByIdAndDelete(req.params.id);
+        // Soft delete: Set deletedAt timestamp instead of hard delete
+        // This preserves data integrity for existing orders and allows recovery
+        product.deletedAt = new Date();
+        await product.save();
+        
+        logger.info('Product soft deleted', {
+            requestId: req.requestId,
+            productId: product._id,
+            userId: userId,
+        });
         
         return sendSuccess(res, {
             message: 'Product deleted successfully',
         });
     } catch (error) {
+        logger.error('Error deleting product', {
+            requestId: req.requestId,
+            productId: req.params.id,
+            error: error.message,
+        });
         // Let error handler middleware handle the response
         throw error;
     }
@@ -297,7 +320,10 @@ export const getMerchantProducts = async (req, res) => {
         const { category, isActive } = req.query;
         
         // Build filter - category is validated as MongoDB ObjectId by middleware
-        const filter = { merchant: merchant._id };
+        const filter = { 
+            merchant: merchant._id,
+            deletedAt: null, // Exclude soft-deleted products
+        };
         if (category) {
             filter.category = category; // Safe: validated as MongoDB ObjectId
         }
@@ -310,7 +336,7 @@ export const getMerchantProducts = async (req, res) => {
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit);
-        
+
         const totalProducts = await Product.countDocuments(filter);
         
         return sendPaginated(res, {
@@ -324,5 +350,239 @@ export const getMerchantProducts = async (req, res) => {
         // Let error handler middleware handle the response
         throw error;
     }
-}  
+}
 
+// ============================================
+// ADMIN PRODUCT MANAGEMENT ENDPOINTS
+// ============================================
+
+/**
+ * Admin: Get all products from all merchants with advanced filtering
+ * Allows admins to see all products including inactive and soft-deleted ones
+ */
+export const getAllProductsAdmin = async (req, res) => {
+    try {
+        // Pagination validation with max limits
+        const MAX_LIMIT = 100;
+        const MAX_PAGE = 10000;
+        const DEFAULT_LIMIT = 50;
+        const page = Math.max(1, Math.min(parseInt(req.query.page) || 1, MAX_PAGE));
+        const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
+        const skip = (page - 1) * limit;
+
+        const { 
+            category, 
+            merchant, 
+            isActive, 
+            includeDeleted,
+            search,
+            sortBy = 'createdAt',
+            sortOrder = 'desc'
+        } = req.query;
+
+        // Build filter - admin can see all products including inactive/deleted
+        const filter = {};
+        
+        // Include soft-deleted products only if explicitly requested
+        if (includeDeleted !== 'true') {
+            filter.deletedAt = null;
+        }
+        
+        if (category) {
+            filter.category = category;
+        }
+        if (merchant) {
+            filter.merchant = merchant;
+        }
+        if (isActive !== undefined) {
+            filter.isActive = isActive === 'true';
+        }
+        
+        // Text search on name and description
+        if (search && search.trim()) {
+            filter.$or = [
+                { name: { $regex: search.trim(), $options: 'i' } },
+                { description: { $regex: search.trim(), $options: 'i' } }
+            ];
+        }
+
+        // Build sort object
+        const sort = {};
+        const validSortFields = ['createdAt', 'name', 'price', 'averageRating', 'isActive'];
+        const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+        sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+
+        const products = await Product.find(filter)
+            .populate('merchant', 'businessName businessEmail status')
+            .populate('category', 'name')
+            .sort(sort)
+            .skip(skip)
+            .limit(limit);
+
+        const totalProducts = await Product.countDocuments(filter);
+
+        logger.info('Admin retrieved all products', {
+            requestId: req.requestId,
+            userId: getAuth(req).userId,
+            total: totalProducts,
+            page,
+            limit,
+            filters: { category, merchant, isActive, includeDeleted, search },
+        });
+
+        return sendPaginated(res, {
+            data: products,
+            page,
+            limit,
+            total: totalProducts,
+            message: 'All products retrieved successfully',
+        });
+    } catch (error) {
+        logger.error('Error in getAllProductsAdmin', {
+            requestId: req.requestId,
+            error: error.message,
+        });
+        throw error;
+    }
+};
+
+/**
+ * Admin: Enable/disable product visibility
+ * Toggles isActive flag without deleting the product
+ */
+export const toggleProductActive = async (req, res) => {
+    try {
+        const { userId } = getAuth(req);
+        const { id } = req.params;
+        const { isActive } = req.body;
+
+        if (typeof isActive !== 'boolean') {
+            return sendError(res, {
+                message: 'isActive must be a boolean value',
+                statusCode: 400,
+                code: 'VALIDATION_ERROR',
+            });
+        }
+
+        const product = await Product.findOne({
+            _id: id,
+            deletedAt: null, // Only allow toggling non-deleted products
+        })
+            .populate('merchant', 'businessName businessEmail');
+
+        if (!product) {
+            return sendNotFound(res, 'Product');
+        }
+
+        product.isActive = isActive;
+        await product.save();
+
+        logger.info('Product active status toggled by admin', {
+            requestId: req.requestId,
+            userId: userId,
+            productId: product._id,
+            isActive: product.isActive,
+            merchantId: product.merchant?._id,
+        });
+
+        // Populate for response
+        const populatedProduct = await Product.findById(product._id)
+            .populate('merchant', 'businessName businessEmail')
+            .populate('category', 'name');
+
+        return sendSuccess(res, {
+            data: populatedProduct,
+            message: `Product ${isActive ? 'enabled' : 'disabled'} successfully`,
+        });
+    } catch (error) {
+        logger.error('Error toggling product active status', {
+            requestId: req.requestId,
+            productId: req.params.id,
+            error: error.message,
+        });
+        throw error;
+    }
+};
+
+/**
+ * Admin: Restore soft-deleted product
+ */
+export const restoreProduct = async (req, res) => {
+    try {
+        const { userId } = getAuth(req);
+        const { id } = req.params;
+
+        const product = await Product.findOne({
+            _id: id,
+            deletedAt: { $ne: null }, // Only find soft-deleted products
+        });
+
+        if (!product) {
+            return sendNotFound(res, 'Deleted product');
+        }
+
+        product.deletedAt = null;
+        await product.save();
+
+        logger.info('Product restored by admin', {
+            requestId: req.requestId,
+            userId: userId,
+            productId: product._id,
+        });
+
+        const populatedProduct = await Product.findById(product._id)
+            .populate('merchant', 'businessName businessEmail')
+            .populate('category', 'name');
+
+        return sendSuccess(res, {
+            data: populatedProduct,
+            message: 'Product restored successfully',
+        });
+    } catch (error) {
+        logger.error('Error restoring product', {
+            requestId: req.requestId,
+            productId: req.params.id,
+            error: error.message,
+        });
+        throw error;
+    }
+};
+
+/**
+ * Admin: Hard delete product (permanent deletion)
+ * Only admins can hard delete. Use with caution.
+ */
+export const hardDeleteProduct = async (req, res) => {
+    try {
+        const { userId } = getAuth(req);
+        const { id } = req.params;
+
+        const product = await Product.findById(id);
+
+        if (!product) {
+            return sendNotFound(res, 'Product');
+        }
+
+        // Log before deletion for audit trail
+        logger.warn('Product hard deleted by admin', {
+            requestId: req.requestId,
+            userId: userId,
+            productId: product._id,
+            productName: product.name,
+            merchantId: product.merchant,
+        });
+
+        await Product.findByIdAndDelete(id);
+
+        return sendSuccess(res, {
+            message: 'Product permanently deleted',
+        });
+    } catch (error) {
+        logger.error('Error hard deleting product', {
+            requestId: req.requestId,
+            productId: req.params.id,
+            error: error.message,
+        });
+        throw error;
+    }
+};

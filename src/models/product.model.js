@@ -133,6 +133,11 @@ const productSchema = new mongoose.Schema({
     ref: 'Merchant',
     default: null,
   },
+  deletedAt: {
+    type: Date,
+    default: null,
+    index: true,
+  },
 }, {
   timestamps: true,
 });
@@ -190,10 +195,16 @@ productSchema.set('toJSON', {
   }
 });
 
+// Add query helper to exclude soft-deleted products by default
+productSchema.query.active = function() {
+  return this.where({ deletedAt: null });
+};
+
 // Indexes for frequently queried fields
 productSchema.index({ category: 1 }); // For category filtering
 productSchema.index({ isActive: 1 }); // For active products filtering
 productSchema.index({ merchant: 1 }); // For merchant filtering
+productSchema.index({ deletedAt: 1 }); // For soft delete filtering
 productSchema.index({ name: 'text', description: 'text' }); // Text search index
 productSchema.index({ createdAt: -1 }); // For sorting by newest
 productSchema.index({ price: 1 }); // For price sorting/filtering
@@ -204,13 +215,13 @@ productSchema.index({ 'variants.sku': 1 }); // For SKU lookups
 productSchema.index({ 'variants.isActive': 1 }); // For active variant filtering
 
 // Compound indexes for common query patterns
-productSchema.index({ category: 1, isActive: 1 }); // Active products in category
-productSchema.index({ merchant: 1, isActive: 1 }); // Merchant's active products
-productSchema.index({ merchant: 1, category: 1 }); // Merchant products by category
-productSchema.index({ merchant: 1, createdAt: -1 }); // Merchant products sorted by newest
-productSchema.index({ category: 1, createdAt: -1 }); // Category products sorted by newest
-productSchema.index({ isActive: 1, createdAt: -1 }); // Active products sorted by newest
-productSchema.index({ isActive: 1, averageRating: -1 }); // Active products sorted by rating
+productSchema.index({ category: 1, isActive: 1, deletedAt: 1 }); // Active, non-deleted products in category
+productSchema.index({ merchant: 1, isActive: 1, deletedAt: 1 }); // Merchant's active, non-deleted products
+productSchema.index({ merchant: 1, category: 1, deletedAt: 1 }); // Merchant products by category (non-deleted)
+productSchema.index({ merchant: 1, deletedAt: 1, createdAt: -1 }); // Merchant products sorted by newest (non-deleted)
+productSchema.index({ category: 1, deletedAt: 1, createdAt: -1 }); // Category products sorted by newest (non-deleted)
+productSchema.index({ isActive: 1, deletedAt: 1, createdAt: -1 }); // Active, non-deleted products sorted by newest
+productSchema.index({ isActive: 1, deletedAt: 1, averageRating: -1 }); // Active, non-deleted products sorted by rating
 
 const Product = mongoose.model('Product', productSchema);
 

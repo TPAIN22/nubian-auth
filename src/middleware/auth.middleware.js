@@ -154,26 +154,139 @@ export const isAuthenticated = (req, res, next) => {
 };
 
 export const isAdmin = async (req, res, next) => {
+  const startTime = Date.now();
+  
   try {
-    const userId = req.auth.userId;
-    const user = await clerkClient.users.getUser(userId);
+    // Log entry point with request context
+    logger.info('Admin authorization check started', {
+      requestId: req.requestId,
+      method: req.method,
+      url: req.url,
+      path: req.path,
+      hasAuth: !!req.auth,
+      userId: req.auth?.userId || null,
+      ip: req.ip || req.connection?.remoteAddress,
+      userAgent: req.get('user-agent'),
+    });
 
-    if (user.publicMetadata.role !== 'admin') {
+    const userId = req.auth?.userId;
+    
+    if (!userId) {
+      logger.warn('Admin check failed: Missing userId in req.auth', {
+        requestId: req.requestId,
+        method: req.method,
+        url: req.url,
+        hasAuth: !!req.auth,
+        authKeys: req.auth ? Object.keys(req.auth) : [],
+        durationMs: Date.now() - startTime,
+      });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Authentication required',
+        code: 'UNAUTHORIZED',
+      });
+    }
+
+    // Attempt to fetch user from Clerk with detailed logging
+    let user;
+    try {
+      logger.debug('Fetching user from Clerk for admin check', {
+        requestId: req.requestId,
+        userId: userId,
+      });
+      
+      user = await clerkClient.users.getUser(userId);
+      
+      logger.debug('Clerk user fetched successfully', {
+        requestId: req.requestId,
+        userId: userId,
+        hasPublicMetadata: !!user.publicMetadata,
+        role: user.publicMetadata?.role || 'none',
+        email: user.emailAddresses?.[0]?.emailAddress || 'none',
+        durationMs: Date.now() - startTime,
+      });
+    } catch (clerkError) {
+      logger.error('Clerk API error during admin check', {
+        requestId: req.requestId,
+        userId: userId,
+        error: clerkError.message,
+        errorName: clerkError.name,
+        errorCode: clerkError.code || clerkError.statusCode,
+        errorStatus: clerkError.status,
+        stack: process.env.NODE_ENV === 'development' ? clerkError.stack : undefined,
+        durationMs: Date.now() - startTime,
+      });
+      
+      return res.status(503).json({ 
+        success: false,
+        message: 'Authentication service temporarily unavailable',
+        code: 'CLERK_ERROR',
+        requestId: req.requestId,
+      });
+    }
+
+    // Check admin role
+    const userRole = user.publicMetadata?.role;
+    const isUserAdmin = userRole === 'admin';
+
+    if (!isUserAdmin) {
       logger.warn('Unauthorized admin access attempt', {
         requestId: req.requestId,
         userId: userId,
+        userRole: userRole || 'none',
+        userEmail: user.emailAddresses?.[0]?.emailAddress || 'unknown',
+        method: req.method,
         url: req.url,
+        path: req.path,
+        ip: req.ip || req.connection?.remoteAddress,
+        durationMs: Date.now() - startTime,
       });
-      return res.status(403).json({ message: 'Admins only' });
+      
+      return res.status(403).json({ 
+        success: false,
+        message: 'Admins only',
+        code: 'FORBIDDEN',
+        requestId: req.requestId,
+      });
     }
+
+    // Admin access granted
+    logger.info('Admin authorization successful', {
+      requestId: req.requestId,
+      userId: userId,
+      userEmail: user.emailAddresses?.[0]?.emailAddress || 'unknown',
+      method: req.method,
+      url: req.url,
+      path: req.path,
+      durationMs: Date.now() - startTime,
+    });
+
+    // Attach admin user info to request for downstream use
+    req.adminUser = {
+      userId: userId,
+      email: user.emailAddresses?.[0]?.emailAddress,
+      role: userRole,
+    };
 
     next();
   } catch (error) {
-    logger.error('Error in isAdmin middleware', {
+    logger.error('Unexpected error in isAdmin middleware', {
       requestId: req.requestId,
       error: error.message,
+      errorName: error.name,
+      errorCode: error.code,
       stack: error.stack,
+      method: req.method,
+      url: req.url,
+      userId: req.auth?.userId || null,
+      durationMs: Date.now() - startTime,
     });
-    res.status(500).json({ message: 'Server error' });
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error',
+      code: 'INTERNAL_ERROR',
+      requestId: req.requestId,
+    });
   }
 };
