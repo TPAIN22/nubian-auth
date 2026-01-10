@@ -49,12 +49,16 @@ export const savePushToken = async (req, res) => {
       if (userId && !pushToken.userId) {
         const user = await User.findOne({ clerkId: userId });
         if (user) {
+          // Merge all anonymous tokens for this device to this user
           await PushToken.mergeAnonymousTokens(deviceId, user._id);
           pushToken.userId = user._id;
         }
-      } else if (userId && !pushToken.userId) {
+      } else if (userId && pushToken.userId) {
+        // User is logged in and token already has a userId - just update lastUsedAt
+        // (token might belong to different user, but we'll update it)
         const user = await User.findOne({ clerkId: userId });
-        if (user) {
+        if (user && pushToken.userId.toString() !== user._id.toString()) {
+          // Different user logged in on same device - update token to new user
           pushToken.userId = user._id;
         }
       }
@@ -531,9 +535,33 @@ export const updatePreferences = async (req, res) => {
       Object.assign(preferences.channels, channels);
     }
     if (types) {
-      Object.keys(types).forEach((type) => {
-        if (preferences.types[type]) {
-          Object.assign(preferences.types[type], types[type]);
+      // Handle simplified preferences from mobile app
+      // Auto-create categories if they don't exist
+      Object.keys(types).forEach((category) => {
+        if (!preferences.types[category]) {
+          // Initialize category with default structure
+          preferences.types[category] = {
+            enabled: true,
+            channels: {
+              push: preferences.channels.push || true,
+              in_app: true,
+              sms: false,
+              email: false,
+            },
+          };
+        }
+        
+        // Update the category preferences
+        if (types[category].enabled !== undefined) {
+          preferences.types[category].enabled = types[category].enabled;
+        }
+        
+        // Update channels for this category
+        if (types[category].channels) {
+          if (!preferences.types[category].channels) {
+            preferences.types[category].channels = {};
+          }
+          Object.assign(preferences.types[category].channels, types[category].channels);
         }
       });
     }
@@ -567,6 +595,7 @@ export const updatePreferences = async (req, res) => {
 
 /**
  * Send broadcast notification (Admin only)
+ * Optimized to return immediately and process asynchronously
  */
 export const sendBroadcast = async (req, res) => {
   try {
@@ -592,38 +621,72 @@ export const sendBroadcast = async (req, res) => {
       });
     }
 
-    let notifications = [];
+    // Get counts for immediate response
+    let userCount = 0;
+    let merchantCount = 0;
 
     if (target === 'users' || target === 'all') {
-      const userNotifications = await notificationService.broadcastToUsers({
-        type,
-        title,
-        body,
-        deepLink,
-        metadata,
-        channel: 'push',
-      });
-      notifications = notifications.concat(userNotifications);
+      userCount = await User.countDocuments({});
     }
 
     if (target === 'merchants' || target === 'all') {
-      const merchantNotifications = await notificationService.broadcastToMerchants({
-        type,
-        title,
-        body,
-        deepLink,
-        metadata,
-        channel: 'push',
-      });
-      notifications = notifications.concat(merchantNotifications);
+      merchantCount = await Merchant.countDocuments({ status: 'APPROVED' });
     }
 
+    const totalRecipients = userCount + merchantCount;
+
+    // Process broadcast asynchronously (don't await)
+    // Return immediately with estimated count
+    (async () => {
+      try {
+        if (target === 'users' || target === 'all') {
+          await notificationService.broadcastToUsers({
+            type,
+            title,
+            body,
+            deepLink,
+            metadata,
+            channel: 'push',
+          });
+        }
+
+        if (target === 'merchants' || target === 'all') {
+          await notificationService.broadcastToMerchants({
+            type,
+            title,
+            body,
+            deepLink,
+            metadata,
+            channel: 'push',
+          });
+        }
+
+        logger.info('Broadcast notification processed successfully', {
+          type,
+          target,
+          estimatedRecipients: totalRecipients,
+        });
+      } catch (error) {
+        logger.error('Failed to process broadcast notification asynchronously', {
+          error: error.message,
+          stack: error.stack,
+          type,
+          target,
+        });
+      }
+    })();
+
+    // Return immediately with estimated count
     return sendSuccess(res, {
       data: {
-        sent: notifications.length,
-        notifications: notifications.map((n) => n._id.toString()),
+        sent: totalRecipients, // Estimated count
+        estimatedRecipients: totalRecipients,
+        users: userCount,
+        merchants: merchantCount,
+        status: 'processing',
+        message: 'Broadcast notification is being processed in the background',
       },
-      message: 'Broadcast notification sent successfully',
+      message: 'Broadcast notification queued successfully',
     });
   } catch (error) {
     logger.error('Failed to send broadcast notification', {

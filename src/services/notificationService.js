@@ -1,4 +1,5 @@
 import axios from 'axios';
+import mongoose from 'mongoose';
 import Notification from '../models/notification.model.js';
 import NotificationPreferences from '../models/notificationPreferences.model.js';
 import PushToken from '../models/notifications.model.js';
@@ -225,16 +226,52 @@ class NotificationService {
       let tokens = [];
       if (notification.recipientType === 'user') {
         tokens = await PushToken.getActiveTokensForUser(notification.recipientId);
-      } else if (notification.recipientType === 'merchant') {
-        tokens = await PushToken.getActiveTokensForMerchant(notification.recipientId);
-      }
-
-      if (tokens.length === 0) {
-        logger.info('No active push tokens found for recipient', {
+        logger.info('Fetching push tokens for user', {
           notificationId: notification._id.toString(),
           recipientId: notification.recipientId.toString(),
           recipientType: notification.recipientType,
+          tokenCount: tokens.length,
         });
+      } else if (notification.recipientType === 'merchant') {
+        tokens = await PushToken.getActiveTokensForMerchant(notification.recipientId);
+        logger.info('Fetching push tokens for merchant', {
+          notificationId: notification._id.toString(),
+          recipientId: notification.recipientId.toString(),
+          recipientType: notification.recipientType,
+          tokenCount: tokens.length,
+        });
+      }
+
+      if (tokens.length === 0) {
+        logger.warn('No active push tokens found for recipient', {
+          notificationId: notification._id.toString(),
+          recipientId: notification.recipientId.toString(),
+          recipientType: notification.recipientType,
+          // Debug: Check if any tokens exist for this user/merchant at all
+          debugQuery: {
+            type: notification.recipientType,
+            id: notification.recipientId.toString(),
+          },
+        });
+        
+        // Check total tokens for debugging
+        const allTokens = notification.recipientType === 'user'
+          ? await PushToken.find({ userId: notification.recipientId }).limit(5)
+          : await PushToken.find({ merchantId: notification.recipientId }).limit(5);
+        
+        logger.info('Debug: All tokens for recipient (including inactive)', {
+          recipientId: notification.recipientId.toString(),
+          recipientType: notification.recipientType,
+          totalTokensFound: allTokens.length,
+          sampleTokens: allTokens.map(t => ({
+            id: t._id.toString(),
+            isActive: t.isActive,
+            expiresAt: t.expiresAt,
+            hasUserId: !!t.userId,
+            hasMerchantId: !!t.merchantId,
+          })),
+        });
+        
         notification.status = 'failed';
         notification.channel = 'push';
         await notification.save();
@@ -306,31 +343,300 @@ class NotificationService {
   }
 
   /**
-   * Batch create notifications (for broadcasts)
+   * Batch create notifications (for broadcasts) - Optimized with bulk operations
    */
   async batchCreateNotifications(notificationData, recipientIds, recipientType) {
-    const notifications = [];
-
-    for (const recipientId of recipientIds) {
-      try {
-        const notification = await this.createNotification({
-          ...notificationData,
-          recipientId,
-          recipientType,
-        });
-        if (notification) {
-          notifications.push(notification);
-        }
-      } catch (error) {
-        logger.error('Failed to create notification in batch', {
-          error: error.message,
-          recipientId,
-          recipientType,
-        });
-      }
+    if (recipientIds.length === 0) {
+      return [];
     }
 
-    return notifications;
+    // Determine recipient model
+    const recipientModel = recipientType === 'merchant' ? 'Merchant' : 'User';
+    
+    // Auto-determine category based on notification type
+    const typeCategoryMap = {
+      ORDER_CREATED: 'transactional',
+      ORDER_ACCEPTED: 'transactional',
+      ORDER_SHIPPED: 'transactional',
+      ORDER_DELIVERED: 'transactional',
+      ORDER_CANCELLED: 'transactional',
+      REFUND_PROCESSED: 'transactional',
+      NEW_ORDER: 'merchant_alerts',
+      LOW_STOCK: 'merchant_alerts',
+      PRODUCT_APPROVED: 'merchant_alerts',
+      PRODUCT_REJECTED: 'merchant_alerts',
+      PAYOUT_STATUS: 'merchant_alerts',
+      CART_ABANDONED: 'behavioral',
+      VIEWED_NOT_PURCHASED: 'behavioral',
+      PRICE_DROPPED: 'behavioral',
+      BACK_IN_STOCK: 'behavioral',
+      NEW_ARRIVALS: 'marketing',
+      FLASH_SALE: 'marketing',
+      MERCHANT_PROMOTION: 'marketing',
+      PERSONALIZED_OFFER: 'marketing',
+    };
+    const category = typeCategoryMap[notificationData.type] || 'transactional';
+
+    // Set priority based on type
+    const priorityMap = {
+      ORDER_CREATED: 90,
+      ORDER_ACCEPTED: 85,
+      ORDER_SHIPPED: 80,
+      ORDER_DELIVERED: 75,
+      ORDER_CANCELLED: 70,
+      NEW_ORDER: 95,
+      LOW_STOCK: 60,
+      PRODUCT_APPROVED: 50,
+      PRODUCT_REJECTED: 55,
+      CART_ABANDONED: 40,
+      PRICE_DROPPED: 30,
+      BACK_IN_STOCK: 35,
+      FLASH_SALE: 45,
+      NEW_ARRIVALS: 20,
+      MERCHANT_PROMOTION: 15,
+      PERSONALIZED_OFFER: 25,
+    };
+    const priority = priorityMap[notificationData.type] || 50;
+
+    // Prepare bulk insert operations
+    const bulkOps = recipientIds.map((recipientId) => ({
+      insertOne: {
+        document: {
+          type: notificationData.type,
+          recipientType,
+          recipientId,
+          recipientModel,
+          title: notificationData.title,
+          body: notificationData.body,
+          deepLink: notificationData.deepLink || null,
+          metadata: notificationData.metadata || {},
+          channel: 'in_app', // Always create in-app first
+          priority,
+          category,
+          isRead: false,
+          status: 'pending',
+          sentAt: null, // Will be set after push notification is sent
+          deduplicationKey: `${notificationData.type}_${recipientId}_${JSON.stringify(notificationData.metadata || {})}`,
+          expiresAt: notificationData.expiresAt || null,
+          merchantId: notificationData.merchantId || null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    }));
+
+    // Execute bulk insert
+    try {
+      const result = await Notification.bulkWrite(bulkOps, { ordered: false });
+      logger.info('Bulk notifications created', {
+        recipientType,
+        inserted: result.insertedCount,
+        recipientIds: recipientIds.length,
+      });
+
+      // Fetch created notifications immediately after bulk insert
+      const createdNotifications = await Notification.find({
+        recipientType,
+        recipientId: { $in: recipientIds },
+        type: notificationData.type,
+        status: 'pending',
+      }).limit(1000); // Limit for push notification batch
+
+      // Send push notifications asynchronously (don't await - process in background)
+      if (notificationData.channel === 'push' && createdNotifications.length > 0) {
+        // Process push notifications in background - don't block the response
+        // Use Promise to run async but don't await
+        this.sendBroadcastPushNotifications(createdNotifications, notificationData, recipientType)
+          .then(() => {
+            logger.info('Broadcast push notifications sent successfully', {
+              notificationCount: createdNotifications.length,
+              recipientType,
+            });
+          })
+          .catch((error) => {
+            logger.error('Failed to send broadcast push notifications in background', {
+              error: error.message,
+              stack: error.stack,
+              notificationCount: createdNotifications.length,
+              recipientType,
+            });
+          });
+      }
+
+      // Return immediately with created notifications
+      return createdNotifications;
+    } catch (error) {
+      logger.error('Failed to bulk create notifications', {
+        error: error.message,
+        recipientType,
+        recipientCount: recipientIds.length,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Send push notifications for broadcast (async, non-blocking)
+   */
+  async sendBroadcastPushNotifications(notifications, notificationData, recipientType) {
+    try {
+      if (!notifications || notifications.length === 0) {
+        logger.info('No notifications to send push for');
+        return;
+      }
+
+      // Group notifications by recipient to get all their tokens at once
+      // recipientId is already an ObjectId from the database
+      const recipientIds = [...new Set(notifications.map(n => {
+        const id = n.recipientId;
+        // Ensure it's an ObjectId
+        return id.toString ? id.toString() : String(id);
+      }))];
+      
+      logger.info('Sending broadcast push notifications', {
+        recipientType,
+        recipientCount: recipientIds.length,
+        notificationCount: notifications.length,
+      });
+      
+      // Get all push tokens for recipients based on recipient type
+      // recipientIds are ObjectIds from the database, but convert to ObjectId instances for query
+      const tokenQuery = recipientType === 'merchant'
+        ? {
+            merchantId: { $in: recipientIds.map(id => new mongoose.Types.ObjectId(id)) },
+            isActive: true,
+            $or: [
+              { expiresAt: { $exists: false } },
+              { expiresAt: { $gt: new Date() } },
+            ],
+          }
+        : {
+            userId: { $in: recipientIds.map(id => new mongoose.Types.ObjectId(id)) },
+            isActive: true,
+            $or: [
+              { expiresAt: { $exists: false } },
+              { expiresAt: { $gt: new Date() } },
+            ],
+          };
+      
+      const tokens = await PushToken.find(tokenQuery);
+      logger.info('Found push tokens for broadcast', {
+        tokenCount: tokens.length,
+        recipientCount: recipientIds.length,
+        recipientType,
+      });
+
+      if (tokens.length === 0) {
+        logger.warn('No active push tokens found for broadcast recipients', {
+          recipientType,
+          recipientCount: recipientIds.length,
+          sampleRecipientIds: recipientIds.slice(0, 5), // Log first 5 for debugging
+        });
+        
+        // Mark notifications as failed since no tokens found
+        await Notification.updateMany(
+          { _id: { $in: notifications.map(n => n._id) } },
+          {
+            $set: {
+              status: 'failed',
+              channel: 'push',
+            },
+          }
+        );
+        return;
+      }
+
+      // Prepare push messages - map each notification to its recipient's tokens
+      // Group tokens by recipientId for proper notification-to-token mapping
+      const tokensByRecipient = {};
+      tokens.forEach(token => {
+        const recipientId = (token.userId || token.merchantId).toString();
+        if (!tokensByRecipient[recipientId]) {
+          tokensByRecipient[recipientId] = [];
+        }
+        tokensByRecipient[recipientId].push(token);
+      });
+
+      // Determine priority based on notification type (same logic as in batchCreateNotifications)
+      const priorityMap = {
+        ORDER_CREATED: 90,
+        ORDER_ACCEPTED: 85,
+        ORDER_SHIPPED: 80,
+        ORDER_DELIVERED: 75,
+        ORDER_CANCELLED: 70,
+        NEW_ORDER: 95,
+        LOW_STOCK: 60,
+        PRODUCT_APPROVED: 50,
+        PRODUCT_REJECTED: 55,
+        CART_ABANDONED: 40,
+        PRICE_DROPPED: 30,
+        BACK_IN_STOCK: 35,
+        FLASH_SALE: 45,
+        NEW_ARRIVALS: 20,
+        MERCHANT_PROMOTION: 15,
+        PERSONALIZED_OFFER: 25,
+      };
+      const priority = notificationData.priority || priorityMap[notificationData.type] || 50;
+      
+      // Create push messages for all tokens
+      const messages = [];
+      Object.values(tokensByRecipient).flat().forEach((token) => {
+        messages.push({
+          to: token.token,
+          sound: 'default',
+          title: notificationData.title,
+          body: notificationData.body,
+          data: {
+            type: notificationData.type,
+            deepLink: notificationData.deepLink || null,
+            metadata: notificationData.metadata || {},
+          },
+          priority: priority > 50 ? 'high' : 'default',
+          badge: 1,
+        });
+      });
+
+      // Send in chunks to Expo
+      const chunks = this.chunkArray(messages, this.chunkSize);
+      for (const chunk of chunks) {
+        try {
+          await axios.post(this.expoPushEndpoint, chunk, {
+            headers: {
+              Accept: 'application/json',
+              'Accept-Encoding': 'gzip, deflate',
+              'Content-Type': 'application/json',
+            },
+            timeout: 10000, // 10 second timeout per chunk
+          });
+        } catch (error) {
+          logger.error('Failed to send push notification chunk', {
+            error: error.message,
+            chunkSize: chunk.length,
+          });
+        }
+      }
+
+      // Update notification statuses to sent
+      await Notification.updateMany(
+        { _id: { $in: notifications.map(n => n._id) } },
+        {
+          $set: {
+            status: 'sent',
+            channel: 'push',
+            sentAt: new Date(),
+          },
+        }
+      );
+
+      logger.info('Broadcast push notifications sent', {
+        tokensSent: messages.length,
+        notifications: notifications.length,
+      });
+    } catch (error) {
+      logger.error('Failed to send broadcast push notifications', {
+        error: error.message,
+      });
+    }
   }
 
   /**
