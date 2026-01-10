@@ -10,6 +10,7 @@ import {
   updatePreferences,
   sendBroadcast,
   sendMarketingNotification,
+  sendTestNotification,
   // Legacy endpoints
   saveNotification,
 } from '../controllers/notification.controller.js';
@@ -33,6 +34,9 @@ router.post('/mark-read', isAuthenticated, markMultipleAsRead);
 
 // Preferences management
 router.put('/preferences', isAuthenticated, updatePreferences);
+
+// Test endpoint (for debugging)
+router.post('/test', isAuthenticated, sendTestNotification);
 
 // Broadcast and marketing (Admin/Merchant only)
 router.post('/broadcast', isAuthenticated, isAdmin, sendBroadcast);

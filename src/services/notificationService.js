@@ -78,10 +78,24 @@ class NotificationService {
 
       // Get enabled channels
       const enabledChannels = preferences.getEnabledChannels(type);
+      
+      // Log enabled channels for debugging
+      logger.info('Notification channel check', {
+        type,
+        requestedChannel: channel,
+        enabledChannels,
+        globalPushEnabled: preferences.channels?.push,
+        globalInAppEnabled: preferences.channels?.in_app,
+        typePref: preferences.types[type],
+        recipientId: recipientObjectId.toString(),
+        recipientType,
+      });
+      
       if (!enabledChannels.includes(channel) && channel !== 'in_app') {
-        logger.info('Notification channel disabled by user preferences', {
+        logger.warn('Notification channel disabled by user preferences - will only create in-app', {
           type,
           channel,
+          enabledChannels,
           recipientId: recipientObjectId.toString(),
         });
         // Still create in-app notification even if channel is disabled
@@ -91,8 +105,9 @@ class NotificationService {
       // Generate deduplication key if not provided
       const finalDedupKey = deduplicationKey || `${type}_${recipientObjectId}_${JSON.stringify(metadata)}`;
 
-      // Check for duplicate notifications (deduplication)
-      if (preferences.antiSpam?.enabled) {
+      // Check for duplicate notifications (deduplication) - skip for test notifications
+      const isTestNotification = metadata?.test === true;
+      if (preferences.antiSpam?.enabled && !isTestNotification) {
         const recentDuplicate = await Notification.findOne({
           deduplicationKey: finalDedupKey,
           recipientId: recipientObjectId,
@@ -171,10 +186,37 @@ class NotificationService {
       });
 
       // Send through enabled channels
+      // For push channel specifically requested, try to send even if not in enabledChannels (for testing)
+      // But respect user preferences for actual production notifications
       const channelsToSend = enabledChannels.filter(c => c !== 'in_app'); // in_app already created
       
-      if (channelsToSend.includes('push')) {
+      // If push was explicitly requested but not in enabledChannels, log warning but still try to send for debugging
+      if (channel === 'push' && !channelsToSend.includes('push')) {
+        logger.warn('Push channel requested but not enabled in preferences - attempting to send anyway', {
+          notificationId: notification._id.toString(),
+          type,
+          enabledChannels,
+          bypassReason: 'explicit channel request',
+        });
+        // Try to send push notification anyway for debugging
+        try {
+          await this.sendPushNotification(notification, preferences);
+        } catch (error) {
+          logger.error('Failed to send push notification (bypassed preferences)', {
+            error: error.message,
+            notificationId: notification._id.toString(),
+          });
+        }
+      } else if (channelsToSend.includes('push')) {
+        // Normal flow: push is enabled in preferences
         await this.sendPushNotification(notification, preferences);
+      } else {
+        logger.info('Push notification skipped - not in enabled channels', {
+          notificationId: notification._id.toString(),
+          type,
+          enabledChannels,
+          requestedChannel: channel,
+        });
       }
 
       // Future: Handle SMS and Email channels
@@ -225,12 +267,27 @@ class NotificationService {
       // Get recipient push tokens
       let tokens = [];
       if (notification.recipientType === 'user') {
+        // First try the direct method
         tokens = await PushToken.getActiveTokensForUser(notification.recipientId);
+        
+        // If no tokens found, try to find by User model lookup (in case userId is wrong)
+        if (tokens.length === 0) {
+          const user = await User.findById(notification.recipientId);
+          if (user && user.clerkId) {
+            // Try to find user by clerkId and get tokens
+            const userWithClerkId = await User.findOne({ clerkId: user.clerkId });
+            if (userWithClerkId) {
+              tokens = await PushToken.getActiveTokensForUser(userWithClerkId._id);
+            }
+          }
+        }
+        
         logger.info('Fetching push tokens for user', {
           notificationId: notification._id.toString(),
           recipientId: notification.recipientId.toString(),
           recipientType: notification.recipientType,
           tokenCount: tokens.length,
+          recipientIdType: typeof notification.recipientId,
         });
       } else if (notification.recipientType === 'merchant') {
         tokens = await PushToken.getActiveTokensForMerchant(notification.recipientId);
@@ -278,25 +335,69 @@ class NotificationService {
         return notification;
       }
 
-      // Prepare push messages
-      const messages = tokens.map((token) => ({
-        to: token.token,
-        sound: 'default',
-        title: notification.title,
-        body: notification.body,
-        data: {
+      // Validate Expo push tokens and prepare push messages
+      const messages = [];
+      const invalidTokens = [];
+      
+      tokens.forEach((token) => {
+        // Validate Expo push token format (should start with ExponentPushToken[)
+        if (!token.token || !token.token.startsWith('ExponentPushToken[')) {
+          invalidTokens.push({
+            tokenId: token._id.toString(),
+            tokenPrefix: token.token?.substring(0, 30) + '...',
+            reason: 'Invalid Expo push token format',
+          });
+          return;
+        }
+        
+        messages.push({
+          to: token.token,
+          sound: 'default',
+          title: notification.title,
+          body: notification.body,
+          data: {
+            notificationId: notification._id.toString(),
+            type: notification.type,
+            deepLink: notification.deepLink || null,
+            metadata: notification.metadata || {},
+          },
+          priority: notification.priority > 50 ? 'high' : 'default',
+          badge: 1, // TODO: Calculate actual badge count
+        });
+      });
+      
+      if (invalidTokens.length > 0) {
+        logger.warn('Invalid Expo push tokens found', {
           notificationId: notification._id.toString(),
-          type: notification.type,
-          deepLink: notification.deepLink,
-          metadata: notification.metadata,
-        },
-        priority: notification.priority > 50 ? 'high' : 'default',
-        badge: 1, // TODO: Calculate actual badge count
-      }));
+          invalidCount: invalidTokens.length,
+          validCount: messages.length,
+          invalidTokens: invalidTokens.slice(0, 5), // Log first 5
+        });
+      }
+      
+      if (messages.length === 0) {
+        logger.error('No valid push messages to send', {
+          notificationId: notification._id.toString(),
+          totalTokens: tokens.length,
+          invalidTokens: invalidTokens.length,
+        });
+        notification.status = 'failed';
+        notification.channel = 'push';
+        await notification.save();
+        return notification;
+      }
 
       // Send in chunks
       const chunks = this.chunkArray(messages, this.chunkSize);
       const results = [];
+      let totalSent = 0;
+      let totalErrors = 0;
+
+      logger.info('Sending push notification to Expo', {
+        notificationId: notification._id.toString(),
+        tokenCount: messages.length,
+        chunkCount: chunks.length,
+      });
 
       for (const chunk of chunks) {
         try {
@@ -306,28 +407,64 @@ class NotificationService {
               'Accept-Encoding': 'gzip, deflate',
               'Content-Type': 'application/json',
             },
+            timeout: 30000, // 30 second timeout
           });
+          
           results.push(response.data);
+          
+          // Check Expo API response for errors
+          if (response.data && response.data.data) {
+            const receipts = response.data.data;
+            receipts.forEach((receipt, index) => {
+              if (receipt.status === 'error') {
+                totalErrors++;
+                logger.error('Expo push notification error for individual notification', {
+                  notificationId: notification._id.toString(),
+                  error: receipt.message,
+                  errorCode: receipt.details?.error,
+                  token: chunk[index]?.to?.substring(0, 20) + '...',
+                });
+              } else if (receipt.status === 'ok') {
+                totalSent++;
+              }
+            });
+          }
         } catch (error) {
-          logger.error('Failed to send push notification chunk', {
+          totalErrors += chunk.length;
+          logger.error('Failed to send push notification chunk to Expo', {
             error: error.message,
+            errorResponse: error.response?.data,
             chunkSize: chunk.length,
             notificationId: notification._id.toString(),
+            statusCode: error.response?.status,
           });
         }
       }
 
-      // Update notification status
-      notification.status = 'sent';
-      notification.channel = 'push';
-      notification.sentAt = new Date();
-      await notification.save();
-
-      logger.info('Push notification sent successfully', {
-        notificationId: notification._id.toString(),
-        tokensSent: messages.length,
-        results: results.length,
-      });
+      // Update notification status based on results
+      if (totalSent > 0) {
+        notification.status = 'sent';
+        notification.channel = 'push';
+        notification.sentAt = new Date();
+        await notification.save();
+        
+        logger.info('Push notification sent successfully', {
+          notificationId: notification._id.toString(),
+          tokensSent: totalSent,
+          tokensFailed: totalErrors,
+          totalTokens: messages.length,
+        });
+      } else {
+        notification.status = 'failed';
+        notification.channel = 'push';
+        await notification.save();
+        
+        logger.error('Push notification failed - no successful sends', {
+          notificationId: notification._id.toString(),
+          totalErrors,
+          totalTokens: messages.length,
+        });
+      }
 
       return notification;
     } catch (error) {
@@ -598,20 +735,55 @@ class NotificationService {
 
       // Send in chunks to Expo
       const chunks = this.chunkArray(messages, this.chunkSize);
+      let totalSent = 0;
+      let totalErrors = 0;
+      
       for (const chunk of chunks) {
         try {
-          await axios.post(this.expoPushEndpoint, chunk, {
+          logger.info('Sending push notification chunk to Expo', {
+            chunkSize: chunk.length,
+            sampleToken: chunk[0]?.to?.substring(0, 20) + '...',
+          });
+          
+          const response = await axios.post(this.expoPushEndpoint, chunk, {
             headers: {
               Accept: 'application/json',
               'Accept-Encoding': 'gzip, deflate',
               'Content-Type': 'application/json',
             },
-            timeout: 10000, // 10 second timeout per chunk
+            timeout: 30000, // 30 second timeout per chunk
+          });
+          
+          // Expo API returns data with receipts
+          if (response.data && response.data.data) {
+            const receipts = response.data.data;
+            receipts.forEach((receipt, index) => {
+              if (receipt.status === 'error') {
+                totalErrors++;
+                logger.error('Expo push notification error', {
+                  error: receipt.message,
+                  errorCode: receipt.details?.error,
+                  token: chunk[index]?.to?.substring(0, 20) + '...',
+                });
+              } else if (receipt.status === 'ok') {
+                totalSent++;
+              }
+            });
+          }
+          
+          logger.info('Expo push notification chunk sent', {
+            chunkSize: chunk.length,
+            responseStatus: response.status,
+            successCount: totalSent,
+            errorCount: totalErrors,
           });
         } catch (error) {
-          logger.error('Failed to send push notification chunk', {
+          totalErrors += chunk.length;
+          logger.error('Failed to send push notification chunk to Expo', {
             error: error.message,
+            errorResponse: error.response?.data,
             chunkSize: chunk.length,
+            statusCode: error.response?.status,
           });
         }
       }

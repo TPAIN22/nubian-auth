@@ -752,6 +752,131 @@ export const sendMarketingNotification = async (req, res) => {
   }
 };
 
+/**
+ * Test endpoint: Send a test notification to the current user
+ * Helps debug notification delivery issues
+ */
+export const sendTestNotification = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+
+    if (!userId) {
+      return sendError(res, {
+        message: 'Unauthorized',
+        code: 'UNAUTHORIZED',
+        statusCode: 401,
+      });
+    }
+
+    const user = await User.findOne({ clerkId: userId });
+    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+
+    let recipientType = 'user';
+    let recipientId = user?._id;
+    let recipientModel = 'User';
+
+    if (merchant && !user) {
+      recipientType = 'merchant';
+      recipientId = merchant._id;
+      recipientModel = 'Merchant';
+    } else if (!user) {
+      return sendError(res, {
+        message: 'User not found',
+        code: 'USER_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    // Check push tokens for this user/merchant (active tokens only)
+    let tokens = [];
+    if (recipientType === 'user') {
+      tokens = await PushToken.getActiveTokensForUser(recipientId);
+    } else {
+      tokens = await PushToken.getActiveTokensForMerchant(recipientId);
+    }
+
+    // Also check all tokens (including inactive) for debugging
+    const allTokens = recipientType === 'user'
+      ? await PushToken.find({ userId: recipientId }).limit(10)
+      : await PushToken.find({ merchantId: recipientId }).limit(10);
+    
+    // Also check tokens by clerkId (in case userId wasn't set correctly)
+    const tokensByClerkId = await PushToken.find({
+      $or: [
+        { userId: null }, // Anonymous tokens that might need to be merged
+      ],
+    }).limit(10);
+
+    // Send test notification - use FLASH_SALE type which has push enabled by default
+    const testNotification = await notificationService.createNotification({
+      type: 'FLASH_SALE', // This type has push enabled by default
+      recipientType,
+      recipientId,
+      title: '🔔 Test Notification',
+      body: 'This is a test notification to verify push notification delivery.',
+      deepLink: null,
+      metadata: { test: true, timestamp: new Date().toISOString() },
+      channel: 'push',
+    });
+
+    return sendSuccess(res, {
+      data: {
+        notificationId: testNotification?._id?.toString() || null,
+        recipientType,
+        recipientId: recipientId.toString(),
+        activeTokensCount: tokens.length,
+        totalTokensCount: allTokens.length,
+        tokens: allTokens.map(t => ({
+          id: t._id.toString(),
+          token: t.token.substring(0, 30) + '...',
+          platform: t.platform,
+          isActive: t.isActive,
+          expiresAt: t.expiresAt,
+          lastUsedAt: t.lastUsedAt,
+          userId: t.userId?.toString() || null,
+          merchantId: t.merchantId?.toString() || null,
+          hasUserId: !!t.userId,
+          hasMerchantId: !!t.merchantId,
+          matchesRecipient: recipientType === 'user' 
+            ? (t.userId?.toString() === recipientId.toString())
+            : (t.merchantId?.toString() === recipientId.toString()),
+        })),
+        anonymousTokens: tokensByClerkId.length,
+        debug: {
+          userId,
+          clerkId: userId,
+          mongoUserId: recipientId.toString(),
+          recipientModel,
+          recipientType,
+          // Check if tokens match
+          tokenMatching: {
+            activeTokensCount: tokens.length,
+            totalTokensForRecipient: allTokens.length,
+            recipientIdType: typeof recipientId,
+            recipientIdString: recipientId.toString(),
+            sampleTokenUserId: allTokens[0]?.userId?.toString() || 'none',
+            sampleTokenMerchantId: allTokens[0]?.merchantId?.toString() || 'none',
+          },
+        },
+        notificationStatus: testNotification?.status || 'unknown',
+        pushNotificationSent: testNotification?.status === 'sent',
+      },
+      message: 'Test notification sent. Check your device for the notification.',
+    });
+  } catch (error) {
+    logger.error('Failed to send test notification', {
+      error: error.message,
+      stack: error.stack,
+    });
+    return sendError(res, {
+      message: 'Failed to send test notification',
+      code: 'TEST_NOTIFICATION_FAILED',
+      statusCode: 500,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+};
+
 // Legacy endpoints for backward compatibility
 export const saveNotification = async (req, res) => {
   try {
