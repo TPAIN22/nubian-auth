@@ -79,28 +79,22 @@ export const getMyMerchantStatus = async (req, res) => {
     const { userId } = getAuth(req);
     
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return sendUnauthorized(res, "Authentication required");
     }
 
     const merchant = await Merchant.findOne({ clerkId: userId });
 
     if (!merchant) {
-      return res.status(404).json({ 
-        message: "No merchant application found",
-        hasApplication: false 
-      });
+      return sendSuccess(res, { data: { hasApplication: false }, message: "No merchant application found" });
     }
 
-    res.status(200).json({
-      merchant,
-      hasApplication: true,
-    });
+    return sendSuccess(res, { data: { merchant, hasApplication: true }, message: "Merchant status retrieved successfully" });
   } catch (error) {
     logger.error('Error getting merchant status', {
       requestId: req.requestId,
       error: error.message,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 
@@ -118,13 +112,13 @@ export const getAllMerchants = async (req, res) => {
 
     const merchants = await Merchant.find(query).sort({ appliedAt: -1 });
 
-    res.status(200).json(merchants);
+    return sendSuccess(res, { data: merchants, message: "Merchants retrieved successfully" });
   } catch (error) {
     logger.error('Error getting all merchants', {
       requestId: req.requestId,
       error: error.message,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 
@@ -138,16 +132,16 @@ export const getMerchantById = async (req, res) => {
     const merchant = await Merchant.findById(id);
 
     if (!merchant) {
-      return res.status(404).json({ message: "Merchant not found" });
+      return sendNotFound(res, "Merchant");
     }
 
-    res.status(200).json(merchant);
+    return sendSuccess(res, { data: merchant, message: "Merchant retrieved successfully" });
   } catch (error) {
     logger.error('Error getting merchant by ID', {
       requestId: req.requestId,
       error: error.message,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 
@@ -162,11 +156,15 @@ export const approveMerchant = async (req, res) => {
     const merchant = await Merchant.findById(id);
 
     if (!merchant) {
-      return res.status(404).json({ message: "Merchant not found" });
+      return sendNotFound(res, "Merchant");
     }
 
     if (merchant.status === "APPROVED") {
-      return res.status(400).json({ message: "Merchant is already approved" });
+      return sendError(res, {
+        message: "Merchant is already approved",
+        code: 'ALREADY_APPROVED',
+        statusCode: 400,
+      });
     }
 
     // Update merchant status
@@ -175,11 +173,17 @@ export const approveMerchant = async (req, res) => {
     merchant.approvedBy = adminId;
     await merchant.save();
 
-    // Update Clerk user's publicMetadata to set role to "merchant"
+    // Update Clerk user's publicMetadata to set role to "merchant" and merchantStatus
     try {
+      // Get existing metadata to preserve other fields
+      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const existingMetadata = clerkUser.publicMetadata || {};
+      
       await clerkClient.users.updateUser(merchant.clerkId, {
         publicMetadata: {
+          ...existingMetadata,
           role: "merchant",
+          merchantStatus: "APPROVED",
         },
       });
 
@@ -198,17 +202,14 @@ export const approveMerchant = async (req, res) => {
       // Continue even if Clerk update fails - merchant is still approved in DB
     }
 
-    res.status(200).json({
-      message: "Merchant approved successfully",
-      merchant,
-    });
+    return sendSuccess(res, { data: merchant, message: "Merchant approved successfully" });
   } catch (error) {
     logger.error('Error approving merchant', {
       requestId: req.requestId,
       error: error.message,
       stack: error.stack,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 
@@ -224,17 +225,22 @@ export const rejectMerchant = async (req, res) => {
     const merchant = await Merchant.findById(id);
 
     if (!merchant) {
-      return res.status(404).json({ message: "Merchant not found" });
+      return sendNotFound(res, "Merchant");
     }
 
     if (merchant.status === "REJECTED") {
-      return res.status(400).json({ message: "Merchant is already rejected" });
+      return sendError(res, {
+        message: "Merchant is already rejected",
+        code: 'ALREADY_REJECTED',
+        statusCode: 400,
+      });
     }
 
     // Update merchant status
     merchant.status = "REJECTED";
     merchant.rejectionReason = rejectionReason || "Application rejected by admin";
-    merchant.approvedBy = adminId;
+    // Note: approvedBy is NOT set here - it should only be set when approving, not rejecting
+    // Rejection and approval are separate audit events and should not mix
     await merchant.save();
 
     logger.info('Merchant rejected', {
@@ -245,17 +251,45 @@ export const rejectMerchant = async (req, res) => {
       reason: rejectionReason,
     });
 
-    res.status(200).json({
-      message: "Merchant application rejected",
-      merchant,
-    });
+    // Update Clerk user's publicMetadata to set merchantStatus to REJECTED
+    // Note: We don't remove the role field here as Clerk merges metadata.
+    // The middleware should check merchantStatus along with role for access control.
+    try {
+      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const existingMetadata = clerkUser.publicMetadata || {};
+      
+      await clerkClient.users.updateUser(merchant.clerkId, {
+        publicMetadata: {
+          ...existingMetadata,
+          merchantStatus: "REJECTED",
+          // Keep role as-is since Clerk merges metadata (can't easily remove fields)
+          // Middleware should check merchantStatus for access control
+        },
+      });
+
+      logger.info('Merchant rejected and Clerk metadata updated', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        clerkId: merchant.clerkId,
+        rejectedBy: adminId,
+      });
+    } catch (clerkError) {
+      logger.error('Error updating Clerk metadata on rejection', {
+        requestId: req.requestId,
+        error: clerkError.message,
+        clerkId: merchant.clerkId,
+      });
+      // Continue even if Clerk update fails - merchant is still rejected in DB
+    }
+
+    return sendSuccess(res, { data: merchant, message: "Merchant application rejected" });
   } catch (error) {
     logger.error('Error rejecting merchant', {
       requestId: req.requestId,
       error: error.message,
       stack: error.stack,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 
@@ -267,22 +301,22 @@ export const getMyMerchantProfile = async (req, res) => {
     const { userId } = getAuth(req);
     
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return sendUnauthorized(res, "Authentication required");
     }
 
     const merchant = await Merchant.findOne({ clerkId: userId });
 
     if (!merchant) {
-      return res.status(404).json({ message: "Merchant profile not found" });
+      return sendNotFound(res, "Merchant profile");
     }
 
-    res.status(200).json(merchant);
+    return sendSuccess(res, { data: merchant, message: "Merchant profile retrieved successfully" });
   } catch (error) {
     logger.error('Error getting merchant profile', {
       requestId: req.requestId,
       error: error.message,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 
@@ -383,7 +417,36 @@ export const suspendMerchant = async (req, res) => {
       // Don't fail the request if notification fails
     }
 
-    return sendSuccess(res, merchant, "Merchant suspended successfully");
+    // Update Clerk user's publicMetadata to set merchantStatus to SUSPENDED
+    try {
+      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const existingMetadata = clerkUser.publicMetadata || {};
+      
+      await clerkClient.users.updateUser(merchant.clerkId, {
+        publicMetadata: {
+          ...existingMetadata,
+          merchantStatus: "SUSPENDED",
+          // Keep the merchant role but mark as suspended
+          role: existingMetadata.role || undefined,
+        },
+      });
+
+      logger.info('Merchant suspended and Clerk metadata updated', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        clerkId: merchant.clerkId,
+        suspendedBy: adminId,
+      });
+    } catch (clerkError) {
+      logger.error('Error updating Clerk metadata on suspension', {
+        requestId: req.requestId,
+        error: clerkError.message,
+        clerkId: merchant.clerkId,
+      });
+      // Continue even if Clerk update fails - merchant is still suspended in DB
+    }
+
+    return sendSuccess(res, { data: merchant, message: "Merchant suspended successfully" });
   } catch (error) {
     logger.error('Error suspending merchant', {
       requestId: req.requestId,
@@ -471,7 +534,35 @@ export const unsuspendMerchant = async (req, res) => {
       // Don't fail the request if notification fails
     }
 
-    return sendSuccess(res, merchant, "Merchant unsuspended successfully");
+    // Update Clerk user's publicMetadata to restore merchantStatus to APPROVED
+    try {
+      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const existingMetadata = clerkUser.publicMetadata || {};
+      
+      await clerkClient.users.updateUser(merchant.clerkId, {
+        publicMetadata: {
+          ...existingMetadata,
+          role: "merchant",
+          merchantStatus: "APPROVED",
+        },
+      });
+
+      logger.info('Merchant unsuspended and Clerk metadata updated', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        clerkId: merchant.clerkId,
+        unsuspendedBy: adminId,
+      });
+    } catch (clerkError) {
+      logger.error('Error updating Clerk metadata on unsuspension', {
+        requestId: req.requestId,
+        error: clerkError.message,
+        clerkId: merchant.clerkId,
+      });
+      // Continue even if Clerk update fails - merchant is still unsuspended in DB
+    }
+
+    return sendSuccess(res, { data: merchant, message: "Merchant unsuspended successfully" });
   } catch (error) {
     logger.error('Error unsuspending merchant', {
       requestId: req.requestId,
@@ -515,7 +606,7 @@ export const deleteMerchant = async (req, res) => {
       deletedBy: adminId,
     });
 
-    return sendSuccess(res, { id }, "Merchant deleted successfully");
+    return sendSuccess(res, { data: { id }, message: "Merchant deleted successfully" });
   } catch (error) {
     logger.error('Error deleting merchant', {
       requestId: req.requestId,
@@ -559,16 +650,13 @@ export const updateMerchantProfile = async (req, res) => {
       clerkId: userId,
     });
 
-    res.status(200).json({
-      message: "Merchant profile updated successfully",
-      merchant,
-    });
+    return sendSuccess(res, { data: merchant, message: "Merchant profile updated successfully" });
   } catch (error) {
     logger.error('Error updating merchant profile', {
       requestId: req.requestId,
       error: error.message,
     });
-    res.status(500).json({ message: error.message });
+    throw error;
   }
 };
 

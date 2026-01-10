@@ -10,7 +10,6 @@ import orderRoutes from './routes/orders.route.js';
 import cartRoutes from './routes/carts.route.js';
 import reviewRoutes from './routes/reviews.route.js';
 import categoryRoutes from './routes/categories.route.js';
-import brandRoutes from './routes/merchant.route.js';
 import userRoutes from './routes/users.route.js';
 import webhookRoutes from './routes/webhook.routes.js';
 import { clerkMiddleware } from '@clerk/express';
@@ -189,7 +188,6 @@ app.use('/api/carts', cartRoutes);  // POST /api/carts/add -> router.post("/add"
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/categories', categoryRoutes);
-app.use('/api/merchant', brandRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/banners', bannerRoutes);
 app.use('/api/wishlist', wishlistRoutes);
