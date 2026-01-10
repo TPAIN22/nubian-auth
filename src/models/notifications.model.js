@@ -18,6 +18,8 @@ const pushTokenSchema = new mongoose.Schema(
       type: String,
       index: true,
       // Device identifier for multi-device support
+      // Note: Not unique to allow multiple tokens per device (e.g., after app reinstall)
+      // But we'll query for the most recent active one
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,

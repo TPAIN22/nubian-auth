@@ -32,65 +32,286 @@ export const savePushToken = async (req, res) => {
       });
     }
 
-    // Check if token already exists
-    let pushToken = await PushToken.findOne({ token });
+    if (!deviceId) {
+      return sendError(res, {
+        message: 'Device ID is required',
+        code: 'MISSING_DEVICE_ID',
+        statusCode: 400,
+      });
+    }
+
+    // PRIMARY APPROACH: Find token by deviceId first (device-based token management)
+    // Each device should have one active token record, which gets updated when user logs in/out
+    // Strategy:
+    // 1. Find active token by deviceId (preferred)
+    // 2. If not found, find any token by deviceId (could be inactive) and reactivate it
+    // 3. If still not found, check if token string exists (might be from different device)
+    // 4. If nothing found, create new token
+    
+    let pushToken = await PushToken.findOne({ 
+      deviceId,
+      isActive: true,
+    }).sort({ lastUsedAt: -1 }); // Get the most recently used active token for this device
+    
+    // If no active token found, look for any token (including inactive) for this device
+    if (!pushToken) {
+      pushToken = await PushToken.findOne({ 
+        deviceId,
+      }).sort({ lastUsedAt: -1 });
+      
+      if (pushToken) {
+        logger.info('Found inactive token for device - will reactivate it', {
+          tokenId: pushToken._id.toString(),
+          deviceId,
+          wasActive: pushToken.isActive,
+        });
+      }
+    }
+
+    logger.info('Processing push token (device-based)', {
+      deviceTokenExists: !!pushToken,
+      deviceId,
+      hasUserId: !!userId,
+      existingTokenUserId: pushToken?.userId?.toString() || 'none',
+      existingTokenId: pushToken?._id?.toString() || 'none',
+      existingTokenActive: pushToken?.isActive || false,
+      tokenPreview: token.substring(0, 30) + '...',
+    });
 
     if (pushToken) {
-      // Update existing token
+      // Token exists for this device - update it
+      // This handles:
+      // 1. Token refresh (Expo token changed)
+      // 2. User login (add userId)
+      // 3. User logout (keep userId or clear it)
+      // 4. User switch (update userId to new user)
+      
+      const oldUserId = pushToken.userId?.toString() || null;
+      const oldToken = pushToken.token;
+      
+      // Update token and metadata
+      pushToken.token = token; // Update Expo token (might have changed)
       pushToken.lastUsedAt = new Date();
       pushToken.isActive = true;
       if (platform) pushToken.platform = platform;
-      if (deviceId) pushToken.deviceId = deviceId;
       if (deviceName) pushToken.deviceName = deviceName;
       if (appVersion) pushToken.appVersion = appVersion;
       if (osVersion) pushToken.osVersion = osVersion;
 
-      // If user logged in and token was anonymous, merge it (onLoginMerge: true)
-      if (userId && !pushToken.userId) {
+      // Handle userId based on user login status
+      if (userId) {
+        // User is logged in - find user and update userId
         const user = await User.findOne({ clerkId: userId });
         if (user) {
-          // Merge all anonymous tokens for this device to this user
-          await PushToken.mergeAnonymousTokens(deviceId, user._id);
-          pushToken.userId = user._id;
+          const newUserId = user._id;
+          
+          if (!oldUserId) {
+            // No previous userId - user just logged in on this device
+            logger.info('User logged in - adding userId to device token', {
+              tokenId: pushToken._id.toString(),
+              deviceId,
+              clerkId: userId,
+              newUserId: newUserId.toString(),
+            });
+            
+            // Also merge any other anonymous tokens for this device (if any)
+            await PushToken.mergeAnonymousTokens(deviceId, newUserId);
+            
+            pushToken.userId = newUserId;
+          } else if (oldUserId !== newUserId.toString()) {
+            // Different user logged in on same device - update to new user
+            logger.info('Different user logged in on same device - updating userId', {
+              tokenId: pushToken._id.toString(),
+              deviceId,
+              oldUserId,
+              newUserId: newUserId.toString(),
+            });
+            pushToken.userId = newUserId;
+          } else {
+            // Same user - token already linked, just update lastUsedAt
+            logger.info('Same user on device - updating token metadata', {
+              tokenId: pushToken._id.toString(),
+              deviceId,
+              userId: newUserId.toString(),
+            });
+          }
+        } else {
+          logger.warn('User not found for clerkId, cannot link token', {
+            clerkId: userId,
+            tokenId: pushToken._id.toString(),
+            deviceId,
+          });
         }
-      } else if (userId && pushToken.userId) {
-        // User is logged in and token already has a userId - just update lastUsedAt
-        // (token might belong to different user, but we'll update it)
-        const user = await User.findOne({ clerkId: userId });
-        if (user && pushToken.userId.toString() !== user._id.toString()) {
-          // Different user logged in on same device - update token to new user
-          pushToken.userId = user._id;
+      } else {
+        // User is not logged in (anonymous)
+        if (oldUserId) {
+          // User logged out - keep userId for now (tokens persist after logout)
+          // This allows notifications to still reach the device if user logged out
+          // Uncomment the next line if you want to clear userId on logout:
+          // pushToken.userId = null;
+          
+          logger.info('User logged out - keeping token with userId for persistent notifications', {
+            tokenId: pushToken._id.toString(),
+            deviceId,
+            userId: oldUserId,
+          });
+        } else {
+          logger.info('Anonymous user on device - updating token metadata', {
+            tokenId: pushToken._id.toString(),
+            deviceId,
+          });
         }
+      }
+
+      // If token changed, log it
+      if (oldToken !== token) {
+        logger.info('Expo push token updated for device', {
+          tokenId: pushToken._id.toString(),
+          deviceId,
+          oldTokenPreview: oldToken.substring(0, 30) + '...',
+          newTokenPreview: token.substring(0, 30) + '...',
+        });
       }
 
       await pushToken.save();
     } else {
-      // Create new token
+      // No token exists for this device - create new one
       let userIdObjectId = null;
+      
       if (userId) {
+        // User is logged in during first registration
         const user = await User.findOne({ clerkId: userId });
-        if (user) userIdObjectId = user._id;
+        if (user) {
+          userIdObjectId = user._id;
+          logger.info('Creating new device token with userId (user logged in)', {
+            deviceId,
+            clerkId: userId,
+            mongoUserId: user._id.toString(),
+          });
+        } else {
+          logger.warn('User not found for clerkId when creating new token', {
+            clerkId: userId,
+            deviceId,
+          });
+        }
+      } else {
+        // Anonymous registration
+        logger.info('Creating new anonymous device token (no userId)', {
+          deviceId,
+        });
       }
 
-      pushToken = await PushToken.create({
-        token,
-        platform,
-        deviceId,
-        deviceName,
-        appVersion,
-        osVersion,
-        userId: userIdObjectId, // null for anonymous users (allowAnonymous: true)
-      });
+      // No token found for this device - check if token string exists (might be from different device)
+      const existingTokenByString = await PushToken.findOne({ token });
+      
+      if (existingTokenByString) {
+        // Token string exists but for different device (or deviceId wasn't set) - update it
+        logger.info('Token string exists but not for this device - updating deviceId and reactivating', {
+          existingTokenId: existingTokenByString._id.toString(),
+          oldDeviceId: existingTokenByString.deviceId,
+          newDeviceId: deviceId,
+        });
+        
+        existingTokenByString.deviceId = deviceId;
+        existingTokenByString.token = token; // Update in case it changed
+        existingTokenByString.lastUsedAt = new Date();
+        existingTokenByString.isActive = true;
+        if (platform) existingTokenByString.platform = platform;
+        if (deviceName) existingTokenByString.deviceName = deviceName;
+        if (appVersion) existingTokenByString.appVersion = appVersion;
+        if (osVersion) existingTokenByString.osVersion = osVersion;
+        if (userIdObjectId) existingTokenByString.userId = userIdObjectId;
+        
+        pushToken = existingTokenByString;
+        await pushToken.save();
+        
+        logger.info('Updated existing token with new deviceId', {
+          tokenId: pushToken._id.toString(),
+          deviceId,
+          userId: userIdObjectId?.toString() || 'anonymous',
+        });
+      } else {
+        // Completely new token - create it
+        // Deactivate any other active tokens for this device first (ensure only one active token per device)
+        await PushToken.updateMany(
+          { deviceId, isActive: true },
+          { isActive: false }
+        );
+        
+        logger.info('Deactivated old tokens for device before creating new one', {
+          deviceId,
+        });
+        
+        try {
+          pushToken = await PushToken.create({
+            token,
+            platform,
+            deviceId,
+            deviceName,
+            appVersion,
+            osVersion,
+            userId: userIdObjectId, // null for anonymous users
+          });
+          
+          logger.info('Created new device token successfully', {
+            tokenId: pushToken._id.toString(),
+            deviceId,
+            userId: userIdObjectId?.toString() || 'anonymous',
+          });
+        } catch (createError) {
+          // Handle unique constraint violation (token already exists - shouldn't happen after check, but just in case)
+          if (createError.code === 11000 || createError.name === 'MongoServerError') {
+            // Token string exists - find and update it
+            const tokenExists = await PushToken.findOne({ token });
+            if (tokenExists) {
+              logger.info('Token string exists during create - updating it', {
+                existingTokenId: tokenExists._id.toString(),
+              });
+              
+              tokenExists.deviceId = deviceId;
+              tokenExists.lastUsedAt = new Date();
+              tokenExists.isActive = true;
+              if (platform) tokenExists.platform = platform;
+              if (deviceName) tokenExists.deviceName = deviceName;
+              if (appVersion) tokenExists.appVersion = appVersion;
+              if (osVersion) tokenExists.osVersion = osVersion;
+              if (userIdObjectId) tokenExists.userId = userIdObjectId;
+              
+              pushToken = tokenExists;
+              await pushToken.save();
+            } else {
+              logger.error('Unique constraint error but token not found', {
+                error: createError.message,
+                deviceId,
+              });
+              throw createError;
+            }
+          } else {
+            // Handle any other unexpected errors
+            logger.error('Failed to create push token', {
+              error: createError.message,
+              errorCode: createError.code,
+              deviceId,
+              tokenPreview: token.substring(0, 30) + '...',
+            });
+            throw createError;
+          }
+        }
+      }
     }
 
     // Refresh expiration
-    pushToken.refreshExpiration();
+    await pushToken.refreshExpiration();
 
-    logger.info('Push token saved', {
-      token: pushToken.token.substring(0, 20) + '...',
+    logger.info('Push token saved successfully (device-based)', {
+      tokenId: pushToken._id.toString(),
+      deviceId: pushToken.deviceId,
+      tokenPreview: pushToken.token.substring(0, 30) + '...',
       userId: pushToken.userId?.toString() || 'anonymous',
-      platform,
-      deviceId,
+      merchantId: pushToken.merchantId?.toString() || 'none',
+      platform: pushToken.platform,
+      isActive: pushToken.isActive,
+      expiresAt: pushToken.expiresAt,
     });
 
     return sendSuccess(res, {
@@ -807,16 +1028,18 @@ export const sendTestNotification = async (req, res) => {
       ],
     }).limit(10);
 
-    // Send test notification - use FLASH_SALE type which has push enabled by default
+    // Send test notification - use ORDER_CREATED type which always has push enabled
+    // Also bypass preference checks for test notifications to ensure delivery
     const testNotification = await notificationService.createNotification({
-      type: 'FLASH_SALE', // This type has push enabled by default
+      type: 'ORDER_CREATED', // This type always has push enabled and is transactional (high priority)
       recipientType,
       recipientId,
       title: '🔔 Test Notification',
-      body: 'This is a test notification to verify push notification delivery.',
+      body: 'This is a test notification to verify push notification delivery. If you received this, push notifications are working!',
       deepLink: null,
       metadata: { test: true, timestamp: new Date().toISOString() },
       channel: 'push',
+      priority: 90, // High priority
     });
 
     return sendSuccess(res, {

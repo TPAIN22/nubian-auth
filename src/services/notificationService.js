@@ -401,6 +401,12 @@ class NotificationService {
 
       for (const chunk of chunks) {
         try {
+          logger.info('Sending push notification chunk to Expo', {
+            notificationId: notification._id.toString(),
+            chunkSize: chunk.length,
+            sampleToken: chunk[0]?.to?.substring(0, 30) + '...',
+          });
+
           const response = await axios.post(this.expoPushEndpoint, chunk, {
             headers: {
               Accept: 'application/json',
@@ -412,6 +418,13 @@ class NotificationService {
           
           results.push(response.data);
           
+          logger.info('Expo API response received', {
+            notificationId: notification._id.toString(),
+            status: response.status,
+            hasData: !!response.data?.data,
+            receiptCount: response.data?.data?.length || 0,
+          });
+          
           // Check Expo API response for errors
           if (response.data && response.data.data) {
             const receipts = response.data.data;
@@ -422,11 +435,29 @@ class NotificationService {
                   notificationId: notification._id.toString(),
                   error: receipt.message,
                   errorCode: receipt.details?.error,
-                  token: chunk[index]?.to?.substring(0, 20) + '...',
+                  errorDetails: receipt.details,
+                  token: chunk[index]?.to?.substring(0, 30) + '...',
+                  receiptIndex: index,
                 });
               } else if (receipt.status === 'ok') {
                 totalSent++;
+                logger.debug('Expo push notification sent successfully', {
+                  notificationId: notification._id.toString(),
+                  receiptId: receipt.id,
+                  token: chunk[index]?.to?.substring(0, 30) + '...',
+                });
+              } else {
+                logger.warn('Unexpected Expo receipt status', {
+                  notificationId: notification._id.toString(),
+                  status: receipt.status,
+                  receipt,
+                });
               }
+            });
+          } else {
+            logger.warn('Expo API response missing data field', {
+              notificationId: notification._id.toString(),
+              responseData: response.data,
             });
           }
         } catch (error) {
@@ -434,12 +465,23 @@ class NotificationService {
           logger.error('Failed to send push notification chunk to Expo', {
             error: error.message,
             errorResponse: error.response?.data,
+            errorStatus: error.response?.status,
+            errorHeaders: error.response?.headers,
             chunkSize: chunk.length,
             notificationId: notification._id.toString(),
-            statusCode: error.response?.status,
+            endpoint: this.expoPushEndpoint,
+            sampleMessage: chunk[0],
           });
         }
       }
+      
+      logger.info('Push notification chunk processing complete', {
+        notificationId: notification._id.toString(),
+        totalSent,
+        totalErrors,
+        totalMessages: messages.length,
+        chunkCount: chunks.length,
+      });
 
       // Update notification status based on results
       if (totalSent > 0) {
@@ -760,50 +802,102 @@ class NotificationService {
             receipts.forEach((receipt, index) => {
               if (receipt.status === 'error') {
                 totalErrors++;
-                logger.error('Expo push notification error', {
+                logger.error('Expo push notification error in broadcast', {
                   error: receipt.message,
                   errorCode: receipt.details?.error,
-                  token: chunk[index]?.to?.substring(0, 20) + '...',
+                  errorDetails: receipt.details,
+                  token: chunk[index]?.to?.substring(0, 30) + '...',
+                  receiptIndex: index,
                 });
               } else if (receipt.status === 'ok') {
                 totalSent++;
+                logger.debug('Expo push notification sent successfully in broadcast', {
+                  receiptId: receipt.id,
+                  token: chunk[index]?.to?.substring(0, 30) + '...',
+                });
+              } else {
+                logger.warn('Unexpected Expo receipt status in broadcast', {
+                  status: receipt.status,
+                  receipt,
+                  token: chunk[index]?.to?.substring(0, 30) + '...',
+                });
               }
+            });
+          } else {
+            logger.warn('Expo API response missing data field for broadcast', {
+              responseData: response.data,
+              responseStatus: response.status,
             });
           }
           
-          logger.info('Expo push notification chunk sent', {
+          logger.info('Expo push notification chunk sent for broadcast', {
             chunkSize: chunk.length,
             responseStatus: response.status,
             successCount: totalSent,
             errorCount: totalErrors,
+            chunkIndex: chunks.indexOf(chunk) + 1,
+            totalChunks: chunks.length,
           });
         } catch (error) {
           totalErrors += chunk.length;
-          logger.error('Failed to send push notification chunk to Expo', {
+          logger.error('Failed to send broadcast push notification chunk to Expo', {
             error: error.message,
             errorResponse: error.response?.data,
+            errorStatus: error.response?.status,
+            errorHeaders: error.response?.headers,
             chunkSize: chunk.length,
-            statusCode: error.response?.status,
+            endpoint: this.expoPushEndpoint,
+            sampleMessage: chunk[0],
           });
         }
       }
-
-      // Update notification statuses to sent
-      await Notification.updateMany(
-        { _id: { $in: notifications.map(n => n._id) } },
-        {
-          $set: {
-            status: 'sent',
-            channel: 'push',
-            sentAt: new Date(),
-          },
-        }
-      );
-
-      logger.info('Broadcast push notifications sent', {
-        tokensSent: messages.length,
-        notifications: notifications.length,
+      
+      logger.info('Broadcast push notification chunk processing complete', {
+        totalSent,
+        totalErrors,
+        totalMessages: messages.length,
+        chunkCount: chunks.length,
+        recipientType,
       });
+
+      // Update notification statuses based on results
+      if (totalSent > 0) {
+        await Notification.updateMany(
+          { _id: { $in: notifications.map(n => n._id) } },
+          {
+            $set: {
+              status: 'sent',
+              channel: 'push',
+              sentAt: new Date(),
+            },
+          }
+        );
+        
+        logger.info('Broadcast push notifications marked as sent', {
+          tokensSent: totalSent,
+          tokensFailed: totalErrors,
+          totalTokens: messages.length,
+          notifications: notifications.length,
+        });
+      } else {
+        // No successful sends - mark as failed
+        await Notification.updateMany(
+          { _id: { $in: notifications.map(n => n._id) } },
+          {
+            $set: {
+              status: 'failed',
+              channel: 'push',
+            },
+          }
+        );
+        
+        logger.error('Broadcast push notifications failed - no successful sends', {
+          totalErrors,
+          totalTokens: messages.length,
+          notifications: notifications.length,
+          recipientType,
+        });
+      }
     } catch (error) {
       logger.error('Failed to send broadcast push notifications', {
         error: error.message,
