@@ -60,7 +60,7 @@ const merchantSchema = new mongoose.Schema({
 
 // Indexes for frequently queried fields
 // Note: clerkId index is automatically created by unique: true, so we don't need to add it again
-merchantSchema.index({ status: 1 });
+// Note: status index is automatically created by index: true in schema, so we don't need to add it again
 merchantSchema.index({ appliedAt: -1 }); // For sorting by application date
 merchantSchema.index({ businessEmail: 1 }); // For email lookups
 

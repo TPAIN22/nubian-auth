@@ -16,13 +16,13 @@ const couponSchema = new mongoose.Schema({
 });
 
 // Indexes for frequently queried fields
-couponSchema.index({ code: 1 }, { unique: true }); // Already unique, but explicit index
+// Note: code index is automatically created by unique: true, so we don't need to add it again
 couponSchema.index({ isActive: 1 }); // For filtering active coupons
 couponSchema.index({ expiresAt: 1 }); // For filtering expired coupons
 
 // Compound indexes for common query patterns
 couponSchema.index({ isActive: 1, expiresAt: 1 }); // Active and non-expired coupons
-couponSchema.index({ code: 1, isActive: 1 }); // Coupon lookup with active status
+couponSchema.index({ code: 1, isActive: 1 }); // Coupon lookup with active status (compound index - keep this)
 
 const Coupon = mongoose.model('Coupon', couponSchema);
 

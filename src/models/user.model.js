@@ -31,7 +31,7 @@ const userSchema = new mongoose.Schema({
 } , {timestamps:true});
 
 // Indexes for frequently queried fields
-userSchema.index({ clerkId: 1 }, { unique: true }); // Already unique, but explicit index
+// Note: clerkId index is automatically created by unique: true, so we don't need to add it again
 userSchema.index({ emailAddress: 1 }); // For email lookups
 
 const User = mongoose.model("User", userSchema);

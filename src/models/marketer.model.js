@@ -28,7 +28,7 @@ const marketerSchema = new mongoose.Schema({
 });
 
 // Indexes for frequently queried fields
-marketerSchema.index({ code: 1 }, { unique: true }); // Already unique, but explicit index for code lookups
+// Note: code index is automatically created by unique: true, so we don't need to add it again
 marketerSchema.index({ createdAt: -1 }); // For sorting by creation date
 
 const Marketer = mongoose.model('Marketer', marketerSchema);

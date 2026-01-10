@@ -114,8 +114,8 @@ orderSchema.pre('save', function (next) {
 
 // Indexes for frequently queried fields
 orderSchema.index({ user: 1 }); // Frequently queried for user orders
-orderSchema.index({ orderNumber: 1 }, { unique: true }); // Already unique, but explicit index
-orderSchema.index({ status: 1 }); // For filtering by status
+// Note: orderNumber index is automatically created by unique: true, so we don't need to add it again
+// Note: status is not indexed here since we use compound indexes that include status
 orderSchema.index({ merchants: 1 }); // For filtering by merchant
 orderSchema.index({ orderDate: -1 }); // For sorting by newest orders
 orderSchema.index({ createdAt: -1 }); // For sorting by creation date

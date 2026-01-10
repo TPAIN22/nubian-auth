@@ -222,7 +222,7 @@ productSchema.query.active = function() {
 productSchema.index({ category: 1 }); // For category filtering
 productSchema.index({ isActive: 1 }); // For active products filtering
 productSchema.index({ merchant: 1 }); // For merchant filtering
-productSchema.index({ deletedAt: 1 }); // For soft delete filtering
+// Note: deletedAt index is automatically created by index: true in schema, so we don't need to add it again
 productSchema.index({ name: 'text', description: 'text' }); // Text search index
 productSchema.index({ createdAt: -1 }); // For sorting by newest
 productSchema.index({ price: 1 }); // For price sorting/filtering

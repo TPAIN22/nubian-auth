@@ -10,6 +10,7 @@ import Marketer from "../models/marketer.model.js";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden } from '../lib/response.js';
 import { getProductPrice, mapToObject } from '../utils/cartUtils.js';
+import { handleOrderCreated, handleOrderStatusChanged } from '../services/notificationEventHandlers.js';
 
 export const updateOrderStatus = async (req, res) => {
   try {
@@ -53,19 +54,25 @@ export const updateOrderStatus = async (req, res) => {
       });
     }
 
-    const oldOrder = await Order.findById(id);
+    const oldOrder = await Order.findById(id)
+      .populate("products.product", "name price images category description stock")
+      .populate("user", "fullName emailAddress phoneNumber")
+      .populate("merchants");
+    
     if (!oldOrder) {
       return sendNotFound(res, 'Order');
     }
 
+    const oldStatus = oldOrder.status;
     const order = await Order.findByIdAndUpdate(id, updateData, { new: true })
       .populate("products.product", "name price images category description stock")
-      .populate("user", "fullName emailAddress phoneNumber");
+      .populate("user", "fullName emailAddress phoneNumber")
+      .populate("merchants");
 
     // حساب العمولة فقط عند التسليم لأول مرة
     if (
       status === "delivered" &&
-      oldOrder.status !== "delivered" &&
+      oldStatus !== "delivered" &&
       order.marketer &&
       (!order.marketerCommission || order.marketerCommission === 0)
     ) {
@@ -78,6 +85,19 @@ export const updateOrderStatus = async (req, res) => {
         marketer.totalEarnings += commission;
         await marketer.save();
       }
+    }
+
+    // Trigger notification for order status change
+    if (status && status !== oldStatus) {
+      // Fire and forget - don't block the response if notification fails
+      handleOrderStatusChanged(order._id, oldStatus, status).catch((error) => {
+        logger.error('Failed to send order status change notification', {
+          error: error.message,
+          orderId: order._id.toString(),
+          oldStatus,
+          newStatus: status,
+        });
+      });
     }
 
     return sendSuccess(res, {
@@ -384,6 +404,14 @@ export const createOrder = async (req, res) => {
         orderNumber: formattedOrderNumber,
       });
     }
+
+    // Trigger notification for order creation (fire and forget)
+    handleOrderCreated(order._id).catch((error) => {
+      logger.error('Failed to send order created notification', {
+        error: error.message,
+        orderId: order._id.toString(),
+      });
+    });
 
     res.status(201).json(order);
   } catch (error) {
