@@ -19,7 +19,9 @@ import wishlistRoutes from './routes/wishlist.route.js';
 import addressRoutes from './routes/address.route.js';
 import couponRoutes from './routes/coupons.route.js';
 import merchantRoutes from './routes/merchant.route.js';
+import homeRoutes from './routes/home.route.js';
 import healthRoutes from './routes/health.route.js';
+import recommendationsRoutes from './routes/recommendations.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
 import logger from './lib/logger.js';
@@ -194,6 +196,8 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/merchants', merchantRoutes);
+app.use('/api/home', homeRoutes);
+app.use('/api/recommendations', recommendationsRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {

@@ -194,30 +194,78 @@ export const getProducts = async (req, res) => {
       }
     });
 
+    // Add $lookup stages to populate merchant and category
+    pipeline.push({
+      $lookup: {
+        from: 'merchants',
+        localField: 'merchant',
+        foreignField: '_id',
+        as: 'merchantData'
+      }
+    });
+    pipeline.push({
+      $lookup: {
+        from: 'categories',
+        localField: 'category',
+        foreignField: '_id',
+        as: 'categoryData'
+      }
+    });
+    
+    // Unwind and reshape the populated fields
+    pipeline.push({
+      $addFields: {
+        merchant: {
+          $cond: {
+            if: { $gt: [{ $size: '$merchantData' }, 0] },
+            then: {
+              _id: { $arrayElemAt: ['$merchantData._id', 0] },
+              businessName: { $arrayElemAt: ['$merchantData.businessName', 0] },
+              businessEmail: { $arrayElemAt: ['$merchantData.businessEmail', 0] }
+            },
+            else: null
+          }
+        },
+        category: {
+          $cond: {
+            if: { $gt: [{ $size: '$categoryData' }, 0] },
+            then: {
+              _id: { $arrayElemAt: ['$categoryData._id', 0] },
+              name: { $arrayElemAt: ['$categoryData.name', 0] }
+            },
+            else: null
+          }
+        }
+      }
+    });
+    
+    // Remove temporary lookup arrays
+    pipeline.push({
+      $project: {
+        merchantData: 0,
+        categoryData: 0
+      }
+    });
+
     // Skip and limit for pagination
     pipeline.push({ $skip: skip });
     pipeline.push({ $limit: limit });
 
     // Execute aggregation
-    const products = await Product.aggregate(pipeline);
+    const populatedProducts = await Product.aggregate(pipeline);
 
     // Get total count for pagination
     const totalProducts = await Product.countDocuments(filter);
 
-    // Populate referenced fields (merchant, category)
-    // Note: Aggregation doesn't populate, so we need to manually populate
-    const populatedProducts = await Product.populate(products, [
-      { path: 'merchant', select: 'businessName businessEmail' },
-      { path: 'category', select: 'name' }
-    ]);
-
-    logger.debug('Products retrieved with ranking', {
+    logger.info('Products retrieved with ranking', {
       requestId: req.requestId,
       total: totalProducts,
       returned: populatedProducts.length,
       page,
       limit,
       hasPersonalization: preferredCategories.length > 0,
+      categoryFilter: category || 'none',
+      merchantFilter: merchant || 'none',
     });
 
     return sendPaginated(res, {
@@ -399,12 +447,55 @@ export const createProduct = async (req, res) => {
             }
         }
         
-        logger.debug('Attempting to create product in database', {
+        // Ensure category is a valid MongoDB ObjectId
+        let categoryId = req.body.category;
+        if (categoryId && typeof categoryId === 'string') {
+            categoryId = categoryId.trim();
+            // Validate it's a valid MongoDB ObjectId format
+            if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+                logger.error('Invalid category ID format', {
+                    requestId: req.requestId,
+                    userId,
+                    categoryId,
+                    categoryType: typeof categoryId,
+                });
+                return sendError(res, {
+                    message: 'Invalid category ID format',
+                    statusCode: 400,
+                    code: 'VALIDATION_ERROR',
+                });
+            }
+            // Convert to ObjectId
+            req.body.category = new mongoose.Types.ObjectId(categoryId);
+        }
+
+        // Ensure merchant is a valid MongoDB ObjectId if provided
+        if (req.body.merchant && typeof req.body.merchant === 'string') {
+            const merchantId = req.body.merchant.trim();
+            if (mongoose.Types.ObjectId.isValid(merchantId)) {
+                req.body.merchant = new mongoose.Types.ObjectId(merchantId);
+            } else {
+                logger.error('Invalid merchant ID format', {
+                    requestId: req.requestId,
+                    userId,
+                    merchantId,
+                });
+                return sendError(res, {
+                    message: 'Invalid merchant ID format',
+                    statusCode: 400,
+                    code: 'VALIDATION_ERROR',
+                });
+            }
+        }
+
+        logger.info('Attempting to create product in database', {
             requestId: req.requestId,
             userId,
             productName: req.body.name,
-            categoryId: req.body.category,
-            merchantId: req.body.merchant || null,
+            categoryId: req.body.category?.toString(),
+            categoryIsObjectId: req.body.category instanceof mongoose.Types.ObjectId,
+            merchantId: req.body.merchant?.toString() || null,
+            merchantIsObjectId: req.body.merchant instanceof mongoose.Types.ObjectId,
         });
 
         const product = await Product.create(req.body)
@@ -415,7 +506,11 @@ export const createProduct = async (req, res) => {
             productId: product._id,
             productName: product.name,
             userRole,
-            merchantId: product.merchant || null,
+            categoryId: product.category?.toString() || 'MISSING',
+            categoryType: product.category ? typeof product.category : 'null',
+            categoryIsObjectId: product.category instanceof mongoose.Types.ObjectId,
+            merchantId: product.merchant?.toString() || null,
+            merchantIsObjectId: product.merchant instanceof mongoose.Types.ObjectId,
         });
         
         // Populate multiple fields - when using populate on a document (not query), need to await it
@@ -468,6 +563,51 @@ export const updateProduct = async (req, res) => {
             }
         }
         
+        // Ensure category is a valid MongoDB ObjectId if provided
+        if (req.body.category !== undefined) {
+            let categoryId = req.body.category;
+            if (categoryId && typeof categoryId === 'string') {
+                categoryId = categoryId.trim();
+                // Validate it's a valid MongoDB ObjectId format
+                if (!mongoose.Types.ObjectId.isValid(categoryId)) {
+                    logger.error('Invalid category ID format in update', {
+                        requestId: req.requestId,
+                        userId,
+                        productId: req.params.id,
+                        categoryId,
+                        categoryType: typeof categoryId,
+                    });
+                    return sendError(res, {
+                        message: 'Invalid category ID format',
+                        statusCode: 400,
+                        code: 'VALIDATION_ERROR',
+                    });
+                }
+                // Convert to ObjectId
+                req.body.category = new mongoose.Types.ObjectId(categoryId);
+            }
+        }
+
+        // Ensure merchant is a valid MongoDB ObjectId if provided
+        if (req.body.merchant !== undefined && req.body.merchant && typeof req.body.merchant === 'string') {
+            const merchantId = req.body.merchant.trim();
+            if (mongoose.Types.ObjectId.isValid(merchantId)) {
+                req.body.merchant = new mongoose.Types.ObjectId(merchantId);
+            } else {
+                logger.error('Invalid merchant ID format in update', {
+                    requestId: req.requestId,
+                    userId,
+                    productId: req.params.id,
+                    merchantId,
+                });
+                return sendError(res, {
+                    message: 'Invalid merchant ID format',
+                    statusCode: 400,
+                    code: 'VALIDATION_ERROR',
+                });
+            }
+        }
+
         // Validate variants if provided in update
         if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
             // Check SKU uniqueness within the product
@@ -496,6 +636,15 @@ export const updateProduct = async (req, res) => {
                 }
             }
         }
+
+        logger.info('Updating product', {
+            requestId: req.requestId,
+            userId,
+            productId: req.params.id,
+            categoryId: req.body.category?.toString() || 'not provided',
+            categoryIsObjectId: req.body.category instanceof mongoose.Types.ObjectId,
+            merchantId: req.body.merchant?.toString() || 'not provided',
+        });
         
         const updatedProduct = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true })
             .populate('merchant', 'businessName businessEmail')

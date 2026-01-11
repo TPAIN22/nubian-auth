@@ -1,9 +1,10 @@
 import Merchant from "../models/merchant.model.js";
+import Product from "../models/product.model.js";
 import Notify from "../models/notify.model.js";
 import { clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
 import { getAuth } from "@clerk/express";
-import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden } from '../lib/response.js';
+import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden, sendPaginated } from '../lib/response.js';
 import { sendMerchantSuspensionEmail, sendMerchantUnsuspensionEmail } from '../lib/mail.js';
 
 /**
@@ -140,6 +141,114 @@ export const getMerchantById = async (req, res) => {
     logger.error('Error getting merchant by ID', {
       requestId: req.requestId,
       error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Get public store information by ID (Authenticated users)
+ * Returns only public information for approved merchants
+ */
+export const getStoreById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const merchant = await Merchant.findById(id).select(
+      'businessName businessDescription businessEmail businessPhone businessAddress status averageRating'
+    ).lean();
+
+    if (!merchant) {
+      return sendNotFound(res, "Store");
+    }
+
+    // Only return approved merchants as stores
+    if (merchant.status !== 'APPROVED') {
+      return sendNotFound(res, "Store");
+    }
+
+    // Format response to match store interface
+    const storeData = {
+      _id: merchant._id,
+      businessName: merchant.businessName,
+      businessDescription: merchant.businessDescription,
+      businessEmail: merchant.businessEmail,
+      businessPhone: merchant.businessPhone,
+      businessAddress: merchant.businessAddress,
+      status: merchant.status,
+      rating: merchant.averageRating || 4.5,
+      verified: merchant.status === 'APPROVED',
+    };
+
+    return sendSuccess(res, { data: storeData, message: "Store retrieved successfully" });
+  } catch (error) {
+    logger.error('Error getting store by ID', {
+      requestId: req.requestId,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Get products for a public store page (public endpoint)
+ * Returns only active products for approved merchants
+ */
+export const getStoreProducts = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 100));
+    const skip = (page - 1) * limit;
+
+    // Verify merchant exists and is approved
+    const merchant = await Merchant.findById(id).select('status').lean();
+    
+    if (!merchant) {
+      return sendNotFound(res, "Store not found");
+    }
+
+    if (merchant.status !== 'APPROVED') {
+      return sendNotFound(res, "Store not found");
+    }
+
+    // Get active products for this merchant
+    const filter = {
+      merchant: id,
+      isActive: true,
+      deletedAt: null,
+    };
+
+    const products = await Product.find(filter)
+      .populate('category', 'name slug')
+      .populate('merchant', 'businessName status')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const totalProducts = await Product.countDocuments(filter);
+
+    logger.info('Store products retrieved', {
+      requestId: req.requestId,
+      storeId: id,
+      total: totalProducts,
+      page,
+      limit,
+    });
+
+    return sendPaginated(res, {
+      data: products,
+      page,
+      limit,
+      total: totalProducts,
+      message: "Store products retrieved successfully",
+    });
+  } catch (error) {
+    logger.error('Error getting store products', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
     });
     throw error;
   }

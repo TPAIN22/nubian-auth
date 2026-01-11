@@ -127,6 +127,64 @@ const productSchema = new mongoose.Schema({
     default: false,
   },
   
+  // ===== SMART COMMERCE RANKING FIELDS =====
+  // Track product performance metrics
+  orderCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  viewCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  favoriteCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  
+  // Calculated metrics (updated by scoring service)
+  conversionRate: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100,
+  },
+  storeRating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5,
+  },
+  
+  // Boost factors
+  discountBoost: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  newnessBoost: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  
+  // Final calculated visibility score
+  visibilityScore: {
+    type: Number,
+    default: 0,
+    min: 0,
+    index: true, // Indexed for efficient sorting
+  },
+  
+  // Timestamp for when score was last calculated
+  scoreCalculatedAt: {
+    type: Date,
+    default: null,
+  },
+  
   category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
   images: {
     type: [String],
@@ -249,6 +307,14 @@ productSchema.index({ isActive: 1, deletedAt: 1, averageRating: -1 }); // Active
 // Ranking compound indexes for home page queries
 productSchema.index({ isActive: 1, deletedAt: 1, featured: -1, priorityScore: -1, createdAt: -1 }); // Main ranking query index
 productSchema.index({ category: 1, isActive: 1, deletedAt: 1, featured: -1, priorityScore: -1, createdAt: -1 }); // Category ranking
+
+// Smart commerce ranking indexes
+productSchema.index({ visibilityScore: -1 }); // For sorting by visibility score
+productSchema.index({ isActive: 1, deletedAt: 1, visibilityScore: -1 }); // Active products by visibility
+productSchema.index({ category: 1, isActive: 1, deletedAt: 1, visibilityScore: -1 }); // Category products by visibility
+productSchema.index({ orderCount: -1 }); // For trending products
+productSchema.index({ viewCount: -1 }); // For popular products
+productSchema.index({ favoriteCount: -1 }); // For most favorited products
 
 const Product = mongoose.model('Product', productSchema);
 

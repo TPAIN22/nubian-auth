@@ -4,6 +4,8 @@ import {
   getMyMerchantStatus,
   getAllMerchants,
   getMerchantById,
+  getStoreById,
+  getStoreProducts,
   approveMerchant,
   rejectMerchant,
   suspendMerchant,
@@ -22,6 +24,10 @@ const router = express.Router();
 // Public routes (authenticated users can apply)
 router.post('/apply', isAuthenticated, validateMerchantApplication, applyToBecomeMerchant);
 router.get('/my-status', isAuthenticated, getMyMerchantStatus);
+
+// Public store routes (authenticated users can view approved stores)
+router.get('/store/:id', isAuthenticated, ...validateObjectId('id'), getStoreById);
+router.get('/store/:id/products', isAuthenticated, ...validateObjectId('id'), getStoreProducts);
 
 // Merchant-only routes (approved merchants)
 router.get('/my-profile', isAuthenticated, isApprovedMerchant, getMyMerchantProfile);
