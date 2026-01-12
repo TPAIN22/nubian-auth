@@ -1,6 +1,8 @@
 import mongoose from 'mongoose'
 import Product from '../models/product.model.js'
 import Merchant from '../models/merchant.model.js'
+import User from '../models/user.model.js'
+import Category from '../models/categories.model.js'
 import { getAuth } from '@clerk/express'
 import { clerkClient } from '@clerk/express'
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendForbidden } from '../lib/response.js'
@@ -18,6 +20,16 @@ export const getProducts = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const { category, merchant } = req.query;
+    
+    // Log request parameters for debugging
+    logger.info('getProducts request', {
+      category,
+      merchant,
+      page,
+      limit,
+      skip,
+      queryParams: req.query,
+    });
 
     // Get user preferred categories for personalization (optional, safe fallback)
     const preferredCategories = getUserPreferredCategories(req);
@@ -27,9 +39,43 @@ export const getProducts = async (req, res) => {
       isActive: true, // Only return active products by default
       deletedAt: null, // Exclude soft-deleted products
     };
+    
+    // Handle hierarchical categories: if category has children, include all subcategories
     if (category) {
-      filter.category = category; // Safe: validated as MongoDB ObjectId
+      try {
+        const categoryId = new mongoose.Types.ObjectId(category);
+        
+        // Find all subcategories (children) of this category
+        const subcategories = await Category.find({ 
+          parent: categoryId,
+          isActive: true 
+        }).select('_id').lean();
+        
+        // Build array of category IDs: parent + all children
+        const categoryIds = [categoryId];
+        if (subcategories && subcategories.length > 0) {
+          subcategories.forEach(sub => {
+            if (sub._id) {
+              categoryIds.push(sub._id);
+            }
+          });
+        }
+        
+        // Use $in to match products in parent category OR any subcategory
+        filter.category = { $in: categoryIds };
+        
+        logger.info('Category filter with subcategories', {
+          categoryId: category,
+          subcategoryCount: subcategories.length,
+          totalCategoryIds: categoryIds.length,
+        });
+      } catch (e) {
+        // Invalid ObjectId, fallback to direct match
+        logger.warn('Invalid category ID, using direct match', { category, error: e.message });
+        filter.category = category;
+      }
     }
+    
     if (merchant) {
       filter.merchant = merchant; // Safe: validated as MongoDB ObjectId
     }
@@ -1095,4 +1141,479 @@ export const updateProductRanking = async (req, res) => {
         });
         throw error;
     }
+};
+
+/**
+ * Explore products with advanced filtering and AI-powered ranking
+ * GET /api/products/explore
+ * 
+ * Query params:
+ * - page, limit: pagination
+ * - sort: recommended|best_sellers|trending|new|price_low|price_high|rating
+ * - Filters:
+ *   - minPrice, maxPrice: price range
+ *   - category: category ID
+ *   - brand/store: merchant ID
+ *   - size: size value
+ *   - color: color value
+ *   - discount: true/false (has discount)
+ *   - minRating: minimum rating (0-5)
+ *   - inStock: true/false (stock > 0)
+ *   - fastDelivery: true/false (placeholder for future)
+ *   - verifiedStore: true/false (merchant status = APPROVED)
+ */
+export const exploreProducts = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    
+    // Pagination
+    const MAX_LIMIT = 50;
+    const DEFAULT_LIMIT = 20;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
+    const skip = (page - 1) * limit;
+
+    // Sorting
+    const sort = req.query.sort || 'recommended'; // recommended|best_sellers|trending|new|price_low|price_high|rating
+
+    // Filters
+    const {
+      minPrice,
+      maxPrice,
+      category,
+      brand, // merchant ID
+      store, // merchant ID (alias for brand)
+      size,
+      color,
+      discount,
+      minRating,
+      inStock,
+      fastDelivery,
+      verifiedStore,
+    } = req.query;
+
+    // Base filter
+    const filter = {
+      isActive: true,
+      deletedAt: null,
+    };
+
+    // Price range filter
+    if (minPrice || maxPrice) {
+      filter.price = {};
+      if (minPrice) filter.price.$gte = parseFloat(minPrice);
+      if (maxPrice) filter.price.$lte = parseFloat(maxPrice);
+    }
+
+    // Category filter - handle hierarchical categories
+    if (category) {
+      try {
+        const categoryId = new mongoose.Types.ObjectId(category);
+        
+        // Find all subcategories (children) of this category
+        const subcategories = await Category.find({ 
+          parent: categoryId,
+          isActive: true 
+        }).select('_id').lean();
+        
+        // Build array of category IDs: parent + all children
+        const categoryIds = [categoryId];
+        if (subcategories && subcategories.length > 0) {
+          subcategories.forEach(sub => {
+            if (sub._id) {
+              categoryIds.push(sub._id);
+            }
+          });
+        }
+        
+        // Use $in to match products in parent category OR any subcategory
+        filter.category = { $in: categoryIds };
+        
+        logger.info('Explore category filter with subcategories', {
+          categoryId: category,
+          subcategoryCount: subcategories.length,
+          totalCategoryIds: categoryIds.length,
+        });
+      } catch (e) {
+        // Invalid ObjectId, skip filter
+        logger.warn('Invalid category ID in explore, skipping filter', { category, error: e.message });
+      }
+    }
+
+    // Merchant/store filter (brand or store)
+    const merchantId = brand || store;
+    if (merchantId) {
+      try {
+        filter.merchant = new mongoose.Types.ObjectId(merchantId);
+      } catch (e) {
+        // Invalid ObjectId, skip filter
+      }
+    }
+
+    // Size filter - use $or for variants OR legacy sizes field
+    if (size) {
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          { 'variants.attributes.size': size },
+          { sizes: size }
+        ]
+      });
+    }
+
+    // Color filter - use $or for variants OR legacy colors field
+    if (color) {
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          { 'variants.attributes.color': color },
+          { colors: color }
+        ]
+      });
+    }
+
+    // Discount filter - use $or for main price OR variant prices
+    if (discount === 'true') {
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          { discountPrice: { $gt: 0 } },
+          { 'variants.discountPrice': { $gt: 0 } }
+        ]
+      });
+    }
+
+    // Rating filter
+    if (minRating) {
+      filter.averageRating = { $gte: parseFloat(minRating) };
+    }
+
+    // Stock filter - use $or for main stock OR variant stock
+    if (inStock === 'true') {
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          { stock: { $gt: 0 } },
+          { 'variants.stock': { $gt: 0 } }
+        ]
+      });
+    }
+
+    // Get user preferences for personalization
+    let preferredCategories = [];
+    let viewedProductIds = [];
+    let clickedProductIds = [];
+
+    if (userId) {
+      try {
+        const user = await User.findOne({ clerkId: userId })
+          .populate('viewedProducts.product', 'category')
+          .populate('clickedProducts.product', 'category')
+          .lean();
+
+        if (user) {
+          // Extract preferred categories
+          const categoryIds = new Set();
+          user.viewedProducts?.forEach(vp => {
+            if (vp.product?._id) {
+              viewedProductIds.push(vp.product._id.toString());
+            }
+            if (vp.product?.category) {
+              categoryIds.add(vp.product.category.toString());
+            }
+          });
+          user.clickedProducts?.forEach(cp => {
+            if (cp.product?._id) {
+              clickedProductIds.push(cp.product._id.toString());
+            }
+            if (cp.product?.category) {
+              categoryIds.add(cp.product.category.toString());
+            }
+          });
+          preferredCategories = Array.from(categoryIds);
+        }
+      } catch (e) {
+        logger.warn('Error loading user preferences for explore', { error: e.message });
+      }
+    }
+
+    const now = new Date();
+    const RANKING = RANKING_CONSTANTS;
+    const preferredCategoryIds = preferredCategories.map(cat => {
+      try {
+        return new mongoose.Types.ObjectId(cat);
+      } catch (e) {
+        return null;
+      }
+    }).filter(id => id !== null);
+    
+    const viewedProductObjectIds = viewedProductIds.map(id => {
+      try {
+        return new mongoose.Types.ObjectId(id);
+      } catch (e) {
+        return null;
+      }
+    }).filter(id => id !== null);
+    
+    const clickedProductObjectIds = clickedProductIds.map(id => {
+      try {
+        return new mongoose.Types.ObjectId(id);
+      } catch (e) {
+        return null;
+      }
+    }).filter(id => id !== null);
+
+    // Build aggregation pipeline
+    const pipeline = [
+      // Match base filter
+      { $match: filter },
+
+      // Lookup merchant for verified store filter
+      {
+        $lookup: {
+          from: 'merchants',
+          localField: 'merchant',
+          foreignField: '_id',
+          as: 'merchant',
+        },
+      },
+      {
+        $unwind: { path: '$merchant', preserveNullAndEmptyArrays: true },
+      },
+
+      // Filter by verified store
+      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] : 
+          verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
+          []),
+
+      // Calculate ranking and affinity scores
+      {
+        $addFields: {
+          // Ranking components
+          featuredBoost: {
+            $cond: [{ $ifNull: ['$featured', false] }, RANKING.FEATURED_BOOST, 0],
+          },
+          priorityBoost: {
+            $multiply: [{ $ifNull: ['$priorityScore', 0] }, RANKING.PRIORITY_WEIGHT],
+          },
+          daysSinceCreation: {
+            $divide: [{ $subtract: [now, '$createdAt'] }, 1000 * 60 * 60 * 24],
+          },
+          stockValue: { $ifNull: ['$stock', 0] },
+          
+          // User affinity (from views/clicks)
+          userAffinityScore: {
+            $cond: [
+              { $in: ['$_id', clickedProductObjectIds] },
+              20, // Clicks are worth more
+              {
+                $cond: [
+                  { $in: ['$_id', viewedProductObjectIds] },
+                  10, // Views get a smaller boost
+                  0,
+                ],
+              },
+            ],
+          },
+
+          // Trending boost (visibilityScore)
+          trendingBoost: { $ifNull: ['$visibilityScore', 0] },
+
+          // Discount boost
+          discountBoost: {
+            $cond: [
+              { $gt: [{ $ifNull: ['$discountPrice', 0] }, 0] },
+              {
+                $multiply: [
+                  {
+                    $divide: [
+                      { $subtract: ['$price', { $ifNull: ['$discountPrice', '$price'] }] },
+                      { $max: ['$price', 1] },
+                    ],
+                  },
+                  50, // Max 50 points for discount
+                ],
+              },
+              0,
+            ],
+          },
+
+          // Personalization boost (preferred categories)
+          personalizationBoost: {
+            $cond: [
+              {
+                $and: [
+                  { $gt: [preferredCategoryIds.length, 0] },
+                  {
+                    $in: ['$category', preferredCategoryIds],
+                  },
+                ],
+              },
+              RANKING.PERSONALIZATION_BOOST,
+              0,
+            ],
+          },
+        },
+      },
+
+      // Calculate freshness boost
+      {
+        $addFields: {
+          freshnessBoost: {
+            $cond: [
+              { $lte: ['$daysSinceCreation', RANKING.FRESHNESS_MAX_DAYS] },
+              {
+                $max: [
+                  0,
+                  {
+                    $multiply: [
+                      {
+                        $subtract: [
+                          1,
+                          {
+                            $divide: ['$daysSinceCreation', RANKING.FRESHNESS_MAX_DAYS],
+                          },
+                        ],
+                      },
+                      RANKING.FRESHNESS_BOOST_MAX,
+                    ],
+                  },
+                ],
+              },
+              0,
+            ],
+          },
+          stockBoost: {
+            $cond: [
+              { $gte: ['$stockValue', RANKING.STOCK_BOOST_THRESHOLD] },
+              {
+                $min: [
+                  RANKING.STOCK_BOOST_MAX,
+                  {
+                    $multiply: [
+                      {
+                        $divide: [
+                          { $min: ['$stockValue', RANKING.STOCK_BOOST_THRESHOLD * 2] },
+                          RANKING.STOCK_BOOST_THRESHOLD * 2,
+                        ],
+                      },
+                      RANKING.STOCK_BOOST_MAX,
+                    ],
+                  },
+                ],
+              },
+              0,
+            ],
+          },
+        },
+      },
+
+      // Calculate total explore score
+      {
+        $addFields: {
+          exploreScore: {
+            $add: [
+              '$featuredBoost',
+              '$priorityBoost',
+              '$freshnessBoost',
+              '$stockBoost',
+              '$personalizationBoost',
+              '$userAffinityScore',
+              '$trendingBoost',
+              '$discountBoost',
+            ],
+          },
+        },
+      },
+
+      // Sort based on sort parameter
+      {
+        $sort: (() => {
+          switch (sort) {
+            case 'price_low':
+              return { price: 1, exploreScore: -1 };
+            case 'price_high':
+              return { price: -1, exploreScore: -1 };
+            case 'rating':
+              return { averageRating: -1, exploreScore: -1 };
+            case 'new':
+              return { createdAt: -1, exploreScore: -1 };
+            case 'trending':
+              return { trendingBoost: -1, exploreScore: -1 };
+            case 'best_sellers':
+              return { orderCount: -1, exploreScore: -1 };
+            case 'recommended':
+            default:
+              return { exploreScore: -1, trendingBoost: -1, createdAt: -1 };
+          }
+        })(),
+      },
+
+      // Pagination
+      { $skip: skip },
+      { $limit: limit },
+
+      // Populate category
+      {
+        $lookup: {
+          from: 'categories',
+          localField: 'category',
+          foreignField: '_id',
+          as: 'category',
+        },
+      },
+      {
+        $unwind: { path: '$category', preserveNullAndEmptyArrays: true },
+      },
+    ];
+
+    // Execute aggregation
+    const products = await Product.aggregate(pipeline);
+
+    // Get total count (for pagination)
+    const countPipeline = [
+      { $match: filter },
+      {
+        $lookup: {
+          from: 'merchants',
+          localField: 'merchant',
+          foreignField: '_id',
+          as: 'merchant',
+        },
+      },
+      { $unwind: { path: '$merchant', preserveNullAndEmptyArrays: true } },
+      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] : 
+          verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
+          []),
+      { $count: 'total' },
+    ];
+    const countResult = await Product.aggregate(countPipeline);
+    const total = countResult[0]?.total || 0;
+
+    logger.info('Explore products retrieved', {
+      requestId: req.requestId,
+      total,
+      returned: products.length,
+      page,
+      limit,
+      sort,
+      hasUser: !!userId,
+      preferredCategoriesCount: preferredCategories.length,
+    });
+
+    return sendPaginated(res, {
+      data: products,
+      page,
+      limit,
+      total,
+      message: 'Explore products retrieved successfully',
+    });
+  } catch (error) {
+    logger.error('Error exploring products', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
+    throw error;
+  }
 };

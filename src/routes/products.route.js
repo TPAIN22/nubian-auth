@@ -13,6 +13,7 @@ import {
   restoreProduct,
   hardDeleteProduct,
   updateProductRanking,
+  exploreProducts,
 } from '../controllers/products.controller.js'
 import { validateProductCreate, validateProductUpdate } from '../middleware/validators/product.validator.js'
 import { validatePagination } from '../middleware/validators/pagination.validator.js'
@@ -23,6 +24,7 @@ const router = express.Router()
 
 // Public/Merchant routes (order matters - more specific routes first)
 router.get('/', validatePagination, validateCategoryFilter, validateMerchantFilter, getProducts)
+router.get('/explore', validatePagination, exploreProducts)
 router.get('/merchant/my-products', isAuthenticated, isApprovedMerchant, validatePagination, validateCategoryFilter, getMerchantProducts)
 router.get('/:id', ...validateObjectId('id'), getProductById)
 
