@@ -24,6 +24,7 @@ import healthRoutes from './routes/health.route.js';
 import recommendationsRoutes from './routes/recommendations.route.js';
 import trackingRoutes from './routes/tracking.route.js';
 import analyticsRoutes from './routes/analytics.route.js';
+import uploadRoutes from './routes/upload.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
 import logger from './lib/logger.js';
@@ -202,6 +203,7 @@ app.use('/api/home', homeRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
 app.use('/api/tracking', trackingRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {

@@ -474,6 +474,7 @@ export const createOrder = async (req, res) => {
       phoneNumber: delivery.phone,
       city: delivery.city,
       address: addressString,
+      transferProof: req.body.transferProof || null, // ImageKit URL for payment proof
       marketer: req.body.marketerCode
         ? (await Marketer.findOne({ code: req.body.marketerCode.toUpperCase() }))?._id
         : null,

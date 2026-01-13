@@ -116,6 +116,11 @@ const orderSchema = new mongoose.Schema({
         type: Number,
         default: 0
     },
+    transferProof: {
+        type: String,
+        default: null,
+        // ImageKit URL for payment proof image
+    },
 
     // ⬇⬇⬇ الحقول الجديدة
     marketer: {
