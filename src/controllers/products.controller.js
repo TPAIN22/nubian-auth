@@ -9,6 +9,87 @@ import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendF
 import logger from '../lib/logger.js'
 import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productRanking.js'
 
+/**
+ * Enrich product with pricing breakdown for API responses
+ * Adds finalPrice, merchantPrice, and pricingBreakdown to product objects
+ */
+function enrichProductWithPricing(product) {
+  if (!product) return product;
+  
+  // Handle both plain objects and Mongoose documents
+  const productObj = product.toObject ? product.toObject() : product;
+  
+  // Calculate finalPrice if not set (smart pricing)
+  const merchantPrice = productObj.merchantPrice || productObj.price || 0;
+  const nubianMarkup = productObj.nubianMarkup || 10;
+  const dynamicMarkup = productObj.dynamicMarkup || 0;
+  
+  let finalPrice = productObj.finalPrice;
+  if (!finalPrice || finalPrice === 0) {
+    // Calculate finalPrice: merchantPrice + (merchantPrice * nubianMarkup / 100) + (merchantPrice * dynamicMarkup / 100)
+    const nubianMarkupAmount = (merchantPrice * nubianMarkup) / 100;
+    const dynamicMarkupAmount = (merchantPrice * dynamicMarkup) / 100;
+    finalPrice = Math.max(merchantPrice, merchantPrice + nubianMarkupAmount + dynamicMarkupAmount);
+  }
+  
+  // Fallback to discountPrice or price if finalPrice still not set
+  if (!finalPrice || finalPrice === 0) {
+    finalPrice = productObj.discountPrice && productObj.discountPrice > 0 
+      ? productObj.discountPrice 
+      : productObj.price || 0;
+  }
+  
+  // Enrich variants with pricing
+  if (productObj.variants && Array.isArray(productObj.variants)) {
+    productObj.variants = productObj.variants.map(variant => {
+      const variantMerchantPrice = variant.merchantPrice || variant.price || 0;
+      const variantNubianMarkup = variant.nubianMarkup || nubianMarkup;
+      const variantDynamicMarkup = variant.dynamicMarkup || dynamicMarkup;
+      
+      let variantFinalPrice = variant.finalPrice;
+      if (!variantFinalPrice || variantFinalPrice === 0) {
+        const variantNubianMarkupAmount = (variantMerchantPrice * variantNubianMarkup) / 100;
+        const variantDynamicMarkupAmount = (variantMerchantPrice * variantDynamicMarkup) / 100;
+        variantFinalPrice = Math.max(variantMerchantPrice, variantMerchantPrice + variantNubianMarkupAmount + variantDynamicMarkupAmount);
+      }
+      
+      if (!variantFinalPrice || variantFinalPrice === 0) {
+        variantFinalPrice = variant.discountPrice && variant.discountPrice > 0 
+          ? variant.discountPrice 
+          : variant.price || 0;
+      }
+      
+      return {
+        ...variant,
+        finalPrice: variantFinalPrice,
+        merchantPrice: variantMerchantPrice,
+        nubianMarkup: variantNubianMarkup,
+        dynamicMarkup: variantDynamicMarkup,
+      };
+    });
+  }
+  
+  return {
+    ...productObj,
+    finalPrice: finalPrice,
+    merchantPrice: merchantPrice,
+    pricingBreakdown: {
+      merchantPrice: merchantPrice,
+      nubianMarkup: nubianMarkup,
+      dynamicMarkup: dynamicMarkup,
+      finalPrice: finalPrice,
+    },
+  };
+}
+
+/**
+ * Enrich array of products with pricing breakdown
+ */
+function enrichProductsWithPricing(products) {
+  if (!Array.isArray(products)) return products;
+  return products.map(enrichProductWithPricing);
+}
+
 export const getProducts = async (req, res) => {
   try {
     // Pagination validation with max limits
@@ -303,10 +384,13 @@ export const getProducts = async (req, res) => {
     // Get total count for pagination
     const totalProducts = await Product.countDocuments(filter);
 
+    // Enrich products with pricing breakdown
+    const enrichedProducts = enrichProductsWithPricing(populatedProducts);
+
     logger.info('Products retrieved with ranking', {
       requestId: req.requestId,
       total: totalProducts,
-      returned: populatedProducts.length,
+      returned: enrichedProducts.length,
       page,
       limit,
       hasPersonalization: preferredCategories.length > 0,
@@ -315,7 +399,7 @@ export const getProducts = async (req, res) => {
     });
 
     return sendPaginated(res, {
-      data: populatedProducts,
+      data: enrichedProducts,
       page,
       limit,
       total: totalProducts,
@@ -349,8 +433,11 @@ export const getProductById = async (req, res) => {
         // Return product even if inactive (for admin/merchant viewing)
         // Frontend can check isActive to handle display
         
+        // Enrich product with pricing breakdown
+        const enrichedProduct = enrichProductWithPricing(product);
+        
         return sendSuccess(res, {
-            data: product,
+            data: enrichedProduct,
             message: 'Product retrieved successfully',
         });
     } catch (error) {
@@ -515,6 +602,51 @@ export const createProduct = async (req, res) => {
             req.body.category = new mongoose.Types.ObjectId(categoryId);
         }
 
+        // ===== SMART PRICING: Sync price with merchantPrice =====
+        // If price is provided but merchantPrice is not, set merchantPrice = price
+        // This ensures backward compatibility and proper pricing calculation
+        if (req.body.price && !req.body.merchantPrice) {
+            req.body.merchantPrice = req.body.price;
+            logger.debug('Syncing merchantPrice with price', {
+                requestId: req.requestId,
+                price: req.body.price,
+                merchantPrice: req.body.merchantPrice,
+            });
+        }
+        // If merchantPrice is provided but price is not, set price = merchantPrice
+        if (req.body.merchantPrice && !req.body.price) {
+            req.body.price = req.body.merchantPrice;
+        }
+        // Set default nubianMarkup if not provided
+        if (!req.body.nubianMarkup && req.body.nubianMarkup !== 0) {
+            req.body.nubianMarkup = 10; // Default 10%
+        }
+        // Initialize dynamicMarkup to 0 if not provided (will be calculated by cron)
+        if (!req.body.dynamicMarkup && req.body.dynamicMarkup !== 0) {
+            req.body.dynamicMarkup = 0;
+        }
+        
+        // Handle variants pricing
+        if (req.body.variants && Array.isArray(req.body.variants)) {
+            req.body.variants.forEach(variant => {
+                // Sync variant price with merchantPrice
+                if (variant.price && !variant.merchantPrice) {
+                    variant.merchantPrice = variant.price;
+                }
+                if (variant.merchantPrice && !variant.price) {
+                    variant.price = variant.merchantPrice;
+                }
+                // Set default nubianMarkup for variant
+                if (!variant.nubianMarkup && variant.nubianMarkup !== 0) {
+                    variant.nubianMarkup = req.body.nubianMarkup || 10;
+                }
+                // Initialize dynamicMarkup for variant
+                if (!variant.dynamicMarkup && variant.dynamicMarkup !== 0) {
+                    variant.dynamicMarkup = 0;
+                }
+            });
+        }
+
         // Ensure merchant is a valid MongoDB ObjectId if provided
         if (req.body.merchant && typeof req.body.merchant === 'string') {
             const merchantId = req.body.merchant.trim();
@@ -564,7 +696,10 @@ export const createProduct = async (req, res) => {
             .populate('merchant', 'businessName businessEmail')
             .populate('category', 'name');
         
-        return sendCreated(res, populatedProduct, 'Product created successfully');
+        // Enrich product with pricing breakdown
+        const enrichedProduct = enrichProductWithPricing(populatedProduct);
+        
+        return sendCreated(res, enrichedProduct, 'Product created successfully');
     } catch (error) {
         logger.error('Error creating product', {
             requestId: req.requestId,
@@ -692,7 +827,29 @@ export const updateProduct = async (req, res) => {
             merchantId: req.body.merchant?.toString() || 'not provided',
         });
         
-        const updatedProduct = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true })
+        // ===== SMART PRICING: Sync price with merchantPrice =====
+        // If price is provided but merchantPrice is not, set merchantPrice = price
+        if (req.body.price !== undefined && req.body.merchantPrice === undefined) {
+            req.body.merchantPrice = req.body.price;
+        }
+        // If merchantPrice is provided but price is not, set price = merchantPrice
+        if (req.body.merchantPrice !== undefined && req.body.price === undefined) {
+            req.body.price = req.body.merchantPrice;
+        }
+        // Handle variants pricing
+        if (req.body.variants && Array.isArray(req.body.variants)) {
+            req.body.variants.forEach(variant => {
+                // Sync variant price with merchantPrice
+                if (variant.price !== undefined && variant.merchantPrice === undefined) {
+                    variant.merchantPrice = variant.price;
+                }
+                if (variant.merchantPrice !== undefined && variant.price === undefined) {
+                    variant.price = variant.merchantPrice;
+                }
+            });
+        }
+        
+        const updatedProduct = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
             .populate('merchant', 'businessName businessEmail')
             .populate('category', 'name');
         
@@ -800,8 +957,11 @@ export const getMerchantProducts = async (req, res) => {
 
         const totalProducts = await Product.countDocuments(filter);
         
+        // Enrich products with pricing breakdown
+        const enrichedProducts = enrichProductsWithPricing(products);
+        
         return sendPaginated(res, {
-            data: products,
+            data: enrichedProducts,
             page,
             limit,
             total: totalProducts,
@@ -891,6 +1051,9 @@ export const getAllProductsAdmin = async (req, res) => {
 
         const totalProducts = await Product.countDocuments(filter);
 
+        // Enrich products with pricing breakdown
+        const enrichedProducts = enrichProductsWithPricing(products);
+
         logger.info('Admin retrieved all products', {
             requestId: req.requestId,
             userId: getAuth(req).userId,
@@ -901,7 +1064,7 @@ export const getAllProductsAdmin = async (req, res) => {
         });
 
         return sendPaginated(res, {
-            data: products,
+            data: enrichedProducts,
             page,
             limit,
             total: totalProducts,
@@ -1198,11 +1361,54 @@ export const exploreProducts = async (req, res) => {
       deletedAt: null,
     };
 
-    // Price range filter
+    // Price range filter - filter by finalPrice (smart pricing)
+    // Use $or to match either finalPrice or legacy price/discountPrice
     if (minPrice || maxPrice) {
-      filter.price = {};
-      if (minPrice) filter.price.$gte = parseFloat(minPrice);
-      if (maxPrice) filter.price.$lte = parseFloat(maxPrice);
+      const minPriceVal = minPrice ? parseFloat(minPrice) : null;
+      const maxPriceVal = maxPrice ? parseFloat(maxPrice) : null;
+      
+      filter.$and = filter.$and || [];
+      filter.$and.push({
+        $or: [
+          // Smart pricing: finalPrice
+          ...(minPriceVal !== null || maxPriceVal !== null ? [{
+            finalPrice: {
+              ...(minPriceVal !== null ? { $gte: minPriceVal } : {}),
+              ...(maxPriceVal !== null ? { $lte: maxPriceVal } : {}),
+            }
+          }] : []),
+          // Legacy: discountPrice or price (if finalPrice not set)
+          {
+            $and: [
+              { finalPrice: { $exists: false } },
+              {
+                $or: [
+                  // Use discountPrice if exists, else price
+                  {
+                    $expr: {
+                      $cond: [
+                        { $gt: [{ $ifNull: ['$discountPrice', 0] }, 0] },
+                        {
+                          discountPrice: {
+                            ...(minPriceVal !== null ? { $gte: minPriceVal } : {}),
+                            ...(maxPriceVal !== null ? { $lte: maxPriceVal } : {}),
+                          }
+                        },
+                        {
+                          price: {
+                            ...(minPriceVal !== null ? { $gte: minPriceVal } : {}),
+                            ...(maxPriceVal !== null ? { $lte: maxPriceVal } : {}),
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      });
     }
 
     // Category filter - handle hierarchical categories
@@ -1272,11 +1478,22 @@ export const exploreProducts = async (req, res) => {
       });
     }
 
-    // Discount filter - use $or for main price OR variant prices
+    // Discount filter - check for discounts (finalPrice < merchantPrice OR discountPrice exists)
     if (discount === 'true') {
       filter.$and = filter.$and || [];
       filter.$and.push({
         $or: [
+          // Smart pricing: finalPrice less than merchantPrice (discount)
+          {
+            $expr: {
+              $and: [
+                { $gt: [{ $ifNull: ['$finalPrice', 0] }, 0] },
+                { $gt: [{ $ifNull: ['$merchantPrice', '$price', 0] }, 0] },
+                { $lt: ['$finalPrice', { $ifNull: ['$merchantPrice', '$price'] }] }
+              ]
+            }
+          },
+          // Legacy: discountPrice exists
           { discountPrice: { $gt: 0 } },
           { 'variants.discountPrice': { $gt: 0 } }
         ]
@@ -1590,10 +1807,13 @@ export const exploreProducts = async (req, res) => {
     const countResult = await Product.aggregate(countPipeline);
     const total = countResult[0]?.total || 0;
 
+    // Enrich products with pricing breakdown
+    const enrichedProducts = enrichProductsWithPricing(products);
+
     logger.info('Explore products retrieved', {
       requestId: req.requestId,
       total,
-      returned: products.length,
+      returned: enrichedProducts.length,
       page,
       limit,
       sort,
@@ -1602,7 +1822,7 @@ export const exploreProducts = async (req, res) => {
     });
 
     return sendPaginated(res, {
-      data: products,
+      data: enrichedProducts,
       page,
       limit,
       total,

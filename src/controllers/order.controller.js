@@ -125,21 +125,26 @@ export const getUserOrders = async (req, res) => {
         select: "name price discountPrice images category description stock createdAt",
       })
       .populate("user", "fullName emailAddress phoneNumber")
+      .populate("coupon", "code type value")
       .sort({ orderDate: -1 });
 
     const enhancedOrders = orders.map((order) => ({
       ...order.toObject(),
       productsCount: order.products.length,
       productsDetails: order.products.map((item) => {
-        // Use stored price from order (final price at time of order) or fallback to product price
-        // The order stores the final selling price (discountPrice if existed, else price)
-        const finalPrice = item.price || item.product?.price || 0;
+        // Use stored price from order (final price at time of order) or fallback to product finalPrice
+        // The order stores the final selling price (finalPrice > discountPrice > price)
+        const finalPrice = item.price || item.product?.finalPrice || item.product?.discountPrice || item.product?.price || 0;
+        const merchantPrice = item.merchantPrice || item.product?.merchantPrice || item.product?.price || 0;
         return {
           productId: item.product?._id || null,
           name: item.product?.name || "",
-          price: finalPrice, // Final price charged (discountPrice if existed, else price)
-          discountPrice: item.discountPrice, // Store original discountPrice for display
-          originalPrice: item.originalPrice || item.product?.price || 0, // Original price before discount
+          price: finalPrice, // Final price charged (finalPrice > discountPrice > price)
+          merchantPrice: merchantPrice, // Base merchant price
+          discountPrice: item.discountPrice || item.product?.discountPrice, // Legacy discountPrice for display
+          originalPrice: merchantPrice, // Original merchant price before markups
+          nubianMarkup: item.nubianMarkup || item.product?.nubianMarkup || 10, // Nubian markup percentage
+          dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0, // Dynamic markup at time of order
           images: item.product?.images || [],
           category: item.product?.category || "",
           description: item.product?.description || "",
@@ -186,10 +191,8 @@ export const createOrder = async (req, res) => {
       return res.status(400).json({ message: "Cart is empty or not found" });
     }
 
-    const orderProducts = cart.products.map((item) => ({
-      product: item.product._id,
-      quantity: item.quantity,
-    }));
+    // Build orderProducts with pricing breakdown (will be populated in the loop below)
+    const orderProducts = [];
 
     // Use cart.totalPrice which is already calculated correctly using getProductPrice
     // But recalculate to get per-item prices for merchant tracking and consistency
@@ -212,10 +215,25 @@ export const createOrder = async (req, res) => {
         itemAttributes = { size: item.size };
       }
       
-      // Use getProductPrice to get final price (discountPrice if exists, else price)
+      // Use getProductPrice to get final price (finalPrice > discountPrice > price)
       const itemPrice = getProductPrice(item.product, itemAttributes);
+      const itemMerchantPrice = item.product.merchantPrice || item.product.price || 0;
+      const itemNubianMarkup = item.product.nubianMarkup || 10;
+      const itemDynamicMarkup = item.product.dynamicMarkup || 0;
       const itemTotal = itemPrice * item.quantity;
       totalAmount += itemTotal;
+      
+      // Add to orderProducts with pricing breakdown
+      orderProducts.push({
+        product: item.product._id,
+        quantity: item.quantity,
+        price: itemPrice, // Final price charged (finalPrice > discountPrice > price)
+        merchantPrice: itemMerchantPrice, // Base merchant price
+        nubianMarkup: itemNubianMarkup, // Nubian markup at time of order
+        dynamicMarkup: itemDynamicMarkup, // Dynamic markup at time of order
+        discountPrice: item.product.discountPrice || undefined, // Legacy discountPrice
+        originalPrice: itemMerchantPrice, // Original merchant price
+      });
       
       const productMerchant = item.product.merchant;
       
@@ -232,7 +250,10 @@ export const createOrder = async (req, res) => {
         merchantData.products.push({
           product: item.product._id,
           quantity: item.quantity,
-          price: itemPrice, // Final price (discountPrice if exists, else price)
+          price: itemPrice, // Final price (finalPrice > discountPrice > price)
+          merchantPrice: itemMerchantPrice, // Base merchant price
+          nubianMarkup: itemNubianMarkup, // Nubian markup at time of order
+          dynamicMarkup: itemDynamicMarkup, // Dynamic markup at time of order
         });
       } else {
         // Track products without merchants
@@ -241,7 +262,8 @@ export const createOrder = async (req, res) => {
           product: item.product._id,
           name: item.product.name,
           quantity: item.quantity,
-          price: itemPrice, // Final price (discountPrice if exists, else price)
+          price: itemPrice, // Final price (finalPrice > discountPrice > price)
+          merchantPrice: itemMerchantPrice,
           total: itemTotal,
         });
       }
@@ -270,34 +292,122 @@ export const createOrder = async (req, res) => {
 
     let discountAmount = 0;
     let couponId = null;
+    let couponDetails = null;
 
-    // كوبون
+    // Enhanced Coupon System with Smart Pricing Integration
     if (req.body.couponCode) {
+      const couponCode = req.body.couponCode.toUpperCase().trim();
       const coupon = await Coupon.findOne({
-        code: req.body.couponCode,
+        code: couponCode,
         isActive: true,
       });
-      if (!coupon) return res.status(400).json({ message: "Invalid or inactive coupon code" });
-      if (coupon.expiresAt < new Date()) return res.status(400).json({ message: "Coupon has expired" });
-      if (coupon.usageLimit > 0 && coupon.usedBy.length >= coupon.usageLimit)
-        return res.status(400).json({ message: "Coupon usage limit reached" });
 
+      if (!coupon) {
+        return sendError(res, { message: "Invalid or inactive coupon code" }, 400);
+      }
+
+      // Validate dates
+      const now = new Date();
+      const startDate = coupon.startDate || new Date(0); // Default to epoch if not set
+      const endDate = coupon.endDate || coupon.expiresAt;
+
+      if (startDate > now) {
+        return sendError(res, { message: "Coupon is not yet active" }, 400);
+      }
+      if (endDate < now) {
+        return sendError(res, { message: "Coupon has expired" }, 400);
+      }
+
+      // Validate global usage limit
+      const usageLimit = coupon.usageLimitGlobal || coupon.usageLimit;
+      if (usageLimit !== null && usageLimit > 0 && coupon.usageCount >= usageLimit) {
+        return sendError(res, { message: "Coupon usage limit reached" }, 400);
+      }
+
+      // Validate user usage limit
       const userUsedCount = coupon.usedBy.filter(
         (u) => u.toString() === user._id.toString()
       ).length;
-      if (coupon.usageLimitPerUser > 0 && userUsedCount >= coupon.usageLimitPerUser)
-        return res.status(400).json({ message: "You have already used this coupon the maximum allowed times" });
-
-      if (coupon.discountType === "percentage") {
-        discountAmount = totalAmount * (coupon.discountValue / 100);
-      } else {
-        discountAmount = coupon.discountValue;
+      if (coupon.usageLimitPerUser > 0 && userUsedCount >= coupon.usageLimitPerUser) {
+        return sendError(res, { 
+          message: "You have already used this coupon the maximum allowed times" 
+        }, 400);
       }
-      if (discountAmount > totalAmount) discountAmount = totalAmount;
 
+      // Validate minimum order amount
+      if (coupon.minOrderAmount > 0 && totalAmount < coupon.minOrderAmount) {
+        return sendError(res, { 
+          message: `Minimum order amount of ${coupon.minOrderAmount} required` 
+        }, 400);
+      }
+
+      // Validate product eligibility
+      if (coupon.applicableProducts && coupon.applicableProducts.length > 0) {
+        const applicableProductIds = coupon.applicableProducts.map(p => p.toString());
+        const cartProductIds = cart.products.map(item => item.product._id.toString());
+        const hasEligibleProduct = cartProductIds.some(pid => applicableProductIds.includes(pid));
+        
+        if (!hasEligibleProduct) {
+          return sendError(res, { message: "Coupon is not valid for selected products" }, 400);
+        }
+      }
+
+      // Validate category eligibility
+      if (coupon.applicableCategories && coupon.applicableCategories.length > 0) {
+        const applicableCategoryIds = coupon.applicableCategories.map(c => c.toString());
+        const cartCategoryIds = cart.products
+          .map(item => item.product.category?.toString())
+          .filter(Boolean);
+        const hasEligibleCategory = cartCategoryIds.some(cid => applicableCategoryIds.includes(cid));
+        
+        if (!hasEligibleCategory) {
+          return sendError(res, { message: "Coupon is not valid for selected product categories" }, 400);
+        }
+      }
+
+      // Validate merchant eligibility
+      if (coupon.applicableMerchants && coupon.applicableMerchants.length > 0) {
+        const applicableMerchantIds = coupon.applicableMerchants.map(m => m.toString());
+        const cartMerchantIds = cart.products
+          .map(item => {
+            const merchant = item.product.merchant;
+            return merchant?._id?.toString() || merchant?.toString();
+          })
+          .filter(Boolean);
+        const hasEligibleMerchant = cartMerchantIds.some(mid => applicableMerchantIds.includes(mid));
+        
+        if (!hasEligibleMerchant) {
+          return sendError(res, { message: "Coupon is not valid for selected merchants" }, 400);
+        }
+      }
+
+      // Calculate discount using coupon method (handles minOrderAmount, maxDiscount, etc.)
+      discountAmount = coupon.calculateDiscount(totalAmount);
+
+      // Store coupon details for order
       couponId = coupon._id;
+      couponDetails = {
+        code: coupon.code,
+        type: coupon.type || coupon.discountType,
+        value: coupon.value || coupon.discountValue,
+        discountAmount,
+      };
+
+      // Update coupon usage
       coupon.usedBy.push(user._id);
+      coupon.usageCount = (coupon.usageCount || 0) + 1;
+      coupon.totalDiscountGiven = (coupon.totalDiscountGiven || 0) + discountAmount;
+      coupon.totalOrders = (coupon.totalOrders || 0) + 1;
       await coupon.save();
+
+      logger.info('Coupon applied to order', {
+        requestId: req.requestId,
+        couponId: coupon._id,
+        couponCode: coupon.code,
+        discountAmount,
+        totalAmount,
+        userId: user._id,
+      });
     }
 
     // خصم المسوّق (بدون حساب العمولة هنا)
@@ -358,6 +468,7 @@ export const createOrder = async (req, res) => {
       discountAmount,
       finalAmount,
       coupon: couponId,
+      couponDetails: couponDetails || null,
       paymentMethod: req.body.paymentMethod,
       orderNumber: formattedOrderNumber,
       phoneNumber: delivery.phone,
@@ -430,6 +541,7 @@ export const getOrders = async (req, res) => {
         path: "products.product",
         select: "name price discountPrice images category description stock createdAt",
       })
+      .populate("coupon", "code type value")
       .sort({ orderDate: -1 });
 
     const enhancedOrders = orders.map((order) => ({
@@ -441,16 +553,28 @@ export const getOrders = async (req, res) => {
         phone: order.phoneNumber,
       },
       productsDetails: order.products.map((item) => {
-        // Calculate price using getProductPrice (considers discountPrice)
-        // Note: This uses current product price, not historical order price
-        // For accurate historical prices, order schema should store price per item
-        const finalPrice = item.product ? getProductPrice(item.product, {}) : 0;
+        // Use stored pricing from order (historical pricing at time of order)
+        // This ensures accurate pricing even if product prices change later
+        const finalPrice = item.price || item.product?.finalPrice || item.product?.discountPrice || item.product?.price || 0;
+        const merchantPrice = item.merchantPrice || item.product?.merchantPrice || item.product?.price || 0;
+        const nubianMarkup = item.nubianMarkup || item.product?.nubianMarkup || 10;
+        const dynamicMarkup = item.dynamicMarkup || item.product?.dynamicMarkup || 0;
+        
         return {
           productId: item.product?._id || null,
           name: item.product?.name || "",
-          price: finalPrice, // Final price (discountPrice if exists, else price)
-          originalPrice: item.product?.price || 0, // Original price
-          discountPrice: item.product?.discountPrice || undefined, // Discount price if exists
+          price: finalPrice, // Final price charged (stored at time of order)
+          merchantPrice: merchantPrice, // Base merchant price at time of order
+          originalPrice: merchantPrice, // Original merchant price before markups
+          discountPrice: item.discountPrice || item.product?.discountPrice || undefined, // Legacy discountPrice
+          nubianMarkup: nubianMarkup, // Nubian markup at time of order
+          dynamicMarkup: dynamicMarkup, // Dynamic markup at time of order
+          pricingBreakdown: {
+            merchantPrice: merchantPrice,
+            nubianMarkup: nubianMarkup,
+            dynamicMarkup: dynamicMarkup,
+            finalPrice: finalPrice,
+          },
           images: item.product?.images || [],
           category: item.product?.category || "",
           description: item.product?.description || "",
@@ -485,7 +609,8 @@ export const getOrderById = async (req, res) => {
       .populate({
         path: "products.product",
         select: "name price discountPrice images category description stock createdAt updatedAt",
-      });
+      })
+      .populate("coupon", "code type value");
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -499,15 +624,27 @@ export const getOrderById = async (req, res) => {
       ...order.toObject(),
       productsCount: order.products.length,
       productsDetails: order.products.map((item) => {
-        // Calculate price using getProductPrice (considers discountPrice)
-        // Note: This uses current product price, not historical order price
-        const finalPrice = item.product ? getProductPrice(item.product, {}) : 0;
+        // Use stored pricing from order (historical pricing at time of order)
+        const finalPrice = item.price || item.product?.finalPrice || item.product?.discountPrice || item.product?.price || 0;
+        const merchantPrice = item.merchantPrice || item.product?.merchantPrice || item.product?.price || 0;
+        const nubianMarkup = item.nubianMarkup || item.product?.nubianMarkup || 10;
+        const dynamicMarkup = item.dynamicMarkup || item.product?.dynamicMarkup || 0;
+        
         return {
           productId: item.product?._id || null,
           name: item.product?.name || "",
-          price: finalPrice, // Final price (discountPrice if exists, else price)
-          originalPrice: item.product?.price || 0, // Original price
-          discountPrice: item.product?.discountPrice || undefined, // Discount price if exists
+          price: finalPrice, // Final price charged (stored at time of order)
+          merchantPrice: merchantPrice, // Base merchant price at time of order
+          originalPrice: merchantPrice, // Original merchant price before markups
+          discountPrice: item.discountPrice || item.product?.discountPrice || undefined, // Legacy discountPrice
+          nubianMarkup: nubianMarkup, // Nubian markup at time of order
+          dynamicMarkup: dynamicMarkup, // Dynamic markup at time of order
+          pricingBreakdown: {
+            merchantPrice: merchantPrice,
+            nubianMarkup: nubianMarkup,
+            dynamicMarkup: dynamicMarkup,
+            finalPrice: finalPrice,
+          },
           images: item.product?.images || [],
           category: item.product?.category || "",
           description: item.product?.description || "",

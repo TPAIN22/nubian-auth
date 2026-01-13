@@ -23,6 +23,7 @@ import homeRoutes from './routes/home.route.js';
 import healthRoutes from './routes/health.route.js';
 import recommendationsRoutes from './routes/recommendations.route.js';
 import trackingRoutes from './routes/tracking.route.js';
+import analyticsRoutes from './routes/analytics.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
 import logger from './lib/logger.js';
@@ -200,6 +201,7 @@ app.use('/api/merchants', merchantRoutes);
 app.use('/api/home', homeRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
 app.use('/api/tracking', trackingRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {
@@ -236,6 +238,17 @@ const PORT = process.env.PORT || 5000;
   try {
     // Connect to database first
     await connect();
+    
+    // Initialize cron jobs for pricing and visibility score recalculation
+    try {
+      const { initializeCronJobs } = await import('./services/cron.service.js');
+      initializeCronJobs();
+    } catch (error) {
+      logger.warn('Failed to initialize cron jobs', {
+        error: error.message,
+        note: 'Cron jobs will not run. Install node-cron package if needed.',
+      });
+    }
     
     // Start server only after successful database connection
     const server = app.listen(PORT, '0.0.0.0', () => {

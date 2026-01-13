@@ -221,11 +221,11 @@ function findMatchingVariant(product, attributes) {
 
 /**
  * Gets the final selling price for a product
- * price = original price, discountPrice = final selling price (after discount)
+ * SMART PRICING SYSTEM: Uses finalPrice > discountPrice > price
  * 
  * @param {Object} product - Product document
  * @param {Object} attributes - Selected attributes (optional)
- * @returns {number} - Final price to use (discountPrice if exists, else price)
+ * @returns {number} - Final price to use (finalPrice if available, else discountPrice, else price)
  */
 function getProductPrice(product, attributes = null) {
   if (!product) {
@@ -236,7 +236,10 @@ function getProductPrice(product, attributes = null) {
   if (attributes && product.variants && product.variants.length > 0) {
     const variant = findMatchingVariant(product, attributes);
     if (variant) {
-      // Variant: prefer discountPrice (final price), fallback to price (original)
+      // Variant: prefer finalPrice (smart pricing), fallback to discountPrice, then price
+      if (variant.finalPrice && variant.finalPrice > 0) {
+        return variant.finalPrice;
+      }
       if (variant.discountPrice && variant.discountPrice > 0) {
         return variant.discountPrice;
       }
@@ -246,7 +249,10 @@ function getProductPrice(product, attributes = null) {
     }
   }
   
-  // Product: prefer discountPrice (final price), fallback to price (original)
+  // Product: prefer finalPrice (smart pricing), fallback to discountPrice, then price
+  if (product.finalPrice && product.finalPrice > 0) {
+    return product.finalPrice;
+  }
   if (product.discountPrice && product.discountPrice > 0) {
     return product.discountPrice;
   }

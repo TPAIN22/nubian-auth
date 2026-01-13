@@ -24,7 +24,7 @@ const notificationPreferencesSchema = new mongoose.Schema(
     },
     // Channel preferences
     channels: {
-      push: { type: Boolean, default: true },
+      pushNotifications: { type: Boolean, default: true },
       in_app: { type: Boolean, default: true },
       sms: { type: Boolean, default: false },
       email: { type: Boolean, default: false },
@@ -93,7 +93,7 @@ notificationPreferencesSchema.methods.getEnabledChannels = function (type) {
   if (!typePref || !typePref.enabled) return [];
 
   const enabledChannels = [];
-  if (typePref.channels?.push && this.channels.push) enabledChannels.push('push');
+  if (typePref.channels?.push && this.channels.pushNotifications) enabledChannels.push('push');
   if (typePref.channels?.in_app && this.channels.in_app) enabledChannels.push('in_app');
   if (typePref.channels?.sms && this.channels.sms) enabledChannels.push('sms');
   if (typePref.channels?.email && this.channels.email) enabledChannels.push('email');

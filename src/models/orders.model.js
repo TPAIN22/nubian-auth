@@ -16,7 +16,35 @@ const orderSchema = new mongoose.Schema({
             type: Number,
             required: true,
             default: 1
-        }
+        },
+        // Smart pricing fields - stored at time of order
+        price: {
+            type: Number,
+            required: true,
+            // Final price charged (finalPrice > discountPrice > price)
+        },
+        merchantPrice: {
+            type: Number,
+            // Base merchant price at time of order
+        },
+        nubianMarkup: {
+            type: Number,
+            default: 10,
+            // Nubian markup percentage at time of order
+        },
+        dynamicMarkup: {
+            type: Number,
+            default: 0,
+            // Dynamic markup percentage at time of order
+        },
+        discountPrice: {
+            type: Number,
+            // Legacy discountPrice for backward compatibility
+        },
+        originalPrice: {
+            type: Number,
+            // Original merchant price before markups
+        },
     }],
     totalAmount: {
         type: Number,
@@ -69,6 +97,16 @@ const orderSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Coupon',
         default: null
+    },
+    couponDetails: {
+        code: { type: String },
+        type: { type: String, enum: ['percentage', 'fixed'] },
+        value: { type: Number },
+        discountAmount: { type: Number, default: 0 },
+    },
+    discountAmount: {
+        type: Number,
+        default: 0,
     },
     discountAmount: {
         type: Number,

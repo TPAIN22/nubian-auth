@@ -764,7 +764,7 @@ export const updatePreferences = async (req, res) => {
           preferences.types[category] = {
             enabled: true,
             channels: {
-              push: preferences.channels.push || true,
+              push: preferences.channels.pushNotifications || true,
               in_app: true,
               sms: false,
               email: false,

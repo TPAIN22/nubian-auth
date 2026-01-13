@@ -17,11 +17,19 @@ function enrichProducts(products) {
   if (!Array.isArray(products)) return [];
   
   return products.map(product => {
-    const price = product.price || 0;
-    const discountPrice = product.discountPrice || 0;
-    const discount = discountPrice > 0 && price > discountPrice
-      ? Math.round(((price - discountPrice) / price) * 100)
-      : 0;
+    // Use smart pricing: finalPrice > discountPrice > price
+    const finalPrice = product.finalPrice || product.discountPrice || product.price || 0;
+    const merchantPrice = product.merchantPrice || product.price || 0;
+    const originalPrice = merchantPrice;
+    
+    // Calculate discount percentage (if finalPrice is less than merchantPrice, it's a discount)
+    // Otherwise, calculate based on legacy discountPrice
+    let discount = 0;
+    if (product.discountPrice && product.discountPrice > 0 && merchantPrice > product.discountPrice) {
+      discount = Math.round(((merchantPrice - product.discountPrice) / merchantPrice) * 100);
+    } else if (finalPrice < merchantPrice) {
+      discount = Math.round(((merchantPrice - finalPrice) / merchantPrice) * 100);
+    }
 
     // Check if product has available stock
     const hasStock = product.stock > 0 || 
@@ -31,7 +39,16 @@ function enrichProducts(products) {
       ...product,
       discount,
       hasStock,
-      finalPrice: discountPrice > 0 && discountPrice < price ? discountPrice : price
+      finalPrice: finalPrice, // Smart pricing final price
+      merchantPrice: merchantPrice, // Base merchant price
+      originalPrice: originalPrice, // For display
+      // Include pricing breakdown
+      pricingBreakdown: {
+        merchantPrice: merchantPrice,
+        nubianMarkup: product.nubianMarkup || 10,
+        dynamicMarkup: product.dynamicMarkup || 0,
+        finalPrice: finalPrice,
+      }
     };
   });
 }

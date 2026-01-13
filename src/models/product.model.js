@@ -4,7 +4,41 @@ const productSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   description: { type: String, required: true, trim: true },
   
-  // Pricing - required for simple products, optional for variant-based products
+  // ===== SMART PRICING SYSTEM =====
+  // merchantPrice: The price set by the merchant (base price)
+  merchantPrice: { 
+    type: Number, 
+    required: function() {
+      // Merchant price is required if product has no variants
+      return !this.variants || this.variants.length === 0;
+    },
+    min: [0.01, 'Merchant price must be greater than 0'],
+    default: undefined
+  },
+  
+  // nubianMarkup: Base markup percentage (default 10%)
+  nubianMarkup: { 
+    type: Number, 
+    default: 70, 
+    min: [0, 'Nubian markup cannot be negative'] 
+  },
+  
+  // dynamicMarkup: Dynamic markup calculated based on demand, trending, stock (updated by cron job)
+  dynamicMarkup: { 
+    type: Number, 
+    default: 0, 
+    min: [0, 'Dynamic markup cannot be negative'] 
+  },
+  
+  // finalPrice: Calculated price = merchantPrice + (merchantPrice * nubianMarkup / 100) + (merchantPrice * dynamicMarkup / 100)
+  // Always >= merchantPrice
+  finalPrice: { 
+    type: Number, 
+    min: [0, 'Final price cannot be negative'] 
+  },
+  
+  // Legacy pricing fields - kept for backward compatibility
+  // price: Maps to merchantPrice for backward compatibility
   price: { 
     type: Number, 
     required: function() {
@@ -82,11 +116,36 @@ const productSchema = new mongoose.Schema({
       required: true,
       // Attributes must match the product's attribute definitions
     },
+    // Smart pricing for variants
     price: {
       type: Number,
       required: true,
       min: [0.01, 'Variant price must be greater than 0'],
     },
+    // Variant merchantPrice (base price set by merchant)
+    merchantPrice: {
+      type: Number,
+      required: true,
+      min: [0.01, 'Variant merchant price must be greater than 0'],
+    },
+    // Variant nubianMarkup (defaults to product nubianMarkup)
+    nubianMarkup: {
+      type: Number,
+      default: 10,
+      min: [0, 'Variant nubian markup cannot be negative'],
+    },
+    // Variant dynamicMarkup (calculated by cron job)
+    dynamicMarkup: {
+      type: Number,
+      default: 0,
+      min: [0, 'Variant dynamic markup cannot be negative'],
+    },
+    // Variant finalPrice (calculated)
+    finalPrice: {
+      type: Number,
+      min: [0, 'Variant final price cannot be negative'],
+    },
+    // Legacy fields for backward compatibility
     discountPrice: {
       type: Number,
       default: 0,
@@ -143,6 +202,23 @@ const productSchema = new mongoose.Schema({
     type: Number,
     default: 0,
     min: 0,
+  },
+  
+  // ===== TRACKING FIELDS (24-hour metrics for dynamic pricing) =====
+  trackingFields: {
+    views24h: { type: Number, default: 0, min: 0 },
+    cartCount24h: { type: Number, default: 0, min: 0 },
+    sales24h: { type: Number, default: 0, min: 0 },
+    favoritesCount: { type: Number, default: 0, min: 0 },
+  },
+  
+  // ===== RANKING FIELDS (for visibility score calculation) =====
+  rankingFields: {
+    visibilityScore: { type: Number, default: 0, min: 0 },
+    priorityScore: { type: Number, default: 0, min: 0 },
+    featured: { type: Boolean, default: false },
+    conversionRate: { type: Number, default: 0, min: 0, max: 100 },
+    storeRating: { type: Number, default: 0, min: 0, max: 5 },
   },
   
   // Calculated metrics (updated by scoring service)
@@ -218,8 +294,71 @@ const productSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// Pre-save middleware to auto-populate legacy fields from variants
+// Pre-save middleware to auto-populate legacy fields and calculate pricing
 productSchema.pre('save', function(next) {
+  // ===== PRICING CALCULATION =====
+  // Calculate finalPrice for simple products
+  if (!this.variants || this.variants.length === 0) {
+    // For simple products: use merchantPrice if set, otherwise fallback to price
+    const basePrice = this.merchantPrice || this.price || 0;
+    if (basePrice > 0) {
+      const nubianMarkupValue = this.nubianMarkup || 10;
+      const dynamicMarkupValue = this.dynamicMarkup || 0;
+      
+      // Calculate finalPrice = merchantPrice + (merchantPrice * nubianMarkup / 100) + (merchantPrice * dynamicMarkup / 100)
+      const nubianMarkupAmount = (basePrice * nubianMarkupValue) / 100;
+      const dynamicMarkupAmount = (basePrice * dynamicMarkupValue) / 100;
+      this.finalPrice = Math.max(basePrice, basePrice + nubianMarkupAmount + dynamicMarkupAmount);
+      
+      // Ensure finalPrice is never below merchantPrice
+      if (this.finalPrice < basePrice) {
+        this.finalPrice = basePrice;
+      }
+      
+      // Sync merchantPrice with price for backward compatibility
+      if (!this.merchantPrice && this.price) {
+        this.merchantPrice = this.price;
+      }
+      // Sync price with merchantPrice if price is not set
+      if (!this.price && this.merchantPrice) {
+        this.price = this.merchantPrice;
+      }
+    }
+  } else {
+    // For variant-based products: calculate finalPrice for each variant
+    this.variants.forEach(variant => {
+      const variantBasePrice = variant.merchantPrice || variant.price || 0;
+      if (variantBasePrice > 0) {
+        const variantNubianMarkup = variant.nubianMarkup !== undefined ? variant.nubianMarkup : (this.nubianMarkup || 10);
+        const variantDynamicMarkup = variant.dynamicMarkup || 0;
+        
+        // Calculate variant finalPrice
+        const nubianMarkupAmount = (variantBasePrice * variantNubianMarkup) / 100;
+        const dynamicMarkupAmount = (variantBasePrice * variantDynamicMarkup) / 100;
+        variant.finalPrice = Math.max(variantBasePrice, variantBasePrice + nubianMarkupAmount + dynamicMarkupAmount);
+        
+        // Ensure variant finalPrice is never below merchantPrice
+        if (variant.finalPrice < variantBasePrice) {
+          variant.finalPrice = variantBasePrice;
+        }
+        
+        // Sync variant merchantPrice with price for backward compatibility
+        if (!variant.merchantPrice && variant.price) {
+          variant.merchantPrice = variant.price;
+        }
+        // Sync variant price with merchantPrice if price is not set
+        if (!variant.price && variant.merchantPrice) {
+          variant.price = variant.merchantPrice;
+        }
+      }
+    });
+    
+    // Calculate aggregate stock from variants
+    const totalStock = this.variants.reduce((sum, variant) => sum + (variant.stock || 0), 0);
+    this.stock = totalStock;
+  }
+  
+  // ===== LEGACY FIELDS AUTO-POPULATION =====
   // If product has variants, auto-populate sizes and colors from variants
   if (this.variants && this.variants.length > 0) {
     const sizesSet = new Set();
@@ -242,10 +381,6 @@ productSchema.pre('save', function(next) {
     // Update legacy fields
     this.sizes = Array.from(sizesSet);
     this.colors = Array.from(colorsSet);
-    
-    // Calculate total stock from variants
-    const totalStock = this.variants.reduce((sum, variant) => sum + (variant.stock || 0), 0);
-    this.stock = totalStock;
   }
   
   next();

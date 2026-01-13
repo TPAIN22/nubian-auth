@@ -176,8 +176,30 @@ export async function calculateProductScore(productId) {
       ? Math.max(0, 15 * (1 - daysSinceCreation / 30))
       : 0;
     
-    // Calculate visibility score
-    const visibilityScore = Math.round(
+    // Get 24-hour tracking metrics (if available)
+    const trackingFields = product.trackingFields || {};
+    const views24h = trackingFields.views24h || 0;
+    const cartCount24h = trackingFields.cartCount24h || 0;
+    const sales24h = trackingFields.sales24h || 0;
+    const favoritesCount24h = trackingFields.favoritesCount || favoriteCount;
+    
+    // Calculate trending boost based on 24h sales
+    const trendingBoost = sales24h >= 50 ? 50 : sales24h >= 20 ? 30 : sales24h >= 10 ? 20 : sales24h >= 5 ? 10 : 0;
+    
+    // Calculate demand boost based on 24h interactions
+    const demandBoost = (views24h > 0 && sales24h > 0) 
+      ? Math.min(30, (sales24h / views24h) * 100) 
+      : 0;
+    
+    // Calculate interaction boost based on 24h views and cart adds
+    const interactionBoost = Math.min(20, (views24h * 0.1) + (cartCount24h * 2));
+    
+    // Featured boost (if product is featured)
+    const featuredBoost = product.featured ? 100 : 0;
+    
+    // Calculate visibility score with new formula
+    // visibilityScore = baseScore + trendingBoost + demandBoost + interactionBoost + featuredBoost
+    const baseScore = Math.round(
       (orderCount * 5) +
       (viewCount * 1) +
       (favoriteCount * 3) +
@@ -185,6 +207,14 @@ export async function calculateProductScore(productId) {
       (storeRating * 4) +
       discountBoost +
       newnessBoost
+    );
+    
+    const visibilityScore = Math.round(
+      baseScore +
+      trendingBoost +
+      demandBoost +
+      interactionBoost +
+      featuredBoost
     );
     
     // Update product with calculated values
@@ -198,6 +228,12 @@ export async function calculateProductScore(productId) {
       newnessBoost: Math.round(newnessBoost * 100) / 100,
       visibilityScore,
       scoreCalculatedAt: new Date(),
+      // Update ranking fields
+      'rankingFields.visibilityScore': visibilityScore,
+      'rankingFields.priorityScore': product.priorityScore || 0,
+      'rankingFields.featured': product.featured || false,
+      'rankingFields.conversionRate': Math.round(conversionRate * 100) / 100,
+      'rankingFields.storeRating': Math.round(storeRating * 100) / 100,
     });
     
     return {

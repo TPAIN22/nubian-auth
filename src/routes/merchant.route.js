@@ -30,6 +30,7 @@ router.get('/store/:id', isAuthenticated, ...validateObjectId('id'), getStoreByI
 router.get('/store/:id/products', isAuthenticated, ...validateObjectId('id'), getStoreProducts);
 
 // Merchant-only routes (approved merchants)
+router.get('/me', isAuthenticated, isApprovedMerchant, getMyMerchantProfile); // Alias for /my-profile
 router.get('/my-profile', isAuthenticated, isApprovedMerchant, getMyMerchantProfile);
 router.put('/my-profile', isAuthenticated, isApprovedMerchant, validateMerchantUpdate, updateMerchantProfile);
 
