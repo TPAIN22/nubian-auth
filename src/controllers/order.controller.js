@@ -130,6 +130,7 @@ export const getUserOrders = async (req, res) => {
 
     const enhancedOrders = orders.map((order) => ({
       ...order.toObject(),
+      transferProof: order.transferProof || null, // Include payment proof URL
       productsCount: order.products.length,
       productsDetails: order.products.map((item) => {
         // Use stored price from order (final price at time of order) or fallback to product finalPrice
@@ -547,6 +548,7 @@ export const getOrders = async (req, res) => {
 
     const enhancedOrders = orders.map((order) => ({
       ...order.toObject(),
+      transferProof: order.transferProof || null, // Include payment proof URL
       productsCount: order.products.length,
       customerInfo: {
         name: order.user?.fullName || "غير محدد",
@@ -623,6 +625,7 @@ export const getOrderById = async (req, res) => {
 
     const enhancedOrder = {
       ...order.toObject(),
+      transferProof: order.transferProof || null, // Include payment proof URL
       productsCount: order.products.length,
       productsDetails: order.products.map((item) => {
         // Use stored pricing from order (historical pricing at time of order)
@@ -750,6 +753,7 @@ export const getMerchantOrders = async (req, res) => {
       
       return {
         ...order.toObject(),
+        transferProof: order.transferProof || null, // Include payment proof URL
         products: merchantProducts,
         productsCount: merchantProducts.length,
         merchantRevenue: merchantRevenueEntry?.amount || merchantOrderTotal,
