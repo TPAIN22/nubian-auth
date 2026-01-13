@@ -863,66 +863,76 @@ export const updateProduct = async (req, res) => {
     }
 }
 export const deleteProduct = async (req, res) => {
-    try {
-        const productId = req.params.id;
-        
-        // Log the incoming request for debugging
-        logger.info('Delete product request', {
-            requestId: req.requestId,
-            productId: productId,
-            productIdLength: productId?.length,
-            productIdFormat: /^[0-9a-fA-F]{24}$/.test(productId) ? 'valid' : 'invalid',
-        });
-        
-        const { userId } = getAuth(req);
-        const product = await Product.findOne({
-            _id: productId,
-            deletedAt: null, // Only find non-deleted products
-        });
-        
-        if (!product) {
-            return sendNotFound(res, 'Product');
-        }
-        
-        // Check if user is merchant and owns this product
-        if (userId) {
-            try {
-                const user = await clerkClient.users.getUser(userId);
-                if (user.publicMetadata?.role === 'merchant') {
-                    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
-                    if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
-                        return sendForbidden(res, 'You can only delete your own products');
-                    }
-                }
-            } catch (error) {
-                // Continue if check fails
-            }
-        }
-        
-        // Soft delete: Set deletedAt timestamp instead of hard delete
-        // This preserves data integrity for existing orders and allows recovery
-        product.deletedAt = new Date();
-        await product.save();
-        
-        logger.info('Product soft deleted', {
-            requestId: req.requestId,
-            productId: product._id,
-            userId: userId,
-        });
-        
-        return sendSuccess(res, {
-            message: 'Product deleted successfully',
-        });
-    } catch (error) {
-        logger.error('Error deleting product', {
-            requestId: req.requestId,
-            productId: req.params.id,
-            error: error.message,
-        });
-        // Let error handler middleware handle the response
-        throw error;
+  try {
+    const productId = req.params.id;
+
+    logger.info('Delete product request', {
+      requestId: req.requestId,
+      productId,
+      productIdLength: productId?.length,
+      productIdFormat: /^[0-9a-fA-F]{24}$/.test(productId) ? 'valid' : 'invalid',
+    });
+
+    const { userId } = getAuth(req);
+
+    // 1) نجيب المنتج للتحقق (ملكية التاجر + هل محذوف مسبقاً)
+    const product = await Product.findOne({
+      _id: productId,
+      deletedAt: null,
+    });
+
+    if (!product) {
+      return sendNotFound(res, 'Product');
     }
-}
+
+    // 2) نفس منطق الملكية للتاجر (زي كودك الحالي)
+    if (userId) {
+      try {
+        const user = await clerkClient.users.getUser(userId);
+        if (user.publicMetadata?.role === 'merchant') {
+          const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+          if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
+            return sendForbidden(res, 'You can only delete your own products');
+          }
+        }
+      } catch (error) {
+        // لو فشل التحقق من Clerk ما نوقف (زي سلوكك الحالي)
+      }
+    }
+
+    // 3) Soft delete بتحديث مباشر بدون save() => بدون validators
+    // IMPORTANT: ما تستخدم product.save()
+    await Product.updateOne(
+      { _id: productId },
+      {
+        $set: {
+          deletedAt: new Date(),
+          isActive: false, // اختياري لكن مفيد: المنتج المحذوف ما يظهر حتى لو فلتر isActive
+        },
+      },
+      { runValidators: false } // للتأكيد
+    );
+
+    logger.info('Product soft deleted (no validation)', {
+      requestId: req.requestId,
+      productId,
+      userId,
+    });
+
+    return sendSuccess(res, {
+      message: 'Product deleted successfully',
+    });
+  } catch (error) {
+    logger.error('Error deleting product', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
+    throw error;
+  }
+};
+
 
 // Get merchant's products
 export const getMerchantProducts = async (req, res) => {
