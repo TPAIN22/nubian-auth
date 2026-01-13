@@ -864,9 +864,19 @@ export const updateProduct = async (req, res) => {
 }
 export const deleteProduct = async (req, res) => {
     try {
+        const productId = req.params.id;
+        
+        // Log the incoming request for debugging
+        logger.info('Delete product request', {
+            requestId: req.requestId,
+            productId: productId,
+            productIdLength: productId?.length,
+            productIdFormat: /^[0-9a-fA-F]{24}$/.test(productId) ? 'valid' : 'invalid',
+        });
+        
         const { userId } = getAuth(req);
         const product = await Product.findOne({
-            _id: req.params.id,
+            _id: productId,
             deletedAt: null, // Only find non-deleted products
         });
         

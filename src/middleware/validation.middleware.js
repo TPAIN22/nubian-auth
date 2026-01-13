@@ -7,23 +7,36 @@ import logger from '../lib/logger.js';
  */
 export const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
+  
   if (!errors.isEmpty()) {
     const requestId = req.requestId || 'unknown';
+    
+    // Log validation check for debugging with full details
     logger.warn('Validation failed', {
       requestId,
       errors: errors.array(),
       method: req.method,
       url: req.url,
-      body: req.body, // Log the actual request body for debugging
+      path: req.path,
+      params: req.params,
+      query: req.query,
+      body: req.body,
+      errorDetails: errors.array().map(err => ({
+        field: err.path || err.param || err.location,
+        message: err.msg,
+        value: err.value,
+        location: err.location,
+        type: err.type,
+      })),
     });
 
     return res.status(400).json({
       success: false,
       error: {
         code: 'VALIDATION_ERROR',
-        message: 'Validation failed',
+        message: 'Validation error',
         details: errors.array().map(err => ({
-          field: err.path || err.param,
+          field: err.path || err.param || err.location,
           message: err.msg,
           value: err.value,
         })),
@@ -56,8 +69,11 @@ export const validatePagination = [
  */
 export const validateObjectId = (field = 'id') => [
   param(field)
+    .trim()
+    .notEmpty()
+    .withMessage(`${field} is required`)
     .isMongoId()
-    .withMessage(`Invalid ${field} format`),
+    .withMessage(`Invalid ${field} format - must be a valid MongoDB ObjectId`),
 ];
 
 /**
