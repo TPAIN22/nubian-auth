@@ -12,75 +12,64 @@ import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productR
 /**
  * Enrich product with pricing breakdown for API responses
  * Adds finalPrice, merchantPrice, and pricingBreakdown to product objects
- */
-function enrichProductWithPricing(product) {
+ */function enrichProductWithPricing(product) {
   if (!product) return product;
-  
-  // Handle both plain objects and Mongoose documents
-  const productObj = product.toObject ? product.toObject() : product;
-  
-  // Calculate finalPrice if not set (smart pricing)
-  const merchantPrice = productObj.merchantPrice || productObj.price || 0;
-  const nubianMarkup = productObj.nubianMarkup || 10;
-  const dynamicMarkup = productObj.dynamicMarkup || 0;
-  
-  let finalPrice = productObj.finalPrice;
-  if (!finalPrice || finalPrice === 0) {
-    // Calculate finalPrice: merchantPrice + (merchantPrice * nubianMarkup / 100) + (merchantPrice * dynamicMarkup / 100)
-    const nubianMarkupAmount = (merchantPrice * nubianMarkup) / 100;
-    const dynamicMarkupAmount = (merchantPrice * dynamicMarkup) / 100;
-    finalPrice = Math.max(merchantPrice, merchantPrice + nubianMarkupAmount + dynamicMarkupAmount);
-  }
-  
-  // Fallback to discountPrice or price if finalPrice still not set
-  if (!finalPrice || finalPrice === 0) {
-    finalPrice = productObj.discountPrice && productObj.discountPrice > 0 
-      ? productObj.discountPrice 
-      : productObj.price || 0;
-  }
-  
-  // Enrich variants with pricing
-  if (productObj.variants && Array.isArray(productObj.variants)) {
-    productObj.variants = productObj.variants.map(variant => {
-      const variantMerchantPrice = variant.merchantPrice || variant.price || 0;
-      const variantNubianMarkup = variant.nubianMarkup || nubianMarkup;
-      const variantDynamicMarkup = variant.dynamicMarkup || dynamicMarkup;
-      
-      let variantFinalPrice = variant.finalPrice;
-      if (!variantFinalPrice || variantFinalPrice === 0) {
-        const variantNubianMarkupAmount = (variantMerchantPrice * variantNubianMarkup) / 100;
-        const variantDynamicMarkupAmount = (variantMerchantPrice * variantDynamicMarkup) / 100;
-        variantFinalPrice = Math.max(variantMerchantPrice, variantMerchantPrice + variantNubianMarkupAmount + variantDynamicMarkupAmount);
-      }
-      
-      if (!variantFinalPrice || variantFinalPrice === 0) {
-        variantFinalPrice = variant.discountPrice && variant.discountPrice > 0 
-          ? variant.discountPrice 
-          : variant.price || 0;
-      }
-      
-      return {
-        ...variant,
-        finalPrice: variantFinalPrice,
-        merchantPrice: variantMerchantPrice,
-        nubianMarkup: variantNubianMarkup,
-        dynamicMarkup: variantDynamicMarkup,
-      };
-    });
-  }
-  
-  return {
-    ...productObj,
-    finalPrice: finalPrice,
-    merchantPrice: merchantPrice,
-    pricingBreakdown: {
-      merchantPrice: merchantPrice,
-      nubianMarkup: nubianMarkup,
-      dynamicMarkup: dynamicMarkup,
-      finalPrice: finalPrice,
-    },
+
+  const p = product.toObject ? product.toObject() : product;
+  const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
+
+  // helper
+  const num = (v, fb = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fb;
   };
+
+  // normalize + fallback without recalculating dynamic pricing
+  const normalizePriceBlock = (obj) => {
+    const merchantPrice = num(obj.merchantPrice ?? obj.price ?? 0);
+    const discountPrice = num(obj.discountPrice ?? 0);
+    const finalPriceRaw = num(obj.finalPrice ?? 0);
+
+    const finalPrice =
+      finalPriceRaw > 0
+        ? finalPriceRaw
+        : discountPrice > 0
+          ? discountPrice
+          : merchantPrice;
+
+    return { merchantPrice, price: num(obj.price ?? merchantPrice), discountPrice, finalPrice };
+  };
+
+  if (hasVariants) {
+    const variants = p.variants.map((v) => {
+      const prices = normalizePriceBlock(v);
+      return { ...v, ...prices };
+    });
+
+    // root finalPrice fallback = lowest active variant finalPrice (for UI)
+    const activeVariants = variants.filter((v) => v.isActive !== false);
+    const finals = activeVariants.map((v) => num(v.finalPrice, 0)).filter((x) => x > 0);
+    const lowestFinal = finals.length ? Math.min(...finals) : 0;
+
+    const rootPrices = normalizePriceBlock(p);
+    const rootFinal = rootPrices.finalPrice > 0 ? rootPrices.finalPrice : lowestFinal;
+
+    return {
+      ...p,
+      // keep root merchantPrice/price normalized (even if not used for variants)
+      merchantPrice: rootPrices.merchantPrice,
+      price: rootPrices.price,
+      discountPrice: rootPrices.discountPrice,
+      finalPrice: rootFinal,
+      variants,
+    };
+  }
+
+  // simple product
+  const rootPrices = normalizePriceBlock(p);
+  return { ...p, ...rootPrices };
 }
+
 
 /**
  * Enrich array of products with pricing breakdown
