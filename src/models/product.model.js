@@ -131,7 +131,7 @@ const productSchema = new mongoose.Schema({
     // Variant nubianMarkup (defaults to product nubianMarkup)
     nubianMarkup: {
       type: Number,
-      default: 10,
+      default: 70,
       min: [0, 'Variant nubian markup cannot be negative'],
     },
     // Variant dynamicMarkup (calculated by cron job)
@@ -302,7 +302,7 @@ productSchema.pre('save', function(next) {
     // For simple products: use merchantPrice if set, otherwise fallback to price
     const basePrice = this.merchantPrice || this.price || 0;
     if (basePrice > 0) {
-      const nubianMarkupValue = this.nubianMarkup || 10;
+      const nubianMarkupValue = this.nubianMarkup || 70;
       const dynamicMarkupValue = this.dynamicMarkup || 0;
       
       // Calculate finalPrice = merchantPrice + (merchantPrice * nubianMarkup / 100) + (merchantPrice * dynamicMarkup / 100)
@@ -329,7 +329,7 @@ productSchema.pre('save', function(next) {
     this.variants.forEach(variant => {
       const variantBasePrice = variant.merchantPrice || variant.price || 0;
       if (variantBasePrice > 0) {
-        const variantNubianMarkup = variant.nubianMarkup !== undefined ? variant.nubianMarkup : (this.nubianMarkup || 10);
+        const variantNubianMarkup = variant.nubianMarkup !== undefined ? variant.nubianMarkup : (this.nubianMarkup || 70);
         const variantDynamicMarkup = variant.dynamicMarkup || 0;
         
         // Calculate variant finalPrice

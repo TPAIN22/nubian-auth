@@ -253,10 +253,6 @@ function getProductPrice(product, attributes = null) {
   if (product.finalPrice && product.finalPrice > 0) {
     return product.finalPrice;
   }
-  if (product.discountPrice && product.discountPrice > 0) {
-    return product.discountPrice;
-  }
-  return product.price || 0;
 }
 
 export {
