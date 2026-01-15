@@ -57,17 +57,19 @@ app.use(helmet({
 // 🛡️ Security: Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 100 requests per windowMs
+  limit: 5000, // Increased to 5000 to handle multiple reloads and dashboard requests
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  validate: { trustProxy: false }, // Disable trust proxy validation in development
 });
 
 // Stricter rate limit for authentication-related endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5000, // Limit each IP to 5 requests per windowMs
+  limit: 5000, // Limit each IP to 5000 requests per windowMs
   message: 'Too many authentication attempts, please try again later.',
+  validate: { trustProxy: false }, // Disable trust proxy validation in development
 });
 
 // 🧩 CORS Configuration (configurable via environment variables)
@@ -144,7 +146,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Limit URL-enc
 
 // Apply general rate limiting to all other API routes
 // This applies to routes that don't match the more specific routes above
-app.use('/api/', limiter);
+app.use('/api', limiter);
 
 
 // Configure Clerk middleware to handle Bearer tokens from Authorization header
@@ -215,12 +217,6 @@ app.use((req, res, next) => {
       url: req.originalUrl,
       path: req.path,
       baseUrl: req.baseUrl,
-      registeredRoutes: [
-        '/api/carts/add (POST)',
-        '/api/carts (GET)',
-        '/api/carts/update (PUT)',
-        '/api/carts/remove (DELETE)',
-      ],
     });
   }
   next();

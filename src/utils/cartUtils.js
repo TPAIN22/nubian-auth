@@ -232,27 +232,35 @@ function getProductPrice(product, attributes = null) {
     return 0;
   }
   
-  // If attributes provided and product has variants, try to find matching variant
-  if (attributes && product.variants && product.variants.length > 0) {
+  const hasVariants = product.variants && product.variants.length > 0;
+
+  // If product has variants, we MUST find a matching variant for an accurate price
+  if (hasVariants) {
     const variant = findMatchingVariant(product, attributes);
     if (variant) {
-      // Variant: prefer finalPrice (smart pricing), fallback to discountPrice, then price
+      // Variant: prefer finalPrice (smart pricing), fallback to discountPrice, then merchantPrice
       if (variant.finalPrice && variant.finalPrice > 0) {
         return variant.finalPrice;
       }
       if (variant.discountPrice && variant.discountPrice > 0) {
         return variant.discountPrice;
       }
-      if (variant.price) {
-        return variant.price;
-      }
+      return variant.merchantPrice || variant.price || 0;
     }
+    
+    // If no variant matched but product has variants, return 0 for order safety
+    // or return the root finalPrice if it's intended to be a "From" price
+    return product.finalPrice || 0;
   }
   
-  // Product: prefer finalPrice (smart pricing), fallback to discountPrice, then price
+  // Product: prefer finalPrice (smart pricing), fallback to discountPrice, then merchantPrice
   if (product.finalPrice && product.finalPrice > 0) {
     return product.finalPrice;
   }
+  if (product.discountPrice && product.discountPrice > 0) {
+    return product.discountPrice;
+  }
+  return product.merchantPrice || product.price || 0;
 }
 
 export {

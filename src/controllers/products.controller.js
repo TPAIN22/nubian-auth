@@ -46,19 +46,24 @@ import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productR
       return { ...v, ...prices };
     });
 
-    // root finalPrice fallback = lowest active variant finalPrice (for UI)
+    // root finalPrice fallback = lowest active variant finalPrice (for UI "From" price)
     const activeVariants = variants.filter((v) => v.isActive !== false);
     const finals = activeVariants.map((v) => num(v.finalPrice, 0)).filter((x) => x > 0);
     const lowestFinal = finals.length ? Math.min(...finals) : 0;
 
+    const merchants = activeVariants.map((v) => num(v.merchantPrice, 0)).filter((x) => x > 0);
+    const lowestMerchant = merchants.length ? Math.min(...merchants) : 0;
+
     const rootPrices = normalizePriceBlock(p);
-    const rootFinal = rootPrices.finalPrice > 0 ? rootPrices.finalPrice : lowestFinal;
+    
+    // For variant products, root prices represent "From" price
+    const rootFinal = lowestFinal > 0 ? lowestFinal : rootPrices.finalPrice;
+    const rootMerchant = lowestMerchant > 0 ? lowestMerchant : rootPrices.merchantPrice;
 
     return {
       ...p,
-      // keep root merchantPrice/price normalized (even if not used for variants)
-      merchantPrice: rootPrices.merchantPrice,
-      price: rootPrices.price,
+      merchantPrice: rootMerchant,
+      price: rootMerchant,
       discountPrice: rootPrices.discountPrice,
       finalPrice: rootFinal,
       variants,

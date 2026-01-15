@@ -278,9 +278,11 @@ export const addToCart = async (req, res) => {
     }
 
     // For variant-based products, validate that a matching variant exists
+    let variantId = null;
+    let matchingVariant = null;
     if (productExists.variants && Array.isArray(productExists.variants) && productExists.variants.length > 0) {
       if (Object.keys(mergedAttributes).length > 0) {
-        const matchingVariant = findMatchingVariant(productExists, mergedAttributes);
+        matchingVariant = findMatchingVariant(productExists, mergedAttributes);
         if (!matchingVariant) {
           logger.warn('Add to cart failed: No matching variant found', {
             requestId: req.requestId,
@@ -295,6 +297,7 @@ export const addToCart = async (req, res) => {
             details: { attributes: mergedAttributes },
           });
         }
+        variantId = matchingVariant._id;
         if (!matchingVariant.isActive || matchingVariant.stock <= 0) {
           logger.warn('Add to cart failed: Variant not available', {
             requestId: req.requestId,
@@ -315,6 +318,8 @@ export const addToCart = async (req, res) => {
 
     // Get the correct price (variant price if variant exists, otherwise product price)
     const itemPrice = getProductPrice(productExists, mergedAttributes);
+    const itemMerchantPrice = matchingVariant ? (matchingVariant.merchantPrice || matchingVariant.price || 0) : (productExists.merchantPrice || productExists.price || 0);
+    
     if (!itemPrice || itemPrice <= 0) {
       logger.warn('Add to cart failed: Invalid price', {
         requestId: req.requestId,
@@ -392,14 +397,20 @@ export const addToCart = async (req, res) => {
     if (productIndex > -1) {
       // Product with the same ID and attributes exists, update its quantity
       cart.products[productIndex].quantity += quantity;
+      cart.products[productIndex].unitFinalPrice = itemPrice;
+      cart.products[productIndex].unitMerchantPrice = itemMerchantPrice;
+      cart.products[productIndex].variantId = variantId;
     } else {
       // Product not found or has different attributes, add it as a new item
       const attributesMap = objectToMap(mergedAttributes);
       cart.products.push({
         product: productId,
+        variantId,
         quantity,
         size: mergedAttributes.size || '', // Keep legacy size for backward compatibility
         attributes: attributesMap,
+        unitFinalPrice: itemPrice,
+        unitMerchantPrice: itemMerchantPrice,
       });
     }
 

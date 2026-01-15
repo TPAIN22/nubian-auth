@@ -12,7 +12,7 @@ export const getImageKitAuth = async (req, res) => {
   const requestId = req.requestId;
 
   if (!userId) {
-    return sendUnauthorized(res, 'Authentication required', requestId);
+    return sendUnauthorized(res, "Authentication required");
   }
 
   try {
@@ -23,72 +23,62 @@ export const getImageKitAuth = async (req, res) => {
 
     // Validate configuration
     if (!privateKey || !publicKey) {
-      logger.error('ImageKit configuration missing', {
+      logger.error("ImageKit configuration missing", {
         requestId,
         hasPrivateKey: !!privateKey,
         hasPublicKey: !!publicKey,
         hasUrlEndpoint: !!urlEndpoint,
       });
 
-      return sendError(
-        res,
-        {
-          message: 'ImageKit configuration missing',
-          details: 'Please configure IMAGEKIT_PRIVATE_KEY and IMAGEKIT_PUBLIC_KEY environment variables',
-        },
-        500,
-        requestId
-      );
+      return sendError(res, {
+        message: "ImageKit configuration missing",
+        details: "Please configure IMAGEKIT_PRIVATE_KEY and IMAGEKIT_PUBLIC_KEY environment variables",
+        statusCode: 500,
+      });
     }
 
     // Generate authentication parameters
     // Token: Random string for request uniqueness
-    const token = crypto.randomBytes(16).toString('hex');
+    const token = crypto.randomBytes(16).toString("hex");
     
     // Expire: Unix timestamp (seconds) - 1 hour from now
-    const expire = Math.floor(Date.now() / 1000) + 60 * 60;
-    
+    const expire = Math.floor(Date.now() / 1000) + 55 * 60;    
     // Signature: HMAC SHA-1 hash of (token + expire) using private key
     const signatureString = `${token}${expire}`;
     const signature = crypto
-      .createHmac('sha1', privateKey)
+      .createHmac("sha1", privateKey)
       .update(signatureString)
-      .digest('hex');
+      .digest("hex");
 
-    logger.info('ImageKit auth parameters generated', {
+    logger.info("ImageKit auth parameters generated", {
       requestId,
       userId,
       hasUrlEndpoint: !!urlEndpoint,
     });
 
-    return sendSuccess(
-      res,
-      {
+    return sendSuccess(res, {
+      data: {
         token,
         expire,
         signature,
         publicKey,
         urlEndpoint: urlEndpoint || undefined,
       },
-      200,
-      requestId
-    );
+      statusCode: 200,
+      message: "Success",
+    });
   } catch (error) {
-    logger.error('Error generating ImageKit auth', {
+    logger.error("Error generating ImageKit auth", {
       requestId,
       userId,
       error: error.message,
       stack: error.stack,
     });
 
-    return sendError(
-      res,
-      {
-        message: 'Failed to generate upload authentication',
-        details: error.message,
-      },
-      500,
-      requestId
-    );
+    return sendError(res, {
+      message: "Failed to generate upload authentication",
+      details: error.message,
+      statusCode: 500,
+    });
   }
 };

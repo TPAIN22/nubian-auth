@@ -68,7 +68,7 @@ export const setDefaultAddress = async (req, res) => {
   try {
     const user = await User.findOne({ clerkId: userId });
 
-    await Address.updateMany({ user: userId }, { isDefault: false });
+    await Address.updateMany({ user: user._id }, { isDefault: false });
     const address = await Address.findOneAndUpdate({ _id: id, user: user._id }, { isDefault: true }, { new: true });
     res.status(200).json(address);
   } catch (error) {

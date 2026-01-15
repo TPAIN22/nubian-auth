@@ -66,7 +66,8 @@ export async function calculateDynamicMarkup(productId) {
     const stockAdjustment = calculateStockAdjustment(stock);
     
     // Calculate total dynamic markup
-    const dynamicMarkup = Math.min(50, Math.max(0, 
+    // Allow negative values for automatic discounts (e.g. from high stock)
+    const dynamicMarkup = Math.min(50, Math.max(-20, 
       trendingBoost + 
       demandBoost + 
       interactionBoost + 

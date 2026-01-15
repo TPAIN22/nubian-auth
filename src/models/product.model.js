@@ -22,9 +22,9 @@ const variantSchema = new mongoose.Schema(
     merchantPrice: { type: Number, required: true, min: 0 },
     price: { type: Number, required: true, min: 0 }, // legacy mirror
 
-    // Smart pricing fields (do NOT auto-calc here)
+    // Smart pricing fields
     nubianMarkup: { type: Number, default: 10, min: 0 },
-    dynamicMarkup: { type: Number, default: 0, min: 0 },
+    dynamicMarkup: { type: Number, default: 0, min: -50 },
     finalPrice: { type: Number, default: 0, min: 0 },
 
     // Legacy discount (optional)
@@ -34,7 +34,25 @@ const variantSchema = new mongoose.Schema(
     images: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
   },
-  { _id: true }
+  { 
+    _id: true,
+    toJSON: {
+      transform: function (doc, ret) {
+        if (ret.attributes instanceof Map) {
+          ret.attributes = Object.fromEntries(ret.attributes);
+        }
+        return ret;
+      }
+    },
+    toObject: {
+      transform: function (doc, ret) {
+        if (ret.attributes instanceof Map) {
+          ret.attributes = Object.fromEntries(ret.attributes);
+        }
+        return ret;
+      }
+    }
+  }
 );
 
 const productSchema = new mongoose.Schema(
@@ -61,7 +79,7 @@ const productSchema = new mongoose.Schema(
     },
 
     nubianMarkup: { type: Number, default: 10, min: 0 },
-    dynamicMarkup: { type: Number, default: 0, min: 0 },
+    dynamicMarkup: { type: Number, default: 0, min: -50 },
     finalPrice: { type: Number, default: 0, min: 0 }, // optional for variant products, but helpful for UI
 
     discountPrice: { type: Number, default: 0, min: 0 },
@@ -133,25 +151,67 @@ const productSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ===== JSON Transform =====
-productSchema.set("toJSON", {
-  transform: function (_doc, ret) {
-    if (Array.isArray(ret.variants)) {
-      ret.variants = ret.variants.map((v) => {
-        if (v?.attributes instanceof Map) v.attributes = Object.fromEntries(v.attributes);
-        return v;
-      });
-    }
-    if (ret?._id) ret._id = String(ret._id);
-    return ret;
-  },
-});
+// ===== JSON/Object Transform =====
+const transform = function (_doc, ret) {
+  if (Array.isArray(ret.variants)) {
+    ret.variants = ret.variants.map((v) => {
+      if (v?.attributes instanceof Map) v.attributes = Object.fromEntries(v.attributes);
+      return v;
+    });
+  }
+  if (ret?._id) ret._id = String(ret._id);
+  return ret;
+};
+
+productSchema.set("toJSON", { transform });
+productSchema.set("toObject", { transform });
 
 // ===== Indexes (keep the important ones only) =====
 productSchema.index({ category: 1, isActive: 1, deletedAt: 1 });
 productSchema.index({ merchant: 1, deletedAt: 1, createdAt: -1 });
 productSchema.index({ isActive: 1, deletedAt: 1, featured: -1, priorityScore: -1, createdAt: -1 });
 productSchema.index({ visibilityScore: -1 });
+
+// ===== Pre-save Middleware: Smart Pricing Calculation =====
+productSchema.pre("save", function (next) {
+  // Helper to calculate price
+  const calculateFinal = (obj) => {
+    // If there's a manual discountPrice override, it takes absolute priority
+    if (obj.discountPrice && obj.discountPrice > 0) {
+      return obj.discountPrice;
+    }
+
+    const merchant = obj.merchantPrice || obj.price || 0;
+    const markup = obj.nubianMarkup ?? 10;
+    const dynamic = obj.dynamicMarkup ?? 0;
+
+    if (merchant <= 0) return 0;
+
+    // final = merchant + (merchant * markup%) + (merchant * dynamic%)
+    const markupAmount = (merchant * markup) / 100;
+    const dynamicAmount = (merchant * dynamic) / 100;
+    
+    // Ensure finalPrice is at least equal to merchantPrice (unless dynamicMarkup is very negative)
+    return Math.max(0, merchant + markupAmount + dynamicAmount);
+  };
+
+  // Simple Product Pricing
+  if (!this.variants || this.variants.length === 0) {
+    this.finalPrice = calculateFinal(this);
+  } else {
+    // Variant Product Pricing: Update each variant and calculate aggregate finalPrice (min)
+    let minFinal = Infinity;
+    this.variants.forEach((variant) => {
+      variant.finalPrice = calculateFinal(variant);
+      if (variant.isActive && variant.finalPrice > 0 && variant.finalPrice < minFinal) {
+        minFinal = variant.finalPrice;
+      }
+    });
+    this.finalPrice = minFinal === Infinity ? 0 : minFinal;
+  }
+
+  next();
+});
 
 const Product = mongoose.model("Product", productSchema);
 export default Product;

@@ -1,178 +1,103 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
-const orderSchema = new mongoose.Schema({
-    user: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true,
-    },
-    products: [{
-        product: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Product',
-            required: true,
-        },
-        quantity: {
-            type: Number,
-            required: true,
-            default: 1
-        },
-        // Smart pricing fields - stored at time of order
-        price: {
-            type: Number,
-            required: true,
-            // Final price charged (finalPrice > discountPrice > price)
-        },
-        merchantPrice: {
-            type: Number,
-            // Base merchant price at time of order
-        },
-        nubianMarkup: {
-            type: Number,
-            default: 10,
-            // Nubian markup percentage at time of order
-        },
-        dynamicMarkup: {
-            type: Number,
-            default: 0,
-            // Dynamic markup percentage at time of order
-        },
-        discountPrice: {
-            type: Number,
-            // Legacy discountPrice for backward compatibility
-        },
-        originalPrice: {
-            type: Number,
-            // Original merchant price before markups
-        },
-    }],
-    totalAmount: {
-        type: Number,
-        required: true,
-    },
+const orderProductSchema = new mongoose.Schema(
+  {
+    product: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+    variantId: { type: mongoose.Schema.Types.ObjectId, required: false },
+    quantity: { type: Number, required: true, default: 1 },
+
+    // pricing snapshot at time of order
+    price: { type: Number, required: true }, // final unit price charged
+    merchantPrice: { type: Number, default: 0 },
+    nubianMarkup: { type: Number, default: 10 },
+    dynamicMarkup: { type: Number, default: 0 },
+    discountPrice: { type: Number, default: 0 }, // legacy display
+    originalPrice: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const merchantRevenueSchema = new mongoose.Schema(
+  {
+    merchant: { type: mongoose.Schema.Types.ObjectId, ref: "Merchant", required: true },
+    amount: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const orderSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+
+    products: { type: [orderProductSchema], default: [] },
+
+    totalAmount: { type: Number, required: true },
+    discountAmount: { type: Number, default: 0 },
+    finalAmount: { type: Number, default: 0 },
+
     status: {
-        type: String,
-        enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'],
-        default: 'pending',
+      type: String,
+      enum: ["pending", "confirmed", "shipped", "delivered", "cancelled"],
+      default: "pending",
     },
-    orderDate: {
-        type: Date,
-        default: Date.now,
-    },
-    phoneNumber: {
-        type: String,
-        required: true,
-    },
-    address: {
-        type: String,
-        required: true,
-    },
-    city: {
-        type: String,
-        required: true,
-    },
+
     paymentMethod: {
-        type: String,
-        enum: ['cash', 'card'],
-        required: true,
+      type: String,
+      enum: ["CASH", "BANKAK", "CARD"],
+      required: true,
     },
+
     paymentStatus: {
-        type: String,
-        enum: ['pending', 'paid', 'failed'],
-        default: 'pending',
+      type: String,
+      enum: ["pending", "paid", "failed"],
+      default: "pending",
     },
-    createdAt: {
-        type: Date,
-        default: Date.now,
-    },
-    updatedAt: {
-        type: Date,
-        default: Date.now,
-    },
-    orderNumber: {
-        type: String,
-        unique: true,
-    },
-    coupon: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Coupon',
-        default: null
-    },
+    bankakApproval: {
+        status: { type: String, enum: ["PENDING", "APPROVED", "REJECTED"], default: "PENDING" },
+        approvedAt: Date,
+        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        rejectedAt: Date,
+        rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        reason: String,
+      },
+    orderDate: { type: Date, default: Date.now },
+    orderNumber: { type: String, unique: true },
+
+    phoneNumber: { type: String, required: true },
+    address: { type: String, required: true },
+    city: { type: String, required: true },
+
+    coupon: { type: mongoose.Schema.Types.ObjectId, ref: "Coupon", default: null },
     couponDetails: {
-        code: { type: String },
-        type: { type: String, enum: ['percentage', 'fixed'] },
-        value: { type: Number },
-        discountAmount: { type: Number, default: 0 },
-    },
-    discountAmount: {
-        type: Number,
-        default: 0,
-    },
-    discountAmount: {
-        type: Number,
-        default: 0
-    },
-    finalAmount: {
-        type: Number,
-        default: 0
-    },
-    transferProof: {
-        type: String,
-        default: null,
-        // ImageKit URL for payment proof image
+      code: { type: String },
+      type: { type: String, enum: ["percentage", "fixed"] },
+      value: { type: Number },
+      discountAmount: { type: Number, default: 0 },
     },
 
-    // ⬇⬇⬇ الحقول الجديدة
-    marketer: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Marketer',
-        default: null
-    },
-    marketerCommission: {
-        type: Number,
-        default: 0
-    },
-    // Merchant tracking - array of merchants whose products are in this order
-    merchants: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Merchant',
-    }],
-    // Merchant revenue breakdown - how much each merchant earned from this order
-    merchantRevenue: [{
-        merchant: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Merchant',
-        },
-        amount: {
-            type: Number,
-            default: 0,
-        },
-    }],
-});
+    transferProof: { type: String, default: null }, // ImageKit URL
 
-orderSchema.pre('save', function (next) {
-    this.updatedAt = Date.now();
-    next();
-});
+    marketer: { type: mongoose.Schema.Types.ObjectId, ref: "Marketer", default: null },
+    marketerCommission: { type: Number, default: 0 },
 
-// Indexes for frequently queried fields
-orderSchema.index({ user: 1 }); // Frequently queried for user orders
-// Note: orderNumber index is automatically created by unique: true, so we don't need to add it again
-// Note: status is not indexed here since we use compound indexes that include status
-orderSchema.index({ merchants: 1 }); // For filtering by merchant
-orderSchema.index({ orderDate: -1 }); // For sorting by newest orders
-orderSchema.index({ createdAt: -1 }); // For sorting by creation date
-orderSchema.index({ paymentStatus: 1 }); // For filtering by payment status
+    merchants: [{ type: mongoose.Schema.Types.ObjectId, ref: "Merchant" }],
+    merchantRevenue: { type: [merchantRevenueSchema], default: [] },
+  },
+  { timestamps: true }
+);
 
-// Compound indexes for common query patterns
-orderSchema.index({ user: 1, status: 1 }); // User orders by status (e.g., get user's pending orders)
-orderSchema.index({ user: 1, orderDate: -1 }); // User orders sorted by date
-orderSchema.index({ merchants: 1, status: 1 }); // Merchant orders by status (e.g., merchant's pending orders)
-orderSchema.index({ merchants: 1, orderDate: -1 }); // Merchant orders sorted by date
-orderSchema.index({ status: 1, paymentStatus: 1 }); // Orders by status and payment status
-orderSchema.index({ status: 1, orderDate: -1 }); // Orders by status sorted by date
-orderSchema.index({ marketer: 1, status: 1 }); // Marketer orders by status
+// Indexes
+orderSchema.index({ user: 1 });
+orderSchema.index({ merchants: 1 });
+orderSchema.index({ orderDate: -1 });
+orderSchema.index({ paymentStatus: 1 });
+orderSchema.index({ user: 1, status: 1 });
+orderSchema.index({ user: 1, orderDate: -1 });
+orderSchema.index({ merchants: 1, status: 1 });
+orderSchema.index({ merchants: 1, orderDate: -1 });
+orderSchema.index({ status: 1, paymentStatus: 1 });
+orderSchema.index({ status: 1, orderDate: -1 });
+orderSchema.index({ marketer: 1, status: 1 });
 
-const Order = mongoose.model('Order', orderSchema);
-
+const Order = mongoose.model("Order", orderSchema);
 export default Order;

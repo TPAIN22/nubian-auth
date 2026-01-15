@@ -31,6 +31,14 @@ const cartSchema = new mongoose.Schema({
         of: String,
         default: {},
       },
+      // Store variantId if item matches a variant
+      variantId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: false,
+      },
+      // Price snapshots
+      unitFinalPrice: { type: Number, required: false },
+      unitMerchantPrice: { type: Number, required: false },
     },
   ],
   totalQuantity: {
