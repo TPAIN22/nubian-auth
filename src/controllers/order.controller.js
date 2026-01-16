@@ -820,16 +820,14 @@ export const getMerchantOrders = async (req, res) => {
       .sort({ orderDate: -1 });
 
     const enhancedOrders = orders.map((order) => {
-      const merchantProducts = order.products.filter((item) => {
-        const productMerchant = item.product?.merchant;
-        return productMerchant && String(productMerchant._id) === String(merchant._id);
-      });
+      // For merchants, show all products in their orders (they can see what customers ordered)
+      const orderProducts = order.products || [];
 
       const merchantRevenueEntry = order.merchantRevenue?.find(
         (mr) => String(mr.merchant) === String(merchant._id)
       );
 
-      const merchantOrderTotal = merchantProducts.reduce((sum, item) => {
+      const merchantOrderTotal = orderProducts.reduce((sum, item) => {
         const p = item.price || item.product?.price || 0;
         return sum + p * item.quantity;
       }, 0);
@@ -837,15 +835,15 @@ export const getMerchantOrders = async (req, res) => {
       return {
         ...order.toObject(),
         transferProof: order.transferProof || null,
-        products: merchantProducts,
-        productsCount: merchantProducts.length,
+        products: orderProducts,
+        productsCount: orderProducts.length,
         merchantRevenue: merchantRevenueEntry?.amount || merchantOrderTotal,
         customerInfo: {
           name: order.user?.fullName || "غير محدد",
           email: order.user?.emailAddress || "غير محدد",
           phone: order.phoneNumber,
         },
-        productsDetails: merchantProducts.map((item) => ({
+        productsDetails: orderProducts.map((item) => ({
           productId: item.product?._id || null,
           name: item.product?.name || "",
           price: item.price || item.product?.price || 0,
