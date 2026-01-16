@@ -320,6 +320,9 @@ export const createOrder = async (req, res) => {
       let itemAttributes = {};
       if (item.attributes && item.attributes instanceof Map) {
         itemAttributes = mapToObject(item.attributes);
+      } else if (item.attributes && typeof item.attributes === 'object') {
+        // Handle attributes sent as plain object from frontend
+        itemAttributes = item.attributes;
       } else if (item.size) {
         itemAttributes = { size: item.size };
       }
