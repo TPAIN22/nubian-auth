@@ -611,7 +611,25 @@ export const createOrder = async (req, res) => {
 
 export const getOrders = async (req, res) => {
   try {
-    const orders = await Order.find()
+    const { status } = req.query;
+
+    let filter = {};
+    if (status && status !== 'all') {
+      // Normalize status for database query
+      let normalizedStatus = status;
+      if (status === "PENDING") normalizedStatus = "pending";
+      if (status === "AWAITING_PAYMENT_CONFIRMATION") normalizedStatus = "pending";
+      if (status === "CONFIRMED") normalizedStatus = "confirmed";
+      if (status === "PROCESSING") normalizedStatus = "confirmed";
+      if (status === "SHIPPED") normalizedStatus = "shipped";
+      if (status === "DELIVERED") normalizedStatus = "delivered";
+      if (status === "CANCELLED") normalizedStatus = "cancelled";
+      if (status === "PAYMENT_FAILED") normalizedStatus = "cancelled";
+
+      filter.status = normalizedStatus;
+    }
+
+    const orders = await Order.find(filter)
       .populate({ path: "user", select: "fullName emailAddress phoneNumber" })
       .populate({
         path: "products.product",
