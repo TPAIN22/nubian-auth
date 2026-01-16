@@ -617,6 +617,7 @@ export const getOrders = async (req, res) => {
         path: "products.product",
         select: "name price discountPrice images category description stock createdAt",
       })
+      .populate("merchants", "businessName")
       .populate("coupon", "code type value")
       .sort({ orderDate: -1 });
 
