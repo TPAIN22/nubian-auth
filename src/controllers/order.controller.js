@@ -52,12 +52,17 @@ export const updateOrderStatus = async (req, res) => {
     const { id } = req.params;
 
     const allowedStatuses = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
-    const allowedPaymentStatus = ["pending", "paid", "failed"];
 
     const updateData = {};
 
     if (status !== undefined) {
-      if (!allowedStatuses.includes(status)) {
+      // Convert frontend statuses to backend compatible ones if needed
+      let normalizedStatus = status;
+      if (status === "PROCESSING") normalizedStatus = "confirmed";
+      if (status === "AWAITING_PAYMENT_CONFIRMATION") normalizedStatus = "pending";
+      if (status === "PAYMENT_FAILED") normalizedStatus = "cancelled";
+
+      if (!allowedStatuses.includes(normalizedStatus)) {
         return sendError(res, {
           message: "Invalid status value",
           code: "INVALID_STATUS",
@@ -65,7 +70,7 @@ export const updateOrderStatus = async (req, res) => {
           details: { allowedStatuses },
         });
       }
-      updateData.status = status;
+      updateData.status = normalizedStatus;
     }
 
     if (paymentStatus !== undefined) {
@@ -929,6 +934,90 @@ export const updatePaymentStatus = async (req, res) => {
 
 
 // Get merchant order statistics
+// Merchant can update order status for orders containing their products
+export const updateMerchantOrderStatus = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+
+    const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
+    if (!merchant) return res.status(403).json({ message: "Merchant not found or not approved" });
+
+    const { status } = req.body;
+    const { id } = req.params;
+
+    const allowedStatuses = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
+
+    const updateData = {};
+
+    if (status !== undefined) {
+      // Convert frontend statuses to backend compatible ones if needed
+      let normalizedStatus = status;
+      if (status === "PROCESSING") normalizedStatus = "confirmed";
+      if (status === "AWAITING_PAYMENT_CONFIRMATION") normalizedStatus = "pending";
+      if (status === "PAYMENT_FAILED") normalizedStatus = "cancelled";
+
+      if (!allowedStatuses.includes(normalizedStatus)) {
+        return sendError(res, {
+          message: "Invalid status value",
+          code: "INVALID_STATUS",
+          statusCode: 400,
+          details: { allowedStatuses },
+        });
+      }
+      updateData.status = normalizedStatus;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return sendError(res, {
+        message: "No valid data to update",
+        code: "NO_UPDATE_DATA",
+        statusCode: 400,
+      });
+    }
+
+    // Check if the order contains this merchant's products
+    const order = await Order.findById(id)
+      .populate("products.product", "merchant")
+      .populate("merchants");
+
+    if (!order) return sendNotFound(res, "Order");
+
+    // Check if merchant is associated with this order
+    const merchantInOrder = order.merchants?.some(m => String(m._id) === String(merchant._id));
+    if (!merchantInOrder) {
+      return sendForbidden(res, "You can only update orders that contain your products");
+    }
+
+    const oldStatus = order.status;
+
+    const updatedOrder = await Order.findByIdAndUpdate(id, updateData, { new: true })
+      .populate("products.product", "merchant")
+      .populate("merchants");
+
+    // Send status change notification
+    if (status && status !== oldStatus) {
+      handleOrderStatusChanged(order._id, oldStatus, status).catch((error) => {
+        logger.error("Failed to send order status change notification", {
+          error: error.message,
+          orderId: order._id.toString(),
+          oldStatus,
+          newStatus: status,
+        });
+      });
+    }
+
+    return sendSuccess(res, { data: updatedOrder, message: "Order status updated successfully" });
+  } catch (error) {
+    logger.error("Error updating merchant order status", {
+      error: error instanceof Error ? error.message : "Unknown error",
+      orderId: req.params.id,
+      merchantId: req.userId,
+    });
+    throw error;
+  }
+};
+
 export const getMerchantOrderStats = async (req, res) => {
   try {
     const { userId } = getAuth(req);

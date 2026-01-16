@@ -10,10 +10,29 @@ const buildAddressString = (a) => {
 export const validateOrderStatusUpdate = [
   body("status")
     .optional()
-    .isIn(["pending", "confirmed", "shipped", "delivered", "cancelled"])
-    .withMessage(
-      "Status must be one of: pending, confirmed, shipped, delivered, cancelled"
-    ),
+    .custom((value) => {
+      if (!value) return true; // allow empty/undefined for optional field
+      const allowedStatuses = ["PENDING", "AWAITING_PAYMENT_CONFIRMATION", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED", "PAYMENT_FAILED"];
+      if (!allowedStatuses.includes(value)) {
+        throw new Error(`Status must be one of: ${allowedStatuses.join(", ")}`);
+      }
+      return true;
+    })
+    .customSanitizer((value) => {
+      // Convert frontend uppercase statuses to backend lowercase statuses
+      if (!value) return value;
+      const statusMap = {
+        "PENDING": "pending",
+        "AWAITING_PAYMENT_CONFIRMATION": "pending", // map to pending for now
+        "CONFIRMED": "confirmed",
+        "PROCESSING": "confirmed", // map processing to confirmed
+        "SHIPPED": "shipped",
+        "DELIVERED": "delivered",
+        "CANCELLED": "cancelled",
+        "PAYMENT_FAILED": "cancelled" // map payment failed to cancelled
+      };
+      return statusMap[value] || value.toLowerCase();
+    }),
   body("paymentStatus")
     .optional()
     .isIn(["pending", "paid", "failed"])

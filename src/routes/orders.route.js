@@ -12,6 +12,7 @@ import {
   approveBankakPayment,
   rejectBankakPayment,
   updatePaymentStatus,
+  updateMerchantOrderStatus,
 } from "../controllers/order.controller.js";
 
 import { isAuthenticated, isAdmin } from "../middleware/auth.middleware.js";
@@ -39,6 +40,9 @@ router.get("/admin", isAuthenticated, isAdmin, getOrders);
 
 // ✅ (optional) Stats endpoint — should call dedicated controller (recommended)
 // router.get("/admin/stats", isAuthenticated, isAdmin, getAdminOrderStats);
+
+// ✅ User orders (must come before parameterized routes)
+router.get("/my-orders", isAuthenticated, getUserOrders);
 
 // ✅ Order details (admin uses same)
 router.get("/:id", isAuthenticated, ...validateObjectId("id"), getOrderById);
@@ -93,12 +97,21 @@ router.get(
   getMerchantOrders
 );
 
+// ✅ NEW: Merchant can update order status for their orders
+router.patch(
+  "/merchant/:id/status",
+  isAuthenticated,
+  isApprovedMerchant,
+  ...validateObjectId("id"),
+  validateOrderStatusUpdate,
+  updateMerchantOrderStatus
+);
+
 router.get("/merchant/stats", isAuthenticated, isApprovedMerchant, getMerchantOrderStats);
 
 // ─────────────────────────────────────────────────────────────
 // User routes
 // ─────────────────────────────────────────────────────────────
-router.get("/my-orders", isAuthenticated, getUserOrders);
 router.post("/", isAuthenticated, validateOrderCreate, createOrder);
 
 export default router;
