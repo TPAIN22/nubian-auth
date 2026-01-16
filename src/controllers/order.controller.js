@@ -347,6 +347,8 @@ export const createOrder = async (req, res) => {
         product: item.product._id,
         variantId: itemVariant?._id || item.variantId || null,
         quantity: item.quantity,
+        attributes: itemAttributes,
+        size: item.size || null,
         price: itemPrice,
         merchantPrice: itemMerchantPrice,
         nubianMarkup: itemNubianMarkup,
@@ -683,6 +685,9 @@ export const getOrders = async (req, res) => {
           stock: item.product?.stock || 0,
           quantity: item.quantity,
           totalPrice: finalPrice * item.quantity,
+          attributes: item.attributes || null,
+          size: item.size || null,
+          variantId: item.variantId || null,
         };
       }),
       orderSummary: {
@@ -850,6 +855,9 @@ export const getMerchantOrders = async (req, res) => {
           images: item.product?.images || [],
           quantity: item.quantity,
           totalPrice: (item.price || item.product?.price || 0) * item.quantity,
+          attributes: item.attributes || null,
+          size: item.size || null,
+          variantId: item.variantId || null,
         })),
       };
     });

@@ -6,6 +6,10 @@ const orderProductSchema = new mongoose.Schema(
     variantId: { type: mongoose.Schema.Types.ObjectId, required: false },
     quantity: { type: Number, required: true, default: 1 },
 
+    // product attributes/variants
+    attributes: { type: mongoose.Schema.Types.Mixed, default: {} },
+    size: { type: String, required: false },
+
     // pricing snapshot at time of order
     price: { type: Number, required: true }, // final unit price charged
     merchantPrice: { type: Number, default: 0 },
