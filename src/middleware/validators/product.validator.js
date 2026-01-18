@@ -229,11 +229,8 @@ export const validateProductUpdate = [
   validateNumber('price', { min: 0, max: 1000000, optional: true }),
   validateNumber('discountPrice', { min: 0, max: 1000000, optional: true }),
   validateInteger('stock', { min: 0, max: 100000, optional: true }),
-  validateArray('images', { min: 0, max: 10, optional: true }),
-  body('images.*')
-    .optional()
-    .isURL({ protocols: ['http', 'https'], require_protocol: true })
-    .withMessage('Each image must be a valid URL'),
+  // Use custom validator for images instead of generic validateArray
+  validateImagesArray,
   validateArray('sizes', { min: 0, max: 20, optional: true }),
   body('sizes.*')
     .optional()
