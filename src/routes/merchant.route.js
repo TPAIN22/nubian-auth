@@ -26,8 +26,8 @@ router.post('/apply', isAuthenticated, validateMerchantApplication, applyToBecom
 router.get('/my-status', isAuthenticated, getMyMerchantStatus);
 
 // Public store routes (authenticated users can view approved stores)
-router.get('/store/:id', isAuthenticated, ...validateObjectId('id'), getStoreById);
-router.get('/store/:id/products', isAuthenticated, ...validateObjectId('id'), getStoreProducts);
+router.get('/store/:id', getStoreById);
+router.get('/store/:id/products', getStoreProducts);
 
 // Merchant-only routes (approved merchants)
 router.get('/me', isAuthenticated, isApprovedMerchant, getMyMerchantProfile); // Alias for /my-profile

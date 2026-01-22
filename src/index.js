@@ -71,58 +71,10 @@ const authLimiter = rateLimit({
   validate: { trustProxy: false }, // Disable trust proxy validation in development
 });
 
-// 🧩 CORS Configuration (configurable via environment variables)
-// CORS_ORIGINS can be set in .env as comma-separated list
-// Example: CORS_ORIGINS=http://localhost:3000,https://nubian-sd.store
-const corsOrigins = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)
-  : ['http://localhost:3000', 'http://localhost:3001', 'https://www.nubian-sd.store', 'https://nubian-sd.store'];
+// 🧩 CORS Configuration (temporarily disabled for debugging)
+logger.info('CORS: Temporarily disabled for debugging mobile connectivity');
 
-logger.info('CORS configuration', {
-  origins: corsOrigins,
-  count: corsOrigins.length,
-  configured: !!process.env.CORS_ORIGINS,
-});
-
-app.use(cors(
-  {
-    origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, React Native, or curl requests)
-      // Mobile apps don't send an origin header, so we must allow null origins
-      if (!origin) {
-        logger.debug('CORS: Allowing request with no origin (mobile app)', { 
-          hasOrigin: false,
-          userAgent: 'mobile-app'
-        });
-        return callback(null, true);
-      }
-      
-      if (corsOrigins.includes(origin)) {
-        logger.debug('CORS: Allowing origin', { origin });
-        callback(null, true);
-      } else {
-        logger.warn('CORS blocked origin', { origin, allowedOrigins: corsOrigins });
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type', 
-      'Authorization', 
-      'X-Requested-With', 
-      'X-Request-ID',
-      'Accept',
-      'Accept-Language',
-      'Cache-Control'
-    ],
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 204,
-    maxAge: 86400, // 24 hours
-    // Expose headers that mobile apps might need
-    exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining', 'X-RateLimit-Reset']
-  }
-));
+app.use(cors()); // Allow all origins temporarily
 
 // Request logging middleware (must be before routes)
 app.use(requestLogger);
