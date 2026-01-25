@@ -17,6 +17,7 @@ import bannerRoutes from './routes/banners.route.js';
 import wishlistRoutes from './routes/wishlist.route.js';
 import addressRoutes from './routes/address.route.js';
 import couponRoutes from './routes/coupons.route.js';
+import locationRoutes from './routes/location.route.js';
 import merchantRoutes from './routes/merchant.route.js';
 import homeRoutes from './routes/home.route.js';
 import healthRoutes from './routes/health.route.js';
@@ -71,12 +72,17 @@ const authLimiter = rateLimit({
   validate: { trustProxy: false }, // Disable trust proxy validation in development
 });
 
-// 🧩 CORS Configuration (temporarily disabled for debugging)
-logger.info('CORS: Temporarily disabled for debugging mobile connectivity');
+// 🧩 CORS Configuration
+logger.info('CORS: Enabled for all origins with credentials');
 
-app.use(cors()); // Allow all origins temporarily
+app.use(cors({
+  origin: true, // Allow all origins
+  credentials: true, // Allow cookies and authorization headers
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
+}));
 
-// Request logging middleware (must be before routes)
+// Request logging middleware (must be befoe routes)
 app.use(requestLogger);
 
 // Health check endpoints (before authentication and body parsing)
@@ -151,6 +157,7 @@ app.use('/api/banners', bannerRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/coupons', couponRoutes);
+app.use('/api/locations', locationRoutes);
 app.use('/api/merchants', merchantRoutes);
 app.use('/api/home', homeRoutes);
 app.use('/api/recommendations', recommendationsRoutes);
