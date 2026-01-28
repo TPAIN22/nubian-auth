@@ -769,3 +769,42 @@ export const updateMerchantProfile = async (req, res) => {
   }
 };
 
+/**
+ * Get all public merchants (Active & Approved)
+ * Public endpoint for listing stores
+ */
+export const getPublicMerchants = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 20, 50));
+    const skip = (page - 1) * limit;
+
+    const filter = {
+      status: 'APPROVED',
+      // Add logic here if we have an 'isActive' flag for merchants, currently relying on status
+    };
+
+    const merchants = await Merchant.find(filter)
+      .select('businessName businessDescription businessEmail businessPhone businessAddress status averageRating clerkId')
+      .sort({ averageRating: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await Merchant.countDocuments(filter);
+
+    return sendPaginated(res, {
+      data: merchants,
+      page,
+      limit,
+      total,
+      message: "Merchants retrieved successfully",
+    });
+  } catch (error) {
+    logger.error('Error getting public merchants', {
+      requestId: req.requestId,
+      error: error.message,
+    });
+    throw error;
+  }
+};

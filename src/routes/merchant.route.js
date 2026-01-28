@@ -13,6 +13,7 @@ import {
   deleteMerchant,
   getMyMerchantProfile,
   updateMerchantProfile,
+  getPublicMerchants,
 } from '../controllers/merchant.controller.js';
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
 import { isMerchant, isApprovedMerchant } from '../middleware/merchant.middleware.js';
@@ -24,6 +25,7 @@ const router = express.Router();
 // Public routes (authenticated users can apply)
 router.post('/apply', isAuthenticated, validateMerchantApplication, applyToBecomeMerchant);
 router.get('/my-status', isAuthenticated, getMyMerchantStatus);
+router.get('/list', getPublicMerchants); // New Public Endpoint
 
 // Public store routes (authenticated users can view approved stores)
 router.get('/store/:id', getStoreById);
