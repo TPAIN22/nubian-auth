@@ -1064,6 +1064,16 @@ export const getAllProductsAdmin = async (req, res) => {
             .limit(limit);
 
         const totalProducts = await Product.countDocuments(filter);
+        const absoluteTotal = await Product.countDocuments({}); // Check if DB is empty
+
+        // DEBUG LOGGING
+        logger.info('DEBUG: getAllProductsAdmin', {
+            filter,
+            totalFound: totalProducts,
+            absoluteTotalInDB: absoluteTotal,
+            paramIsActive: isActive,
+            paramIncludeDeleted: includeDeleted
+        });
 
         // Enrich products with pricing breakdown
         const enrichedProducts = enrichProductsWithPricing(products);
