@@ -3,6 +3,7 @@ import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendCreated } from "../lib/response.js";
+import { sendWelcomeEmail } from "../lib/mail.js";
 
 /**
  * Get or create user in MongoDB from Clerk
@@ -28,6 +29,7 @@ export const syncUser = async (req, res) => {
 
     // Check if user already exists
     let user = await User.findOne({ clerkId: userId });
+    const isNewUser = !user;
     
     if (user) {
       logger.info('User already exists in database', {
@@ -91,7 +93,31 @@ export const syncUser = async (req, res) => {
       clerkId: userId,
       userId: user._id,
       emailAddress: user.emailAddress,
+      isNewUser: isNewUser,
     });
+
+    // Send welcome email for new users (non-blocking)
+    if (isNewUser && user.emailAddress) {
+      sendWelcomeEmail({
+        to: user.emailAddress,
+        userName: firstName || fullName.split(' ')[0] || 'there',
+      })
+        .then(() => {
+          logger.info('Welcome email sent successfully', {
+            requestId: req.requestId,
+            userId: user._id,
+            emailAddress: user.emailAddress,
+          });
+        })
+        .catch((emailError) => {
+          logger.error('Failed to send welcome email', {
+            requestId: req.requestId,
+            userId: user._id,
+            emailAddress: user.emailAddress,
+            error: emailError.message,
+          });
+        });
+    }
 
     return sendCreated(res, user, "User synced successfully");
   } catch (error) {
