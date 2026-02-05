@@ -1,10 +1,10 @@
-import mongoose from "mongoose";
+import mongoose from 'mongoose';
 
 const attributeDefSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, lowercase: true },
     displayName: { type: String, required: true, trim: true },
-    type: { type: String, enum: ["select", "text", "number"], default: "select" },
+    type: { type: String, enum: ['select', 'text', 'number'], default: 'select' },
     required: { type: Boolean, default: false },
     options: { type: [String], default: [] },
   },
@@ -34,7 +34,7 @@ const variantSchema = new mongoose.Schema(
     images: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
   },
-  { 
+  {
     _id: true,
     toJSON: {
       transform: function (doc, ret) {
@@ -42,7 +42,7 @@ const variantSchema = new mongoose.Schema(
           ret.attributes = Object.fromEntries(ret.attributes);
         }
         return ret;
-      }
+      },
     },
     toObject: {
       transform: function (doc, ret) {
@@ -50,8 +50,8 @@ const variantSchema = new mongoose.Schema(
           ret.attributes = Object.fromEntries(ret.attributes);
         }
         return ret;
-      }
-    }
+      },
+    },
   }
 );
 
@@ -130,21 +130,21 @@ const productSchema = new mongoose.Schema(
     visibilityScore: { type: Number, default: 0, min: 0, index: true },
     scoreCalculatedAt: { type: Date, default: null },
 
-    category: { type: mongoose.Schema.Types.ObjectId, ref: "Category", required: true },
+    category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
 
     images: {
       type: [String],
       required: true,
       validate: {
         validator: (v) => Array.isArray(v) && v.length > 0,
-        message: "At least one image is required",
+        message: 'At least one image is required',
       },
     },
 
-    reviews: [{ type: mongoose.Schema.Types.ObjectId, ref: "Review" }],
+    reviews: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Review' }],
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
 
-    merchant: { type: mongoose.Schema.Types.ObjectId, ref: "Merchant", default: null },
+    merchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', default: null },
 
     deletedAt: { type: Date, default: null, index: true },
   },
@@ -163,8 +163,8 @@ const transform = function (_doc, ret) {
   return ret;
 };
 
-productSchema.set("toJSON", { transform });
-productSchema.set("toObject", { transform });
+productSchema.set('toJSON', { transform });
+productSchema.set('toObject', { transform });
 
 // ===== Indexes (keep the important ones only) =====
 productSchema.index({ category: 1, isActive: 1, deletedAt: 1 });
@@ -173,7 +173,7 @@ productSchema.index({ isActive: 1, deletedAt: 1, featured: -1, priorityScore: -1
 productSchema.index({ visibilityScore: -1 });
 
 // ===== Pre-save Middleware: Smart Pricing Calculation =====
-productSchema.pre("save", function (next) {
+productSchema.pre('save', function (next) {
   // Helper to calculate price
   const calculateFinal = (obj) => {
     // If there's a manual discountPrice override, it takes absolute priority
@@ -190,7 +190,7 @@ productSchema.pre("save", function (next) {
     // final = merchant + (merchant * markup%) + (merchant * dynamic%)
     const markupAmount = (merchant * markup) / 100;
     const dynamicAmount = (merchant * dynamic) / 100;
-    
+
     // Ensure finalPrice is at least equal to merchantPrice (unless dynamicMarkup is very negative)
     return Math.max(0, merchant + markupAmount + dynamicAmount);
   };
@@ -213,5 +213,5 @@ productSchema.pre("save", function (next) {
   next();
 });
 
-const Product = mongoose.model("Product", productSchema);
+const Product = mongoose.model('Product', productSchema);
 export default Product;
