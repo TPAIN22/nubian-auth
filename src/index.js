@@ -25,6 +25,9 @@ import recommendationsRoutes from './routes/recommendations.route.js';
 import trackingRoutes from './routes/tracking.route.js';
 import analyticsRoutes from './routes/analytics.route.js';
 import uploadRoutes from './routes/upload.route.js';
+import metaRoutes from './routes/meta.route.js';
+import fxRoutes from './routes/fx.route.js';
+import preferencesRoutes from './routes/preferences.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
 import logger from './lib/logger.js';
@@ -143,6 +146,9 @@ logger.info('Registering API routes', {
     '/api/carts',
     '/api/orders',
     '/api/products',
+    '/api/meta',
+    '/api/fx',
+    '/api/me/preferences',
   ]
 });
 
@@ -158,6 +164,9 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/coupons', couponRoutes);
 app.use('/api/locations', locationRoutes);
+app.use('/api/meta', metaRoutes);
+app.use('/api/fx', fxRoutes);
+app.use('/api/me/preferences', preferencesRoutes);
 app.use('/api/merchants', merchantRoutes);
 app.use('/api/home', homeRoutes);
 app.use('/api/recommendations', recommendationsRoutes);

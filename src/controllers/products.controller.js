@@ -8,6 +8,7 @@ import { clerkClient } from '@clerk/express'
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendForbidden } from '../lib/response.js'
 import logger from '../lib/logger.js'
 import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productRanking.js'
+import { convertProductPrices } from '../services/currency.service.js'
 
 /**
  * Enrich product with pricing breakdown for API responses
@@ -381,19 +382,43 @@ export const getProducts = async (req, res) => {
     // Enrich products with pricing breakdown
     const enrichedProducts = enrichProductsWithPricing(populatedProducts);
 
+    // Apply currency conversion if currencyCode is provided
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    let finalProducts = enrichedProducts;
+    
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        finalProducts = await Promise.all(
+          enrichedProducts.map(product => convertProductPrices(product, currencyCode))
+        );
+        logger.debug('Applied currency conversion to products', {
+          currencyCode,
+          productCount: finalProducts.length,
+        });
+      } catch (conversionError) {
+        logger.warn('Currency conversion failed, returning USD prices', {
+          currencyCode,
+          error: conversionError.message,
+        });
+        // Fall back to USD prices if conversion fails
+        finalProducts = enrichedProducts;
+      }
+    }
+
     logger.info('Products retrieved with ranking', {
       requestId: req.requestId,
       total: totalProducts,
-      returned: enrichedProducts.length,
+      returned: finalProducts.length,
       page,
       limit,
       hasPersonalization: preferredCategories.length > 0,
       categoryFilter: category || 'none',
       merchantFilter: merchant || 'none',
+      currencyCode: currencyCode || 'USD',
     });
 
     return sendPaginated(res, {
-      data: enrichedProducts,
+      data: finalProducts,
       page,
       limit,
       total: totalProducts,
@@ -428,7 +453,22 @@ export const getProductById = async (req, res) => {
         // Frontend can check isActive to handle display
         
         // Enrich product with pricing breakdown
-        const enrichedProduct = enrichProductWithPricing(product);
+        let enrichedProduct = enrichProductWithPricing(product);
+        
+        // Apply currency conversion if currencyCode is provided
+        const currencyCode = req.query.currencyCode || req.query.currency;
+        if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+            try {
+                enrichedProduct = await convertProductPrices(enrichedProduct, currencyCode);
+            } catch (conversionError) {
+                logger.warn('Currency conversion failed for product', {
+                    productId: req.params.id,
+                    currencyCode,
+                    error: conversionError.message,
+                });
+                // Fall back to USD prices
+            }
+        }
         
         return sendSuccess(res, {
             data: enrichedProduct,

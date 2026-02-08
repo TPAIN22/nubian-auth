@@ -27,6 +27,14 @@ const countrySchema = new mongoose.Schema(
       type: Boolean,
       default: true
     },
+    // Default currency for this country (references Currency.code)
+    defaultCurrencyCode: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      maxlength: 3,
+      default: "USD"
+    },
     sortOrder: {
       type: Number,
       default: 0

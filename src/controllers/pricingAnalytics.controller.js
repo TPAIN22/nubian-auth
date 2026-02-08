@@ -281,3 +281,175 @@ export const getMerchantPricingAnalytics = async (req, res) => {
     }, 500);
   }
 };
+
+/**
+ * Get currency-specific analytics for admin dashboard
+ * GET /api/analytics/pricing/currencies
+ * Requires admin role
+ */
+export const getCurrencyAnalytics = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    
+    if (!userId) {
+      return sendError(res, {
+        message: 'Unauthorized',
+        statusCode: 401,
+        code: 'UNAUTHORIZED',
+      });
+    }
+
+    // Verify admin role
+    const user = await clerkClient.users.getUser(userId);
+    const userRole = user.publicMetadata?.role;
+    
+    if (userRole !== 'admin') {
+      return sendForbidden(res, 'Only admins can access currency analytics');
+    }
+
+    // Get currency model
+    const Currency = (await import('../models/currency.model.js')).default;
+    
+    // Get all active currencies
+    const currencies = await Currency.find({ isActive: true })
+      .select('code name symbol marketMarkupAdjustment roundingStrategy')
+      .lean();
+
+    // Query time range (last 30 days by default, or use query params)
+    const days = parseInt(req.query.days) || 30;
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    // Get orders with currency data from the specified period
+    const orders = await Order.find({
+      createdAt: { $gte: startDate },
+      status: { $in: ['pending', 'confirmed', 'shipped', 'delivered'] },
+    }).select('currencyCodeSelected fxSnapshot totalAmount finalAmount finalAmountConverted createdAt status').lean();
+
+    // Aggregate orders by currency
+    const currencyStats = {};
+    
+    // Initialize stats for all active currencies
+    currencies.forEach(currency => {
+      currencyStats[currency.code] = {
+        code: currency.code,
+        name: currency.name,
+        symbol: currency.symbol,
+        marketMarkupAdjustment: currency.marketMarkupAdjustment || 0,
+        orderCount: 0,
+        totalRevenueUSD: 0,
+        totalRevenueConverted: 0,
+        averageFxRate: 0,
+        fxRates: [],
+        orders: {
+          pending: 0,
+          confirmed: 0,
+          shipped: 0,
+          delivered: 0,
+        },
+      };
+    });
+
+    // Process orders
+    orders.forEach(order => {
+      const currencyCode = order.currencyCodeSelected || 'USD';
+      
+      // Initialize if currency not in active list
+      if (!currencyStats[currencyCode]) {
+        currencyStats[currencyCode] = {
+          code: currencyCode,
+          name: currencyCode,
+          symbol: currencyCode,
+          marketMarkupAdjustment: 0,
+          orderCount: 0,
+          totalRevenueUSD: 0,
+          totalRevenueConverted: 0,
+          averageFxRate: 0,
+          fxRates: [],
+          orders: {
+            pending: 0,
+            confirmed: 0,
+            shipped: 0,
+            delivered: 0,
+          },
+        };
+      }
+      
+      const stats = currencyStats[currencyCode];
+      stats.orderCount += 1;
+      stats.totalRevenueUSD += order.finalAmount || order.totalAmount || 0;
+      stats.totalRevenueConverted += order.finalAmountConverted || order.finalAmount || 0;
+      
+      if (order.fxSnapshot?.rate) {
+        stats.fxRates.push(order.fxSnapshot.rate);
+      }
+      
+      if (order.status && stats.orders[order.status] !== undefined) {
+        stats.orders[order.status] += 1;
+      }
+    });
+
+    // Calculate averages and format results
+    const currencyAnalytics = Object.values(currencyStats)
+      .filter(stats => stats.orderCount > 0)
+      .map(stats => ({
+        ...stats,
+        averageFxRate: stats.fxRates.length > 0
+          ? Math.round((stats.fxRates.reduce((sum, r) => sum + r, 0) / stats.fxRates.length) * 10000) / 10000
+          : 1,
+        averageOrderValueUSD: stats.orderCount > 0
+          ? Math.round((stats.totalRevenueUSD / stats.orderCount) * 100) / 100
+          : 0,
+        averageOrderValueConverted: stats.orderCount > 0
+          ? Math.round((stats.totalRevenueConverted / stats.orderCount) * 100) / 100
+          : 0,
+        fxRates: undefined, // Remove raw rates array from response
+      }))
+      .sort((a, b) => b.totalRevenueUSD - a.totalRevenueUSD);
+
+    // Summary stats
+    const totalOrders = orders.length;
+    const totalRevenueUSD = currencyAnalytics.reduce((sum, c) => sum + c.totalRevenueUSD, 0);
+    const uniqueCurrencies = currencyAnalytics.length;
+
+    // Top currency by order count
+    const topCurrencyByOrders = currencyAnalytics.length > 0 
+      ? currencyAnalytics.reduce((max, c) => c.orderCount > max.orderCount ? c : max, currencyAnalytics[0])
+      : null;
+
+    // Top currency by revenue
+    const topCurrencyByRevenue = currencyAnalytics.length > 0
+      ? currencyAnalytics.reduce((max, c) => c.totalRevenueUSD > max.totalRevenueUSD ? c : max, currencyAnalytics[0])
+      : null;
+
+    return sendSuccess(res, {
+      data: {
+        summary: {
+          totalOrders,
+          totalRevenueUSD: Math.round(totalRevenueUSD * 100) / 100,
+          uniqueCurrencies,
+          periodDays: days,
+          topCurrencyByOrders: topCurrencyByOrders?.code || 'N/A',
+          topCurrencyByRevenue: topCurrencyByRevenue?.code || 'N/A',
+        },
+        currencies: currencyAnalytics,
+        activeCurrencies: currencies.map(c => ({
+          code: c.code,
+          name: c.name,
+          symbol: c.symbol,
+          marketMarkupAdjustment: c.marketMarkupAdjustment || 0,
+        })),
+      },
+      message: 'Currency analytics retrieved successfully',
+    });
+  } catch (error) {
+    logger.error('Error getting currency analytics', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
+    return sendError(res, {
+      message: 'Failed to get currency analytics',
+      error: error.message,
+    }, 500);
+  }
+};

@@ -29,6 +29,24 @@ const userSchema = new mongoose.Schema({
     required: false,
   },
   
+  // ===== CURRENCY PREFERENCES =====
+  // Selected country code (references Country.code)
+  countryCode: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    maxlength: 3,
+    default: null,
+  },
+  // Selected currency code (references Currency.code)
+  currencyCode: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    maxlength: 3,
+    default: null,
+  },
+  
   // ===== USER INTELLIGENCE LAYER =====
   // Track viewed products with timestamps
   viewedProducts: [{

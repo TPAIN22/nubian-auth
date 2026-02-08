@@ -4,6 +4,7 @@ import { isAuthenticated } from '../middleware/auth.middleware.js';
 import {
   getPricingAnalytics,
   getMerchantPricingAnalytics,
+  getCurrencyAnalytics,
 } from '../controllers/pricingAnalytics.controller.js';
 
 const router = express.Router();
@@ -13,5 +14,8 @@ router.get('/pricing', isAuthenticated, getPricingAnalytics);
 
 // Merchant pricing analytics
 router.get('/pricing/merchant', isAuthenticated, getMerchantPricingAnalytics);
+
+// Currency-specific analytics (admin only)
+router.get('/pricing/currencies', isAuthenticated, getCurrencyAnalytics);
 
 export default router;

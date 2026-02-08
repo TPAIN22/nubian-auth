@@ -11,6 +11,8 @@ import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendNotFound, sendForbidden } from "../lib/response.js";
 import { getProductPrice, mapToObject } from "../utils/cartUtils.js";
 import { handleOrderCreated, handleOrderStatusChanged } from "../services/notificationEventHandlers.js";
+import { getFxSnapshotForOrder, convertUSDToCurrency, applyPsychologicalPricing } from "../services/currency.service.js";
+import Currency from "../models/currency.model.js";
 
 /**
  * Build a readable shipping address string snapshot.
@@ -571,7 +573,47 @@ export const createOrder = async (req, res) => {
 
       merchants: Array.from(merchantIds),
       merchantRevenue,
+
+      // ===== MULTI-CURRENCY SUPPORT =====
+      currencyCodeSelected: req.body.currencyCode || user.currencyCode || "USD",
+      fxSnapshot: await getFxSnapshotForOrder(req.body.currencyCode || user.currencyCode || "USD"),
+      totalAmountConverted: null, // Will be set below
+      discountAmountConverted: null,
+      finalAmountConverted: null,
     });
+
+    // Calculate converted amounts in user's selected currency
+    const selectedCurrency = req.body.currencyCode || user.currencyCode || "USD";
+    if (selectedCurrency.toUpperCase() !== "USD") {
+      try {
+        const currency = await Currency.findOne({ code: selectedCurrency.toUpperCase() }).lean();
+        const fxRate = order.fxSnapshot?.rate || 1;
+
+        const totalConverted = applyPsychologicalPricing(totalAmount * fxRate, currency);
+        const discountConverted = applyPsychologicalPricing(discountAmount * fxRate, currency);
+        const finalConverted = applyPsychologicalPricing(finalAmount * fxRate, currency);
+
+        order.totalAmountConverted = totalConverted;
+        order.discountAmountConverted = discountConverted;
+        order.finalAmountConverted = finalConverted;
+        await order.save();
+
+        logger.info("Order currency conversion applied", {
+          orderNumber: formattedOrderNumber,
+          currencyCode: selectedCurrency,
+          fxRate,
+          totalUSD: totalAmount,
+          totalConverted,
+          finalUSD: finalAmount,
+          finalConverted,
+        });
+      } catch (conversionError) {
+        logger.warn("Failed to calculate converted amounts for order", {
+          orderNumber: formattedOrderNumber,
+          error: conversionError.message,
+        });
+      }
+    }
 
     await Cart.findOneAndDelete({ user: user._id });
 

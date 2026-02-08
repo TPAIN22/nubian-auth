@@ -86,6 +86,31 @@ const orderSchema = new mongoose.Schema(
 
     merchants: [{ type: mongoose.Schema.Types.ObjectId, ref: "Merchant" }],
     merchantRevenue: { type: [merchantRevenueSchema], default: [] },
+
+    // ===== MULTI-CURRENCY SUPPORT =====
+    // Currency selected by user at checkout
+    currencyCodeSelected: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      maxlength: 3,
+      default: "USD",
+    },
+    // FX rate snapshot at time of order - rates are LOCKED here
+    fxSnapshot: {
+      // Base currency (always USD)
+      base: { type: String, default: "USD" },
+      // Date of the rate from provider (YYYY-MM-DD)
+      date: { type: String },
+      // The exchange rate used for the selected currency
+      rate: { type: Number, default: 1 },
+      // Provider name for audit
+      provider: { type: String, default: "frankfurter" },
+    },
+    // Amount totals in the selected currency (for display/receipts)
+    totalAmountConverted: { type: Number, default: null },
+    discountAmountConverted: { type: Number, default: null },
+    finalAmountConverted: { type: Number, default: null },
   },
   { timestamps: true }
 );
