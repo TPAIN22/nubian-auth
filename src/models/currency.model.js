@@ -107,7 +107,7 @@ const currencySchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-currencySchema.index({ code: 1 }, { unique: true });
+// Note: code already has unique: true which creates an index automatically
 currencySchema.index({ isActive: 1, sortOrder: 1 });
 
 // Static method to get all active currencies for selection

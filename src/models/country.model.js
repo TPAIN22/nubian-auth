@@ -46,7 +46,7 @@ const countrySchema = new mongoose.Schema(
 );
 
 // Indexes for performance
-countrySchema.index({ code: 1 }, { unique: true });
+// Note: code already has unique: true which creates an index automatically
 countrySchema.index({ isActive: 1, sortOrder: 1 });
 
 export default mongoose.model("Country", countrySchema);
