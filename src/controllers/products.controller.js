@@ -383,7 +383,7 @@ export const getProducts = async (req, res) => {
     const enrichedProducts = enrichProductsWithPricing(populatedProducts);
 
     // Apply currency conversion if currencyCode is provided
-    const currencyCode = req.query.currencyCode || req.query.currency;
+    const currencyCode = req.currencyCode;
     let finalProducts = enrichedProducts;
     
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
@@ -455,9 +455,9 @@ export const getProductById = async (req, res) => {
         // Enrich product with pricing breakdown
         let enrichedProduct = enrichProductWithPricing(product);
         
-        // Apply currency conversion if currencyCode is provided
-        const currencyCode = req.query.currencyCode || req.query.currency;
-        if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+        // Apply currency conversion
+        const currencyCode = req.currencyCode;
+        if (currencyCode && currencyCode !== 'USD') {
             try {
                 enrichedProduct = await convertProductPrices(enrichedProduct, currencyCode);
             } catch (conversionError) {

@@ -29,6 +29,7 @@ import metaRoutes from './routes/meta.route.js';
 import fxRoutes from './routes/fx.route.js';
 import preferencesRoutes from './routes/preferences.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
+import { currencyMiddleware } from './middleware/currency.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
 import logger from './lib/logger.js';
 import { validateEnv } from './lib/envValidator.js';
@@ -87,6 +88,9 @@ app.use(cors({
 
 // Request logging middleware (must be befoe routes)
 app.use(requestLogger);
+
+// Global currency and country detection
+app.use(currencyMiddleware);
 
 // Health check endpoints (before authentication and body parsing)
 app.use('/', healthRoutes);

@@ -1,0 +1,6 @@
+--- EXCHANGE RATES DB STATUS ---
+EXCHANGE RATE COLLECTION IS EMPTY!
+
+--- CURRENCY CONFIG STATUS ---
+EGP: Active=true, Manual=50, AllowManual=true
+SDG: Active=true, Manual=1300, AllowManual=true

@@ -29,12 +29,21 @@ async function fetchFromFrankfurter(symbols) {
     return { date: null, rates: {} };
   }
 
-  // Filter out USD (it's always 1) and invalid codes
+  // Frankfurter supported symbols
+  const SUPPORTED_SYMBOLS = [
+    "AUD", "BGN", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", 
+    "HKD", "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "MXN", 
+    "MYR", "NOK", "NZD", "PHP", "PLN", "RON", "SEK", "SGD", 
+    "THB", "TRY", "ZAR", "AED", "SAR", "EGP" // Note: EGP is sometimes supported, but Frankfurter dev often changes
+  ];
+
+  // Filter out USD and currencies NOT in the supported list
   const validSymbols = symbols
     .map((s) => s.toUpperCase().trim())
-    .filter((s) => s !== "USD" && s.length === 3);
+    .filter((s) => s !== "USD" && s.length === 3 && SUPPORTED_SYMBOLS.includes(s));
 
   if (validSymbols.length === 0) {
+    logger.info("No Frankfurter-supported symbols requested. Skipping API call.");
     return { date: new Date().toISOString().split("T")[0], rates: {} };
   }
 
@@ -129,16 +138,9 @@ export async function fetchLatestRates() {
 
     const { date, rates, errors } = await fetchWithRetry(symbols);
 
-    if (!date || Object.keys(rates).length === 0) {
-      logger.error("Failed to fetch any rates from provider", { errors });
-      return {
-        success: false,
-        date: null,
-        ratesCount: 0,
-        errors: errors.length > 0 ? errors : ["No rates returned from provider"],
-        missingCurrencies: symbols,
-      };
-    }
+    // We proceed even if rates is empty, as long as we have symbols, 
+    // to create a record of the fetch attempt and handle manual fallbacks.
+    const effectiveDate = date || new Date().toISOString().split("T")[0];
 
     // Check which currencies were requested but not returned
     const returnedCurrencies = Object.keys(rates);
