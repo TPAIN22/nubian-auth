@@ -388,10 +388,28 @@ export const getProducts = async (req, res) => {
     
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
       try {
+        // PERF: Fetch rate and config ONCE for all products
+        const upperCode = currencyCode.toUpperCase();
+        
+        // Dynamic import to avoid circular dep issues if any, or just direct import
+        // We need: Currency model and getLatestRate service
+        const Currency = (await import('../models/currency.model.js')).default;
+        const { getLatestRate } = await import('../services/fx.service.js');
+
+        const [currencyConfig, rateInfo] = await Promise.all([
+             Currency.findOne({ code: upperCode }).lean(),
+             getLatestRate(upperCode)
+        ]);
+        
+        const currencyContext = {
+            config: currencyConfig,
+            rate: rateInfo
+        };
+
         finalProducts = await Promise.all(
-          enrichedProducts.map(product => convertProductPrices(product, currencyCode))
+          enrichedProducts.map(product => convertProductPrices(product, currencyCode, currencyContext))
         );
-        logger.debug('Applied currency conversion to products', {
+        logger.debug('Applied currency conversion to products (optimized)', {
           currencyCode,
           productCount: finalProducts.length,
         });

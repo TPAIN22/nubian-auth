@@ -21,7 +21,37 @@ export const getWishlist = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    res.status(200).json(wishlist.products);
+    let products = wishlist.products || [];
+
+    // Apply currency conversion if currencyCode is provided
+    const currencyCode = req.currencyCode;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        const upperCode = currencyCode.toUpperCase();
+        
+        const CurrencyModel = (await import('../models/currency.model.js')).default;
+        const { getLatestRate } = await import('../services/fx.service.js');
+        const { convertProductPrices } = await import('../services/currency.service.js');
+
+        const [currencyConfig, rateInfo] = await Promise.all([
+             CurrencyModel.findOne({ code: upperCode }).lean(),
+             getLatestRate(upperCode)
+        ]);
+        
+        const currencyContext = {
+            config: currencyConfig,
+            rate: rateInfo
+        };
+
+        products = await Promise.all(
+          products.map(product => convertProductPrices(product.toObject ? product.toObject() : product, currencyCode, currencyContext))
+        );
+      } catch (error) {
+        logger.warn('Currency conversion failed for wishlist', { error: error.message });
+      }
+    }
+
+    res.status(200).json(products);
   } catch (error) {
     logger.error('Error in getWishlist', {
       requestId: req.requestId,

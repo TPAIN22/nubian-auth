@@ -159,12 +159,29 @@ export const getHomeData = async (req, res) => {
     
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
       try {
+        // PERF: Fetch rate and config ONCE for all sections
+        const upperCode = currencyCode.toUpperCase();
+        
+        // Import necessary models/services
+        const CurrencyModel = (await import('../models/currency.model.js')).default;
+        const { getLatestRate } = await import('../services/fx.service.js');
+
+        const [currencyConfig, rateInfo] = await Promise.all([
+             CurrencyModel.findOne({ code: upperCode }).lean(),
+             getLatestRate(upperCode)
+        ]);
+        
+        const currencyContext = {
+            config: currencyConfig,
+            rate: rateInfo
+        };
+
         const productLists = ['trending', 'flashDeals', 'newArrivals', 'forYou'];
         await Promise.all(
           productLists.map(async (key) => {
             if (Array.isArray(response[key])) {
               response[key] = await Promise.all(
-                response[key].map(product => convertProductPrices(product, currencyCode))
+                response[key].map(product => convertProductPrices(product, currencyCode, currencyContext))
               );
             }
           })

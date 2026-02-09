@@ -192,34 +192,61 @@ export function formatPrice(amount, currencyConfig) {
  * @param {string} currencyCode - Target currency code
  * @returns {Promise<Object>} - Full price conversion result
  */
-export async function convertAndFormatPrice(amountUSD, currencyCode) {
+export async function convertAndFormatPrice(amountUSD, currencyCode, options = {}) {
   const upperCode = currencyCode?.toUpperCase() || "USD";
+  const { preloadedConfig, preloadedRate } = options;
 
-  // Get currency config
-  const currency = await Currency.findOne({ code: upperCode }).lean();
-  const currencyConfig = currency || {
-    code: upperCode,
-    symbol: upperCode === "USD" ? "$" : upperCode,
-    decimals: 2,
-    roundingStrategy: "NONE",
-    symbolPosition: "before",
-    marketMarkupAdjustment: 0,
-  };
+  // Get currency config (use preloaded or fetch)
+  let currencyConfig = preloadedConfig;
+  if (!currencyConfig) {
+    const currency = await Currency.findOne({ code: upperCode }).lean();
+    currencyConfig = currency || {
+      code: upperCode,
+      symbol: upperCode === "USD" ? "$" : upperCode,
+      decimals: 2,
+      roundingStrategy: "NONE",
+      symbolPosition: "before",
+      marketMarkupAdjustment: 0,
+    };
+  }
 
-  // Convert
-  const conversion = await convertUSDToCurrency(amountUSD, upperCode);
+  // Get Rate (use preloaded or fetch)
+  let rateInfo = preloadedRate;
+  if (!rateInfo) {
+    // If we're here, we're doing the "slow" individual fetch
+    if (upperCode === "USD") {
+      rateInfo = { rate: 1, date: new Date().toISOString().split("T")[0], rateUnavailable: false, provider: "system" };
+    } else {
+        // We reuse the existing logic but we should optimize this call too if possible in future
+        // For now, relied on the caller passing preloadedRate
+        const fromFx = await getLatestRate(upperCode); 
+        rateInfo = fromFx;
+    }
+  }
 
-  // Apply psychological pricing if rate is available
-  let finalAmount = conversion.amountConverted;
-  if (!conversion.rateUnavailable) {
+  // Calculate Amount
+  let amountConverted = amountUSD;
+  let rate = 1;
+  let rateUnavailable = false; 
+
+  if (upperCode !== "USD") {
+     if (rateInfo.rateUnavailable || rateInfo.rate === null) {
+        rateUnavailable = true;
+     } else {
+        rate = rateInfo.rate;
+        amountConverted = amountUSD * rate;
+     }
+  }
+
+  // Apply psychological pricing
+  let finalAmount = amountConverted;
+  if (!rateUnavailable) {
     finalAmount = applyPsychologicalPricing(finalAmount, currencyConfig);
     
-    // Apply market-specific markup adjustment (e.g., +5% for premium markets)
     const marketAdjustment = currencyConfig.marketMarkupAdjustment || 0;
     if (marketAdjustment !== 0) {
       const adjustmentAmount = (finalAmount * marketAdjustment) / 100;
       finalAmount = finalAmount + adjustmentAmount;
-      // Re-apply psychological pricing after adjustment
       finalAmount = applyPsychologicalPricing(finalAmount, currencyConfig);
     }
   }
@@ -233,10 +260,10 @@ export async function convertAndFormatPrice(amountUSD, currencyCode) {
     priceDisplay,
     currencyCode: upperCode,
     symbol: currencyConfig.symbol,
-    rate: conversion.rate,
-    rateDate: conversion.date,
-    rateProvider: conversion.provider,
-    rateUnavailable: conversion.rateUnavailable,
+    rate: rate,
+    rateDate: rateInfo.date,
+    rateProvider: rateInfo.provider,
+    rateUnavailable: rateUnavailable,
     roundingStrategy: currencyConfig.roundingStrategy,
     marketMarkupAdjustment: currencyConfig.marketMarkupAdjustment || 0,
   };
@@ -249,45 +276,41 @@ export async function convertAndFormatPrice(amountUSD, currencyCode) {
  * @param {string} currencyCode - Target currency
  * @returns {Promise<Object>} - Product with converted prices
  */
-export async function convertProductPrices(product, currencyCode) {
+export async function convertProductPrices(product, currencyCode, context = {}) {
   const result = { ...product };
+  
+  // If context is provided, use it. Otherwise, defaults will cause individual fetches (backward compat).
+  const options = {
+      preloadedConfig: context.config,
+      preloadedRate: context.rate
+  };
 
   // 1. Root-level standard fields
   if (product.finalPrice !== undefined) {
-    logger.info('Converting finalPrice', { 
-      name: product.name, 
-      original: product.finalPrice, 
-      currencyCode 
-    });
-    const converted = await convertAndFormatPrice(product.finalPrice, currencyCode);
-    result.finalPrice = converted.priceConverted; // Convert the numerical value
-    result.priceConverted = converted.priceConverted; // Legacy/convenience
+    const converted = await convertAndFormatPrice(product.finalPrice, currencyCode, options);
+    result.finalPrice = converted.priceConverted;
+    result.priceConverted = converted.priceConverted; 
     result.priceDisplay = converted.priceDisplay;
     result.currencyCode = converted.currencyCode;
     result.rate = converted.rate;
     result.rateDate = converted.rateDate;
     result.rateUnavailable = converted.rateUnavailable;
-    logger.info('Converted finalPrice', { 
-      name: product.name, 
-      converted: result.finalPrice, 
-      display: result.priceDisplay 
-    });
   }
 
   if (product.merchantPrice !== undefined) {
-    const converted = await convertAndFormatPrice(product.merchantPrice, currencyCode);
+    const converted = await convertAndFormatPrice(product.merchantPrice, currencyCode, options);
     result.merchantPrice = converted.priceConverted;
     result.originalPrice = converted.priceConverted;
   }
 
   if (product.discountPrice !== undefined && product.discountPrice > 0) {
-    const converted = await convertAndFormatPrice(product.discountPrice, currencyCode);
+    const converted = await convertAndFormatPrice(product.discountPrice, currencyCode, options);
     result.discountPrice = converted.priceConverted;
     result.discountPriceDisplay = converted.priceDisplay;
   }
 
   if (product.price !== undefined) {
-    const converted = await convertAndFormatPrice(product.price, currencyCode);
+    const converted = await convertAndFormatPrice(product.price, currencyCode, options);
     result.price = converted.priceConverted;
   }
 
@@ -295,15 +318,15 @@ export async function convertProductPrices(product, currencyCode) {
   if (product.simple) {
     const simple = { ...product.simple };
     if (simple.finalPrice !== undefined) {
-      const converted = await convertAndFormatPrice(simple.finalPrice, currencyCode);
+      const converted = await convertAndFormatPrice(simple.finalPrice, currencyCode, options);
       simple.finalPrice = converted.priceConverted;
     }
     if (simple.merchantPrice !== undefined) {
-      const converted = await convertAndFormatPrice(simple.merchantPrice, currencyCode);
+      const converted = await convertAndFormatPrice(simple.merchantPrice, currencyCode, options);
       simple.merchantPrice = converted.priceConverted;
     }
     if (simple.discountPrice !== undefined && simple.discountPrice > 0) {
-      const converted = await convertAndFormatPrice(simple.discountPrice, currencyCode);
+      const converted = await convertAndFormatPrice(simple.discountPrice, currencyCode, options);
       simple.discountPrice = converted.priceConverted;
     }
     result.simple = simple;
@@ -313,15 +336,15 @@ export async function convertProductPrices(product, currencyCode) {
   if (product.productLevelPricing) {
     const plp = { ...product.productLevelPricing };
     if (plp.finalPrice !== undefined) {
-      const converted = await convertAndFormatPrice(plp.finalPrice, currencyCode);
+      const converted = await convertAndFormatPrice(plp.finalPrice, currencyCode, options);
       plp.finalPrice = converted.priceConverted;
     }
     if (plp.merchantPrice !== undefined) {
-      const converted = await convertAndFormatPrice(plp.merchantPrice, currencyCode);
+      const converted = await convertAndFormatPrice(plp.merchantPrice, currencyCode, options);
       plp.merchantPrice = converted.priceConverted;
     }
     if (plp.discountPrice !== undefined && plp.discountPrice > 0) {
-      const converted = await convertAndFormatPrice(plp.discountPrice, currencyCode);
+      const converted = await convertAndFormatPrice(plp.discountPrice, currencyCode, options);
       plp.discountPrice = converted.priceConverted;
     }
     result.productLevelPricing = plp;
@@ -329,24 +352,25 @@ export async function convertProductPrices(product, currencyCode) {
 
   // 4. Handle variants if present
   if (product.variants && Array.isArray(product.variants) && product.variants.length > 0) {
+    // Parallel variant conversion
     result.variants = await Promise.all(
       product.variants.map(async (variant) => {
         const variantResult = { ...variant };
         
         if (variant.finalPrice !== undefined) {
-          const converted = await convertAndFormatPrice(variant.finalPrice, currencyCode);
+          const converted = await convertAndFormatPrice(variant.finalPrice, currencyCode, options);
           variantResult.finalPrice = converted.priceConverted;
-          variantResult.priceConverted = converted.priceConverted; // Legacy
+          variantResult.priceConverted = converted.priceConverted;
           variantResult.priceDisplay = converted.priceDisplay;
         }
         
         if (variant.merchantPrice !== undefined) {
-          const converted = await convertAndFormatPrice(variant.merchantPrice, currencyCode);
+          const converted = await convertAndFormatPrice(variant.merchantPrice, currencyCode, options);
           variantResult.merchantPrice = converted.priceConverted;
         }
         
         if (variant.discountPrice !== undefined && variant.discountPrice > 0) {
-          const converted = await convertAndFormatPrice(variant.discountPrice, currencyCode);
+          const converted = await convertAndFormatPrice(variant.discountPrice, currencyCode, options);
           variantResult.discountPrice = converted.priceConverted;
         }
 
