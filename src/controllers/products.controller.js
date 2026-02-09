@@ -61,19 +61,39 @@ import { convertProductPrices } from '../services/currency.service.js'
     const rootFinal = lowestFinal > 0 ? lowestFinal : rootPrices.finalPrice;
     const rootMerchant = lowestMerchant > 0 ? lowestMerchant : rootPrices.merchantPrice;
 
+    // Calculate discount for display (using lowest prices)
+    let discountPercentage = 0;
+    if (rootMerchant > 0 && rootFinal < rootMerchant) {
+        discountPercentage = Math.round(((rootMerchant - rootFinal) / rootMerchant) * 100);
+    }
+
     return {
       ...p,
       merchantPrice: rootMerchant,
       price: rootMerchant,
       discountPrice: rootPrices.discountPrice,
       finalPrice: rootFinal,
+      discountPercentage,
       variants,
     };
   }
 
   // simple product
   const rootPrices = normalizePriceBlock(p);
-  return { ...p, ...rootPrices };
+  
+  // Calculate discount percentage
+  let discountPercentage = 0;
+  // Use rootMerchant as base (original) for consistency with pricing engine
+  const originalPrice = rootPrices.merchantPrice; 
+  if (originalPrice > 0 && rootPrices.finalPrice < originalPrice) {
+      discountPercentage = Math.round(((originalPrice - rootPrices.finalPrice) / originalPrice) * 100);
+  }
+
+  return { 
+      ...p, 
+      ...rootPrices,
+      discountPercentage 
+  };
 }
 
 
