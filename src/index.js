@@ -45,6 +45,28 @@ try {
 
 const app = express();
 
+// 🧩 CORS Configuration - MUST BE FIRST
+logger.info('CORS: Enabled for all origins with credentials');
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow all origins (origin will be undefined for mobile apps/non-browser requests)
+    callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'Accept', 
+    'Origin', 
+    'X-Requested-With', 
+    'x-currency', 
+    'x-country',
+    'x-token' 
+  ],
+  exposedHeaders: ['Set-Cookie']
+}));
+
 // 🛡️ Security: Helmet.js for security headers
 app.use(helmet({
   contentSecurityPolicy: {
@@ -76,15 +98,6 @@ const authLimiter = rateLimit({
   validate: { trustProxy: false }, // Disable trust proxy validation in development
 });
 
-// 🧩 CORS Configuration
-logger.info('CORS: Enabled for all origins with credentials');
-
-app.use(cors({
-  origin: true, // Allow all origins
-  credentials: true, // Allow cookies and authorization headers
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-currency', 'x-country']
-}));
 
 // Request logging middleware (must be befoe routes)
 app.use(requestLogger);
