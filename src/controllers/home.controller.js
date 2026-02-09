@@ -154,7 +154,9 @@ export const getHomeData = async (req, res) => {
     };
 
     // Apply currency conversion if currencyCode is provided
-    const currencyCode = req.query.currencyCode || req.query.currency;
+    // Middleware already extracts it from headers or query
+    const currencyCode = req.currencyCode;
+    
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
       try {
         const productLists = ['trending', 'flashDeals', 'newArrivals', 'forYou'];
