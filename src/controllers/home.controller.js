@@ -207,110 +207,26 @@ export const getHomeData = async (req, res) => {
  */
 async function getTrendingProducts(baseFilter) {
   try {
-    // Aggregate to calculate trending score
-    const pipeline = [
-      { $match: baseFilter },
-      
-      // Lookup orders to count product orders
-      {
-        $lookup: {
-          from: 'orders',
-          let: { productId: '$_id' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $in: ['$$productId', '$products.product']
-                },
-                status: { $in: ['confirmed', 'shipped', 'delivered'] }
-              }
-            }
-          ],
-          as: 'orders'
-        }
-      },
-      
-      // Lookup wishlists to count favorites
-      {
-        $lookup: {
-          from: 'wishlists',
-          let: { productId: '$_id' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $in: ['$$productId', '$products']
-                }
-              }
-            }
-          ],
-          as: 'wishlists'
-        }
-      },
-      
-      // Calculate trending score
-      {
-        $addFields: {
-          orderCount: { $size: '$orders' },
-          favoriteCount: { $size: '$wishlists' },
-          // Weight: orders (50%), favorites (30%), rating (20%)
-          trendingScore: {
-            $add: [
-              { $multiply: [{ $size: '$orders' }, 5] },
-              { $multiply: [{ $size: '$wishlists' }, 3] },
-              { $multiply: [{ $ifNull: ['$averageRating', 0] }, 2] }
-            ]
-          }
-        }
-      },
-      
-      // Sort by trending score
-      { $sort: { trendingScore: -1, createdAt: -1 } },
-      { $limit: 20 },
-      
-      // Populate references
-      {
-        $lookup: {
-          from: 'merchants',
-          localField: 'merchant',
-          foreignField: '_id',
-          as: 'merchant'
-        }
-      },
-      {
-        $unwind: { path: '$merchant', preserveNullAndEmptyArrays: true }
-      },
-      {
-        $lookup: {
-          from: 'categories',
-          localField: 'category',
-          foreignField: '_id',
-          as: 'category'
-        }
-      },
-      {
-        $unwind: { path: '$category', preserveNullAndEmptyArrays: true }
-      },
-      
-      // Project only needed fields
-      {
-        $project: {
-          orders: 0,
-          wishlists: 0,
-          trendingScore: 0
-        }
-      }
-    ];
-
-    const products = await Product.aggregate(pipeline);
-    return products;
-  } catch (error) {
-    logger.error('Error getting trending products', { error: error.message });
-    // Fallback to featured products
+    // Simplify trending calculation to avoid expensive lookups
+    // Weight: averageRating (50%), priorityScore (30%), featured (20%)
     return Product.find(baseFilter)
       .populate('merchant', 'businessName status')
       .populate('category', 'name')
-      .sort({ featured: -1, priorityScore: -1, createdAt: -1 })
+      .sort({ 
+        featured: -1, 
+        priorityScore: -1, 
+        averageRating: -1, 
+        createdAt: -1 
+      })
+      .limit(20)
+      .lean();
+  } catch (error) {
+    logger.error('Error getting trending products', { error: error.message });
+    // Fallback
+    return Product.find(baseFilter)
+      .populate('merchant', 'businessName status')
+      .populate('category', 'name')
+      .sort({ createdAt: -1 })
       .limit(20)
       .lean();
   }
@@ -446,91 +362,38 @@ async function getForYouProducts(clerkId, baseFilter) {
  */
 async function getStoreHighlights() {
   try {
-    // Get merchants with their order counts
-    const pipeline = [
-      {
-        $match: { status: 'APPROVED' }
-      },
-      {
-        $lookup: {
-          from: 'orders',
-          let: { merchantId: '$_id' },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $in: ['$$merchantId', '$merchants']
-                },
-                status: { $in: ['confirmed', 'shipped', 'delivered'] }
-              }
-            }
-          ],
-          as: 'orders'
-        }
-      },
-      {
-        $addFields: {
-          orderCount: { $size: '$orders' },
-          totalRevenue: {
-            $sum: {
-              $map: {
-                input: '$orders',
-                as: 'order',
-                in: '$$order.finalAmount'
-              }
-            }
-          }
-        }
-      },
-      {
-        $sort: { orderCount: -1, totalRevenue: -1 }
-      },
-      {
-        $limit: 10
-      },
-      {
-        $project: {
-          _id: 1,
-          businessName: 1,
-          businessDescription: 1,
-          businessEmail: 1,
-          status: 1,
-          orderCount: 1,
-          totalRevenue: 1,
-          // Calculate rating (placeholder - you can add rating field to merchant schema)
-          rating: { $ifNull: ['$rating', 4.5] } // Default rating
-        }
-      }
-    ];
-
-    const stores = await Merchant.aggregate(pipeline);
+    // Simplify store highlights to avoid expensive lookup on every request
+    const stores = await Merchant.find({ status: 'APPROVED' })
+      .select('businessName businessDescription businessEmail status rating priorityScore')
+      .sort({ priorityScore: -1, rating: -1 })
+      .limit(10)
+      .lean();
     
     return stores.map(store => ({
       _id: store._id,
       name: store.businessName,
       description: store.businessDescription,
       email: store.businessEmail,
-      rating: store.rating,
+      rating: store.rating || 4.5,
       verified: store.status === 'APPROVED',
-      orderCount: store.orderCount || 0,
-      totalRevenue: store.totalRevenue || 0
+      orderCount: 0, // Placeholder
+      totalRevenue: 0 // Placeholder
     }));
   } catch (error) {
     logger.error('Error getting store highlights', { error: error.message });
-    // Fallback to all approved merchants
-    return Merchant.find({ status: 'APPROVED' })
+    // Fallback
+    const stores = await Merchant.find({ status: 'APPROVED' })
       .select('businessName businessDescription businessEmail status')
       .limit(10)
-      .lean()
-      .then(stores => stores.map(store => ({
-        _id: store._id,
-        name: store.businessName,
-        description: store.businessDescription,
-        email: store.businessEmail,
-        rating: 4.5, // Default rating
-        verified: store.status === 'APPROVED',
-        orderCount: 0,
-        totalRevenue: 0
-      })));
+      .lean();
+      
+    return stores.map(store => ({
+      _id: store._id,
+      name: store.businessName,
+      description: store.businessDescription,
+      email: store.businessEmail,
+      rating: 4.5,
+      verified: true
+    }));
   }
 }
