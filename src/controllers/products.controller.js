@@ -1874,19 +1874,42 @@ export const exploreProducts = async (req, res) => {
     // Enrich products with pricing breakdown
     const enrichedProducts = enrichProductsWithPricing(products);
 
+    // Apply currency conversion if currencyCode is provided
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    let finalProducts = enrichedProducts;
+    
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        finalProducts = await Promise.all(
+          enrichedProducts.map(product => convertProductPrices(product, currencyCode))
+        );
+        logger.debug('Applied currency conversion to explore products', {
+          currencyCode,
+          productCount: finalProducts.length,
+        });
+      } catch (conversionError) {
+        logger.warn('Currency conversion failed for explore products, returning USD', {
+          currencyCode,
+          error: conversionError.message,
+        });
+        finalProducts = enrichedProducts;
+      }
+    }
+
     logger.info('Explore products retrieved', {
       requestId: req.requestId,
       total,
-      returned: enrichedProducts.length,
+      returned: finalProducts.length,
       page,
       limit,
       sort,
       hasUser: !!userId,
       preferredCategoriesCount: preferredCategories.length,
+      currencyCode: currencyCode || 'USD',
     });
 
     return sendPaginated(res, {
-      data: enrichedProducts,
+      data: finalProducts,
       page,
       limit,
       total,

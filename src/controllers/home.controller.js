@@ -9,6 +9,7 @@ import { sendSuccess, sendError } from '../lib/response.js';
 import logger from '../lib/logger.js';
 import { getAuth } from '@clerk/express';
 import mongoose from 'mongoose';
+import { convertProductPrices } from '../services/currency.service.js';
 
 /**
  * Get home screen data - all sections in one optimized endpoint
@@ -151,6 +152,29 @@ export const getHomeData = async (req, res) => {
       forYou: enrichProducts(forYouProducts),
       stores: stores
     };
+
+    // Apply currency conversion if currencyCode is provided
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        const productLists = ['trending', 'flashDeals', 'newArrivals', 'forYou'];
+        await Promise.all(
+          productLists.map(async (key) => {
+            if (Array.isArray(response[key])) {
+              response[key] = await Promise.all(
+                response[key].map(product => convertProductPrices(product, currencyCode))
+              );
+            }
+          })
+        );
+        logger.debug('Applied currency conversion to home data', { currencyCode });
+      } catch (conversionError) {
+        logger.warn('Currency conversion failed for home data', {
+          currencyCode,
+          error: conversionError.message,
+        });
+      }
+    }
 
     logger.info('Home data retrieved', {
       requestId: req.requestId,

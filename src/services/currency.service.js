@@ -252,41 +252,104 @@ export async function convertAndFormatPrice(amountUSD, currencyCode) {
 export async function convertProductPrices(product, currencyCode) {
   const result = { ...product };
 
-  // Main price (finalPrice is the selling price after markups)
+  // 1. Root-level standard fields
   if (product.finalPrice !== undefined) {
+    logger.info('Converting finalPrice', { 
+      name: product.name, 
+      original: product.finalPrice, 
+      currencyCode 
+    });
     const converted = await convertAndFormatPrice(product.finalPrice, currencyCode);
-    result.priceConverted = converted.priceConverted;
+    result.finalPrice = converted.priceConverted; // Convert the numerical value
+    result.priceConverted = converted.priceConverted; // Legacy/convenience
     result.priceDisplay = converted.priceDisplay;
     result.currencyCode = converted.currencyCode;
     result.rate = converted.rate;
     result.rateDate = converted.rateDate;
     result.rateUnavailable = converted.rateUnavailable;
+    logger.info('Converted finalPrice', { 
+      name: product.name, 
+      converted: result.finalPrice, 
+      display: result.priceDisplay 
+    });
   }
 
-  // Legacy price field
-  if (product.price !== undefined && product.price !== product.finalPrice) {
-    const converted = await convertAndFormatPrice(product.price, currencyCode);
-    result.priceOriginalConverted = converted.priceConverted;
-    result.priceOriginalDisplay = converted.priceDisplay;
+  if (product.merchantPrice !== undefined) {
+    const converted = await convertAndFormatPrice(product.merchantPrice, currencyCode);
+    result.merchantPrice = converted.priceConverted;
+    result.originalPrice = converted.priceConverted;
   }
 
-  // Discount price (if exists and different)
-  if (product.discountPrice && product.discountPrice > 0) {
+  if (product.discountPrice !== undefined && product.discountPrice > 0) {
     const converted = await convertAndFormatPrice(product.discountPrice, currencyCode);
-    result.discountPriceConverted = converted.priceConverted;
+    result.discountPrice = converted.priceConverted;
     result.discountPriceDisplay = converted.priceDisplay;
   }
 
-  // Handle variants if present
+  if (product.price !== undefined) {
+    const converted = await convertAndFormatPrice(product.price, currencyCode);
+    result.price = converted.priceConverted;
+  }
+
+  // 2. Convered nested fields (simple)
+  if (product.simple) {
+    const simple = { ...product.simple };
+    if (simple.finalPrice !== undefined) {
+      const converted = await convertAndFormatPrice(simple.finalPrice, currencyCode);
+      simple.finalPrice = converted.priceConverted;
+    }
+    if (simple.merchantPrice !== undefined) {
+      const converted = await convertAndFormatPrice(simple.merchantPrice, currencyCode);
+      simple.merchantPrice = converted.priceConverted;
+    }
+    if (simple.discountPrice !== undefined && simple.discountPrice > 0) {
+      const converted = await convertAndFormatPrice(simple.discountPrice, currencyCode);
+      simple.discountPrice = converted.priceConverted;
+    }
+    result.simple = simple;
+  }
+
+  // 3. Convert nested fields (productLevelPricing)
+  if (product.productLevelPricing) {
+    const plp = { ...product.productLevelPricing };
+    if (plp.finalPrice !== undefined) {
+      const converted = await convertAndFormatPrice(plp.finalPrice, currencyCode);
+      plp.finalPrice = converted.priceConverted;
+    }
+    if (plp.merchantPrice !== undefined) {
+      const converted = await convertAndFormatPrice(plp.merchantPrice, currencyCode);
+      plp.merchantPrice = converted.priceConverted;
+    }
+    if (plp.discountPrice !== undefined && plp.discountPrice > 0) {
+      const converted = await convertAndFormatPrice(plp.discountPrice, currencyCode);
+      plp.discountPrice = converted.priceConverted;
+    }
+    result.productLevelPricing = plp;
+  }
+
+  // 4. Handle variants if present
   if (product.variants && Array.isArray(product.variants) && product.variants.length > 0) {
     result.variants = await Promise.all(
       product.variants.map(async (variant) => {
         const variantResult = { ...variant };
+        
         if (variant.finalPrice !== undefined) {
           const converted = await convertAndFormatPrice(variant.finalPrice, currencyCode);
-          variantResult.priceConverted = converted.priceConverted;
+          variantResult.finalPrice = converted.priceConverted;
+          variantResult.priceConverted = converted.priceConverted; // Legacy
           variantResult.priceDisplay = converted.priceDisplay;
         }
+        
+        if (variant.merchantPrice !== undefined) {
+          const converted = await convertAndFormatPrice(variant.merchantPrice, currencyCode);
+          variantResult.merchantPrice = converted.priceConverted;
+        }
+        
+        if (variant.discountPrice !== undefined && variant.discountPrice > 0) {
+          const converted = await convertAndFormatPrice(variant.discountPrice, currencyCode);
+          variantResult.discountPrice = converted.priceConverted;
+        }
+
         return variantResult;
       })
     );

@@ -2,6 +2,7 @@
 import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendNotFound } from "../lib/response.js";
 import logger from "../lib/logger.js";
+import { convertProductPrices } from "../services/currency.service.js";
 import {
   getHomeRecommendations,
   getProductRecommendations,
@@ -187,6 +188,25 @@ export const getHomeRecommendationsController = async (req, res) => {
       brandsYouLove: enrichProducts(recommendations.brandsYouLove),
     };
 
+    // Apply currency conversion
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        const keys = ['forYou', 'trending', 'flashDeals', 'newArrivals', 'brandsYouLove'];
+        await Promise.all(
+          keys.map(async (key) => {
+            if (Array.isArray(enrichedRecommendations[key])) {
+              enrichedRecommendations[key] = await Promise.all(
+                enrichedRecommendations[key].map(p => convertProductPrices(p, currencyCode))
+              );
+            }
+          })
+        );
+      } catch (err) {
+        logger.warn('Currency conversion failed for home recommendations', { currencyCode, error: err.message });
+      }
+    }
+
     return sendSuccess(res, {
       data: enrichedRecommendations,
       message: "Home recommendations retrieved successfully",
@@ -227,6 +247,25 @@ export const getProductRecommendationsController = async (req, res) => {
       fromSameStore: enrichProducts(recommendations.fromSameStore),
     };
 
+    // Apply currency conversion
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        const keys = ['similarItems', 'frequentlyBoughtTogether', 'youMayAlsoLike', 'cheaperAlternatives', 'fromSameStore'];
+        await Promise.all(
+          keys.map(async (key) => {
+            if (Array.isArray(enrichedRecommendations[key])) {
+              enrichedRecommendations[key] = await Promise.all(
+                enrichedRecommendations[key].map(p => convertProductPrices(p, currencyCode))
+              );
+            }
+          })
+        );
+      } catch (err) {
+        logger.warn('Currency conversion failed for product recommendations', { currencyCode, error: err.message });
+      }
+    }
+
     return sendSuccess(res, {
       data: enrichedRecommendations,
       message: "Product recommendations retrieved successfully",
@@ -263,7 +302,19 @@ export const getCartRecommendationsController = async (req, res) => {
     }
 
     const recommendations = await getCartRecommendations(userId);
-    const enrichedRecommendations = enrichProducts(recommendations);
+    let enrichedRecommendations = enrichProducts(recommendations);
+
+    // Apply currency conversion
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        enrichedRecommendations = await Promise.all(
+          enrichedRecommendations.map(p => convertProductPrices(p, currencyCode))
+        );
+      } catch (err) {
+        logger.warn('Currency conversion failed for cart recommendations', { currencyCode, error: err.message });
+      }
+    }
 
     return sendSuccess(res, {
       data: enrichedRecommendations,
@@ -298,7 +349,19 @@ export const getUserRecommendationsController = async (req, res) => {
     }
 
     const recommendations = await getUserRecommendations(targetUserId);
-    const enrichedRecommendations = enrichProducts(recommendations);
+    let enrichedRecommendations = enrichProducts(recommendations);
+
+    // Apply currency conversion
+    const currencyCode = req.query.currencyCode || req.query.currency;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+      try {
+        enrichedRecommendations = await Promise.all(
+          enrichedRecommendations.map(p => convertProductPrices(p, currencyCode))
+        );
+      } catch (err) {
+        logger.warn('Currency conversion failed for user recommendations', { currencyCode, error: err.message });
+      }
+    }
 
     return sendSuccess(res, {
       data: enrichedRecommendations,

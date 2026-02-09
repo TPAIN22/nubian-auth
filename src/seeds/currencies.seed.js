@@ -1,7 +1,10 @@
 import mongoose from "mongoose";
+import dotenv from "dotenv";
 import Currency from "../models/currency.model.js";
 import Country from "../models/country.model.js";
 import logger from "../lib/logger.js";
+
+dotenv.config();
 
 /**
  * Seed currencies and update country default currencies
@@ -109,8 +112,10 @@ async function seedCurrencies() {
 }
 
 // Run when executed directly
-// Use ES module detection for direct execution
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const isMainModule = process.argv[1] && (__filename === process.argv[1] || __filename.replace(/\\/g, '/') === process.argv[1].replace(/\\/g, '/'));
+
 if (isMainModule) {
   const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
   

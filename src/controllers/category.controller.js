@@ -25,9 +25,14 @@ export const getCategoryById = async (req, res) => {
 }
 export const createCategory = async (req, res) => {
     try {
-        const { parent } = req.body;
+        let { parent } = req.body;
         
         // التحقق من عدم وجود دوائر في العلاقات
+        if (parent === "" || parent === "none") {
+            parent = null;
+            req.body.parent = null;
+        }
+
         if (parent) {
             const parentCategory = await Category.findById(parent);
             if (!parentCategory) {
@@ -44,9 +49,13 @@ export const createCategory = async (req, res) => {
 export const updateCategory = async (req, res) => {
     
     try {
-        const { name, description, image, isActive, parent } = req.body;
+        let { name, description, image, isActive, parent } = req.body;
         
         // التحقق من عدم وجود دوائر في العلاقات
+        if (parent === "" || parent === "none") {
+            parent = null;
+        }
+
         if (parent) {
             const parentCategory = await Category.findById(parent);
             if (!parentCategory) {
@@ -66,7 +75,7 @@ export const updateCategory = async (req, res) => {
         if (description !== undefined) updateData.description = description;
         if (image !== undefined && image !== null) updateData.image = image;
         if (isActive !== undefined) updateData.isActive = isActive;
-        if (parent !== undefined) updateData.parent = parent; // إضافة دعم حقل parent
+        if (parent !== undefined) updateData.parent = parent; 
         
         // إضافة updatedAt
         updateData.updatedAt = Date.now();
