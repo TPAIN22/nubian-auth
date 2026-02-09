@@ -83,7 +83,7 @@ app.use(cors({
   origin: true, // Allow all origins
   credentials: true, // Allow cookies and authorization headers
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With', 'x-currency', 'x-country']
 }));
 
 // Request logging middleware (must be befoe routes)
