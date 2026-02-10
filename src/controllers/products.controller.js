@@ -49,33 +49,53 @@ import { convertProductPrices } from '../services/currency.service.js'
 
     // root finalPrice fallback = lowest active variant finalPrice (for UI "From" price)
     const activeVariants = variants.filter((v) => v.isActive !== false);
-    const finals = activeVariants.map((v) => num(v.finalPrice, 0)).filter((x) => x > 0);
-    const lowestFinal = finals.length ? Math.min(...finals) : 0;
+    
+    // Find the "representative" variant (the one with the lowest final price)
+    // We use this variant's properties for the "From" display to ensuring consistency
+    let bestVariant = null;
+    let minFinal = Infinity;
 
-    const merchants = activeVariants.map((v) => num(v.merchantPrice, 0)).filter((x) => x > 0);
-    const lowestMerchant = merchants.length ? Math.min(...merchants) : 0;
+    // specific logic to find best variant
+    if (activeVariants.length > 0) {
+        activeVariants.forEach(v => {
+            const fp = num(v.finalPrice, 0);
+            if (fp > 0 && fp < minFinal) {
+                minFinal = fp;
+                bestVariant = v;
+            }
+        });
+    }
+
+    // Default to first variant if no best found (rare)
+    if (!bestVariant && variants.length > 0) {
+        bestVariant = variants[0];
+    }
 
     const rootPrices = normalizePriceBlock(p);
     
-    // For variant products, root prices represent "From" price
-    const rootFinal = lowestFinal > 0 ? lowestFinal : rootPrices.finalPrice;
-    const rootMerchant = lowestMerchant > 0 ? lowestMerchant : rootPrices.merchantPrice;
+    // For variant products, root prices represent "From" price of the BEST variant
+    const rootFinal = bestVariant ? num(bestVariant.finalPrice, 0) : rootPrices.finalPrice;
+    const rootMerchant = bestVariant ? num(bestVariant.merchantPrice, 0) : rootPrices.merchantPrice;
+    // Use the markup of the representative variant, or fallback to product default
+    const rootMarkup = bestVariant ? num(bestVariant.nubianMarkup ?? p.nubianMarkup ?? 10) : num(p.nubianMarkup ?? 10);
 
-    // Calculate discount for display (using lowest prices)
-    // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
-    // This aligns with frontend pricing engine logic
-    const markup = num(p.nubianMarkup ?? 10);
-    const originalPrice = rootMerchant > 0 ? (rootMerchant * (1 + markup / 100)) : 0;
+    // Calculate discount for display using CONSISTENT values from the same variant
+    // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount
+    const originalPrice = rootMerchant > 0 ? (rootMerchant * (1 + rootMarkup / 100)) : 0;
 
     let discountPercentage = 0;
     if (originalPrice > 0 && rootFinal < originalPrice) {
-        discountPercentage = Math.round(((originalPrice - rootFinal) / originalPrice) * 100);
+        // Ensure we don't show tiny discounts due to rounding (e.g. < 1%) unless it's real
+        const rawPct = ((originalPrice - rootFinal) / originalPrice) * 100;
+        discountPercentage = Math.round(rawPct);
     }
 
     return {
       ...p,
       merchantPrice: rootMerchant,
       price: rootMerchant,
+      // Pass the specific markup used so frontend can replicate calculation if needed
+      nubianMarkup: rootMarkup, 
       discountPrice: rootPrices.discountPrice,
       finalPrice: rootFinal,
       discountPercentage,
