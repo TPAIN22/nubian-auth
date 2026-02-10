@@ -1,6 +1,6 @@
 import Product from "../models/product.model.js";
 
-export function computeFinalPrice({ merchantPrice, nubianMarkup = 70, dynamicMarkup = 0 }) {
+export function computeFinalPrice({ merchantPrice, nubianMarkup = 10, dynamicMarkup = 0 }) {
   const mp = Number(merchantPrice) || 0;
   if (mp <= 0) return 0;
 

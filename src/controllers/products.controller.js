@@ -62,9 +62,14 @@ import { convertProductPrices } from '../services/currency.service.js'
     const rootMerchant = lowestMerchant > 0 ? lowestMerchant : rootPrices.merchantPrice;
 
     // Calculate discount for display (using lowest prices)
+    // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
+    // This aligns with frontend pricing engine logic
+    const markup = num(p.nubianMarkup ?? 10);
+    const originalPrice = rootMerchant > 0 ? (rootMerchant * (1 + markup / 100)) : 0;
+
     let discountPercentage = 0;
-    if (rootMerchant > 0 && rootFinal < rootMerchant) {
-        discountPercentage = Math.round(((rootMerchant - rootFinal) / rootMerchant) * 100);
+    if (originalPrice > 0 && rootFinal < originalPrice) {
+        discountPercentage = Math.round(((originalPrice - rootFinal) / originalPrice) * 100);
     }
 
     return {
@@ -83,8 +88,10 @@ import { convertProductPrices } from '../services/currency.service.js'
   
   // Calculate discount percentage
   let discountPercentage = 0;
-  // Use rootMerchant as base (original) for consistency with pricing engine
-  const originalPrice = rootPrices.merchantPrice; 
+  // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
+  const markup = num(p.nubianMarkup ?? 10);
+  const originalPrice = rootPrices.merchantPrice > 0 ? (rootPrices.merchantPrice * (1 + markup / 100)) : 0;
+  
   if (originalPrice > 0 && rootPrices.finalPrice < originalPrice) {
       discountPercentage = Math.round(((originalPrice - rootPrices.finalPrice) / originalPrice) * 100);
   }
@@ -921,9 +928,20 @@ export const updateProduct = async (req, res) => {
             });
         }
         
-        const updatedProduct = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
-            .populate('merchant', 'businessName businessEmail')
-            .populate('category', 'name');
+        // Apply updates to the document
+        // This triggers the Mongoose 'save' middleware which recalculates smart pricing
+        product.set(req.body);
+        
+        // Explicitly mark variants as modified if they were updated, to ensure pre-save hooks run on them
+        if (req.body.variants) {
+            product.markModified('variants');
+        }
+
+        const updatedProduct = await product.save();
+
+        // Re-populate for response
+        await updatedProduct.populate('merchant', 'businessName businessEmail');
+        await updatedProduct.populate('category', 'name');
         
         return sendSuccess(res, {
             data: updatedProduct,
