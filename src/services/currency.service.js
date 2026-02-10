@@ -300,8 +300,43 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
   if (product.merchantPrice !== undefined) {
     const converted = await convertAndFormatPrice(product.merchantPrice, currencyCode, options);
     result.merchantPrice = converted.priceConverted;
+    
+    // Only default originalPrice to merchantPrice if explicit originalPrice is NOT provided
+    if (product.originalPrice === undefined) {
+        result.originalPrice = converted.priceConverted;
+    }
+  }
+
+  if (product.originalPrice !== undefined) {
+    const converted = await convertAndFormatPrice(product.originalPrice, currencyCode, options);
     result.originalPrice = converted.priceConverted;
   }
+
+  // --- DEFINITIVE DISPLAY PRICING HANDLING ---
+  // Convert and Sanitize valid display prices
+  if (product.displayFinalPrice !== undefined) {
+      const converted = await convertAndFormatPrice(product.displayFinalPrice, currencyCode, options);
+      result.displayFinalPrice = converted.priceConverted;
+  }
+  
+  if (product.displayOriginalPrice !== undefined) {
+      const converted = await convertAndFormatPrice(product.displayOriginalPrice, currencyCode, options);
+      result.displayOriginalPrice = converted.priceConverted;
+  }
+
+  // RE-APPLY SANITY CHECK ON CONVERTED VALUES
+  // This prevents rounding errors from creating "Same Price Discounts"
+  if (result.displayFinalPrice !== undefined && result.displayOriginalPrice !== undefined) {
+      if (result.displayOriginalPrice > result.displayFinalPrice) {
+          const rawPct = ((result.displayOriginalPrice - result.displayFinalPrice) / result.displayOriginalPrice) * 100;
+          result.displayDiscountPercentage = Math.round(rawPct);
+      } else {
+          // Force consistency
+          result.displayOriginalPrice = result.displayFinalPrice;
+          result.displayDiscountPercentage = 0;
+      }
+  }
+
 
   if (product.discountPrice !== undefined && product.discountPrice > 0) {
     const converted = await convertAndFormatPrice(product.discountPrice, currencyCode, options);

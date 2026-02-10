@@ -81,13 +81,24 @@ import { convertProductPrices } from '../services/currency.service.js'
 
     // Calculate discount for display using CONSISTENT values from the same variant
     // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount
-    const originalPrice = rootMerchant > 0 ? (rootMerchant * (1 + rootMarkup / 100)) : 0;
+    const initialOriginalPrice = rootMerchant > 0 ? (rootMerchant * (1 + rootMarkup / 100)) : 0;
+    
+    // DEFINITIVE DISPLAY LOGIC:
+    // 1. Establish Source of Truth
+    let displayOriginalPrice = initialOriginalPrice;
+    let displayFinalPrice = rootFinal;
+    let displayDiscountPercentage = 0;
 
-    let discountPercentage = 0;
-    if (originalPrice > 0 && rootFinal < originalPrice) {
-        // Ensure we don't show tiny discounts due to rounding (e.g. < 1%) unless it's real
-        const rawPct = ((originalPrice - rootFinal) / originalPrice) * 100;
-        discountPercentage = Math.round(rawPct);
+    // 2. Strict Sanity Check (Backend Side)
+    // Only allow details if Original > Final
+    if (displayOriginalPrice > displayFinalPrice) {
+        // Calculate percentage
+        const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+        displayDiscountPercentage = Math.round(rawPct);
+    } else {
+        // No valid discount -> Hide Original (set to Final) and Clear Discount
+        displayOriginalPrice = displayFinalPrice;
+        displayDiscountPercentage = 0;
     }
 
     return {
@@ -97,8 +108,17 @@ import { convertProductPrices } from '../services/currency.service.js'
       // Pass the specific markup used so frontend can replicate calculation if needed
       nubianMarkup: rootMarkup, 
       discountPrice: rootPrices.discountPrice,
-      finalPrice: rootFinal,
-      discountPercentage,
+      finalPrice: displayFinalPrice,
+      
+      // Explicitly return originalPrice (MSRP) so it persists through currency conversion
+      originalPrice: displayOriginalPrice, // Consolidated to displayOriginalPrice
+      discountPercentage: displayDiscountPercentage,
+      
+      // New Explicit Fields for Frontend Simplicity
+      displayOriginalPrice,
+      displayFinalPrice,
+      displayDiscountPercentage,
+
       variants,
     };
   }
@@ -106,20 +126,34 @@ import { convertProductPrices } from '../services/currency.service.js'
   // simple product
   const rootPrices = normalizePriceBlock(p);
   
-  // Calculate discount percentage
-  let discountPercentage = 0;
   // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
   const markup = num(p.nubianMarkup ?? 10);
-  const originalPrice = rootPrices.merchantPrice > 0 ? (rootPrices.merchantPrice * (1 + markup / 100)) : 0;
+  const initialOriginalPrice = rootPrices.merchantPrice > 0 ? (rootPrices.merchantPrice * (1 + markup / 100)) : 0;
   
-  if (originalPrice > 0 && rootPrices.finalPrice < originalPrice) {
-      discountPercentage = Math.round(((originalPrice - rootPrices.finalPrice) / originalPrice) * 100);
+  // DEFINITIVE DISPLAY LOGIC (Simple Product):
+  let displayOriginalPrice = initialOriginalPrice;
+  let displayFinalPrice = rootPrices.finalPrice;
+  let displayDiscountPercentage = 0;
+
+  if (displayOriginalPrice > displayFinalPrice) {
+      const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+      displayDiscountPercentage = Math.round(rawPct);
+  } else {
+      displayOriginalPrice = displayFinalPrice;
+      displayDiscountPercentage = 0;
   }
 
   return { 
       ...p, 
       ...rootPrices,
-      discountPercentage 
+      finalPrice: displayFinalPrice,
+      originalPrice: displayOriginalPrice,
+      discountPercentage: displayDiscountPercentage,
+      
+      // New Explicit Fields
+      displayOriginalPrice,
+      displayFinalPrice,
+      displayDiscountPercentage
   };
 }
 
@@ -127,7 +161,7 @@ import { convertProductPrices } from '../services/currency.service.js'
 /**
  * Enrich array of products with pricing breakdown
  */
-function enrichProductsWithPricing(products) {
+export function enrichProductsWithPricing(products) {
   if (!Array.isArray(products)) return products;
   return products.map(enrichProductWithPricing);
 }
@@ -481,6 +515,8 @@ export const getProducts = async (req, res) => {
       merchantFilter: merchant || 'none',
       currencyCode: currencyCode || 'USD',
     });
+
+
 
     return sendPaginated(res, {
       data: finalProducts,
