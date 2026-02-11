@@ -15,6 +15,10 @@ import {
   findMatchingVariant,
   getProductPrice,
 } from "../utils/cartUtils.js";
+import { enrichProductWithPricing } from "./products.controller.js";
+import { convertProductPrices, convertAndFormatPrice } from "../services/currency.service.js";
+import Currency from "../models/currency.model.js";
+import { getLatestRate } from "../services/fx.service.js";
 
 /**
  * Helper function to get or create user in database
@@ -63,6 +67,77 @@ async function getOrCreateUser(clerkId, requestId) {
   return user;
 }
 
+/**
+ * Convert cart prices to target currency
+ * @param {Object} cartObj - The cart object
+ * @param {string} currencyCode - Target currency code
+ * @returns {Promise<Object>} - Converted cart object
+ */
+async function convertCart(cartObj, currencyCode) {
+  if (!currencyCode || currencyCode.toUpperCase() === 'USD') {
+    return cartObj;
+  }
+
+  try {
+    const upperCode = currencyCode.toUpperCase();
+    
+    // Fetch rate and config ONCE
+    const [currencyConfig, rateInfo] = await Promise.all([
+      Currency.findOne({ code: upperCode }).lean(),
+      getLatestRate(upperCode)
+    ]);
+    
+    const currencyContext = {
+      config: currencyConfig,
+      rate: rateInfo
+    };
+
+    // Convert total price
+    if (cartObj.totalPrice !== undefined) {
+      const convertedTotal = await convertAndFormatPrice(cartObj.totalPrice, upperCode, {
+         preloadedConfig: currencyConfig,
+         preloadedRate: rateInfo
+      });
+      cartObj.totalPrice = convertedTotal.priceConverted;
+      cartObj.priceDisplay = convertedTotal.priceDisplay;
+      cartObj.currencyCode = convertedTotal.currencyCode;
+    }
+
+    // Convert products
+    if (cartObj.products && Array.isArray(cartObj.products)) {
+       cartObj.products = await Promise.all(cartObj.products.map(async (item) => {
+          // Convert product
+          if (item.product) {
+             item.product = await convertProductPrices(item.product, upperCode, currencyContext);
+          }
+          
+          // Convert unit prices if they exist on item level
+          if (item.unitFinalPrice !== undefined) {
+             const converted = await convertAndFormatPrice(item.unitFinalPrice, upperCode, {
+                preloadedConfig: currencyConfig,
+                preloadedRate: rateInfo
+             });
+             item.unitFinalPrice = converted.priceConverted;
+          }
+          if (item.unitMerchantPrice !== undefined) {
+             const converted = await convertAndFormatPrice(item.unitMerchantPrice, upperCode, {
+                preloadedConfig: currencyConfig,
+                preloadedRate: rateInfo
+             });
+             item.unitMerchantPrice = converted.priceConverted;
+          }
+
+          return item;
+       }));
+    }
+
+    return cartObj;
+  } catch (error) {
+    logger.warn('Cart currency conversion failed', { currencyCode, error: error.message });
+    return cartObj;
+  }
+}
+
 // GET USER'S CART
 export const getCart = async (req, res) => {
   logger.info('Get cart request received', {
@@ -106,7 +181,7 @@ export const getCart = async (req, res) => {
     // Get or create user (handles webhook delay/failure)
     const user = await getOrCreateUser(userId, req.requestId);
 
-    const cart = await Cart.findOne({ user: user._id }).populate({
+    let cart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
       // Return all product fields including _id, discountPrice, variants, category, merchant, etc.
       // No select() means all fields are returned (better for frontend)
@@ -130,8 +205,27 @@ export const getCart = async (req, res) => {
       });
     }
 
+    // Convert to plain object to modify
+    const cartObj = cart.toObject();
+
+    // Enrich products with definitive pricing
+    if (cartObj.products) {
+      cartObj.products = cartObj.products.map(item => {
+        if (item.product) {
+          item.product = enrichProductWithPricing(item.product);
+        }
+        return item;
+      });
+    }
+
+    // Apply currency conversion
+    const currencyCode = req.currencyCode;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+       await convertCart(cartObj, currencyCode);
+    }
+
     return sendSuccess(res, {
-      data: cart,
+      data: cartObj,
       message: "Cart retrieved successfully",
     });
   } catch (error) {
@@ -443,6 +537,7 @@ export const addToCart = async (req, res) => {
     await cart.save();
 
     // Populate the updated cart before sending the response
+    // Populate the updated cart before sending the response
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
       // Return all product fields
@@ -453,8 +548,26 @@ export const addToCart = async (req, res) => {
       path: "products.product.merchant",
       select: "businessName businessEmail",
     });
+
+    // Enriched Response
+    const cartObj = populatedCart.toObject();
+    if (cartObj.products) {
+        cartObj.products = cartObj.products.map(item => {
+            if (item.product) {
+                item.product = enrichProductWithPricing(item.product);
+            }
+            return item;
+        });
+    }
+
+    // Apply currency conversion
+    const currencyCode = req.currencyCode;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+       await convertCart(cartObj, currencyCode);
+    }
+
     return sendSuccess(res, {
-      data: populatedCart,
+      data: cartObj,
       message: "Product added to cart successfully",
     });
   } catch (error) {
@@ -569,7 +682,25 @@ export const updateCart = async (req, res) => {
       path: "products.product.merchant",
       select: "businessName businessEmail",
     });
-    res.status(200).json(populatedCart);
+
+    // Enriched Response
+    const cartObj = populatedCart.toObject();
+    if (cartObj.products) {
+        cartObj.products = cartObj.products.map(item => {
+            if (item.product) {
+                item.product = enrichProductWithPricing(item.product);
+            }
+            return item;
+        });
+    }
+
+    // Apply currency conversion
+    const currencyCode = req.currencyCode;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+       await convertCart(cartObj, currencyCode);
+    }
+
+    res.status(200).json(cartObj);
   } catch (error) {
     logger.error('Error in updateCart', {
       requestId: req.requestId,
@@ -673,13 +804,38 @@ export const removeFromCart = async (req, res) => {
       path: "products.product.merchant",
       select: "businessName businessEmail",
     });
-    res.status(200).json(populatedCart);
+
+    // Enriched Response
+    const cartObj = populatedCart.toObject();
+    if (cartObj.products) {
+        cartObj.products = cartObj.products.map(item => {
+            if (item.product) {
+                item.product = enrichProductWithPricing(item.product);
+            }
+            return item;
+        });
+    }
+
+    // Apply currency conversion
+    const currencyCode = req.currencyCode;
+    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+       await convertCart(cartObj, currencyCode);
+    }
+
+    return sendSuccess(res, {
+      data: cartObj,
+      message: "Product removed from cart successfully",
+    });
   } catch (error) {
-    res
-      .status(500)
-      .json({
-        message: "Server error while removing item from cart.",
-        error: error.message,
-      });
+    logger.error('Error in removeFromCart', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return sendError(res, {
+      message: "Server error while removing item from cart.",
+      code: "INTERNAL_ERROR",
+      statusCode: 500,
+    });
   }
 };

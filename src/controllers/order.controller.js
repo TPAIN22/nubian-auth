@@ -13,6 +13,7 @@ import { getProductPrice, mapToObject } from "../utils/cartUtils.js";
 import { handleOrderCreated, handleOrderStatusChanged } from "../services/notificationEventHandlers.js";
 import { getFxSnapshotForOrder, convertUSDToCurrency, applyPsychologicalPricing } from "../services/currency.service.js";
 import Currency from "../models/currency.model.js";
+import { enrichProductWithPricing } from "./products.controller.js";
 
 /**
  * Build a readable shipping address string snapshot.
@@ -165,27 +166,71 @@ export const getUserOrders = async (req, res) => {
       transferProof: order.transferProof || null,
       productsCount: order.products.length,
       productsDetails: order.products.map((item) => {
-        const finalPrice =
-          item.price ||
-          item.product?.finalPrice ||
-          item.product?.discountPrice ||
-          item.product?.price ||
-          0;
+        // Enriched Product Data
+        // Convert item.product to object if it's a mongoose doc, though lean() was not used effectively here.
+        // item.product is likely a document due to populate without lean(). 
+        const productObj = item.product && item.product.toObject ? item.product.toObject() : item.product;
+        const enriched = enrichProductWithPricing(productObj);
 
-        const merchantPrice =
-          item.merchantPrice ||
-          item.product?.merchantPrice ||
-          item.product?.price ||
-          0;
+        // Use definitive pricing
+        const finalPrice = enriched?.displayFinalPrice ?? (item.price || 0);
+        // If merchant price wasn't enriched or we want to keep what was in the order item snapshot?
+        // Actually, for COMPLETED orders, we should probably respect the snapshot price stored in the order item (`item.price`).
+        // BUT the user wants "Pricing Inconsistencies" fixed.
+        // If the order is "Pending", maybe we show current price?
+        // Usually, Orders should be immutable snapshots.
+        // However, the `productsDetails` mapping seems to mix `item.price` (snapshot) and `item.product.price` (current).
+        // The existing code: `const finalPrice = item.price || item.product?.finalPrice ...`
+        // tries to use `item.price` first.
+        
+        // Let's stick to the existing logic principle: Use `item.price` (snapshot) if available.
+        // BUT, if we are relying on `item.product` fields (dynamic), we must use the DEFNITIVE logic.
+        
+        // Actually, `item` in `order.products` contains the snapshot `price`, `merchantPrice`, `discountPrice`.
+        // So `enrichProductWithPricing` might be less relevant for *Order History* unless we are displaying *current* product info.
+        // The request is "apply to cart screen orderDetails orders screen".
+        // If the order is placed, the price is frozen. We shouldn't change it based on current product price.
+        
+        // However, the `displayOriginalPrice` concept (MSRP) might need to be calculated if not stored.
+        // Existing `originalPrice` logic: `const originalPrice = merchantPrice`.
+        
+        // If the user wants the "Display Logic" (e.g. Original > Final sanity check), we should apply it to the SNAPSHOT data too.
+        
+        // Let's create a mini-enricher for the order item itself?
+        // Or just trust the `enrichProductWithPricing` if we want to show *current* details?
+        
+        // Valid Point: `item.product` is populated.
+        
+        // Let's rely on `item.price` as the final transaction price `displayFinalPrice`.
+        // And calculate `displayOriginalPrice` based on `item.merchantPrice` and `item.nubianMarkup`.
+        
+        const snapshotFinalPrice = item.price || 0;
+        const snapshotMerchantPrice = item.merchantPrice || 0;
+        const snapshotMarkup = item.nubianMarkup || 10;
+        
+        // Calculate Display Original Price from Snapshot
+        const initialOriginalPrice = snapshotMerchantPrice > 0 ? (snapshotMerchantPrice * (1 + snapshotMarkup / 100)) : 0;
+        
+        let displayOriginalPrice = initialOriginalPrice;
+        let displayFinalPrice = snapshotFinalPrice;
+        let displayDiscountPercentage = 0;
+
+        if (displayOriginalPrice > displayFinalPrice) {
+             const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+             displayDiscountPercentage = Math.round(rawPct);
+        } else {
+             displayOriginalPrice = displayFinalPrice;
+             displayDiscountPercentage = 0;
+        }
 
         return {
           productId: item.product?._id || null,
           name: item.product?.name || "",
-          price: finalPrice,
-          merchantPrice,
+          price: displayFinalPrice,
+          merchantPrice: snapshotMerchantPrice,
           discountPrice: item.discountPrice || item.product?.discountPrice,
-          originalPrice: merchantPrice,
-          nubianMarkup: item.nubianMarkup || item.product?.nubianMarkup || 10,
+          originalPrice: displayOriginalPrice, // UPDATED
+          nubianMarkup: snapshotMarkup,
           dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0,
           images: item.product?.images || [],
           category: item.product?.category || "",
@@ -193,6 +238,11 @@ export const getUserOrders = async (req, res) => {
           stock: item.product?.stock || 0,
           quantity: item.quantity,
           totalPrice: finalPrice * item.quantity,
+          
+          // Add explicit fields
+          displayFinalPrice,
+          displayOriginalPrice,
+          displayDiscountPercentage
         };
       }),
     }));
@@ -696,43 +746,56 @@ export const getOrders = async (req, res) => {
         phone: order.phoneNumber,
       },
       productsDetails: order.products.map((item) => {
-        const finalPrice =
-          item.price ||
-          item.product?.finalPrice ||
-          item.product?.discountPrice ||
-          item.product?.price ||
-          0;
+        // SNAPSHOT-BASED DISPLAY LOGIC
+        // We use the prices stored in the order item (snapshot) as the source of truth.
+        const snapshotFinalPrice = item.price || 0;
+        const snapshotMerchantPrice = item.merchantPrice || 0;
+        const snapshotMarkup = item.nubianMarkup || 10;
+        
+        // Calculate Display Original Price from Snapshot
+        const initialOriginalPrice = snapshotMerchantPrice > 0 ? (snapshotMerchantPrice * (1 + snapshotMarkup / 100)) : 0;
+        
+        let displayOriginalPrice = initialOriginalPrice;
+        let displayFinalPrice = snapshotFinalPrice;
+        let displayDiscountPercentage = 0;
 
-        const merchantPrice =
-          item.merchantPrice || item.product?.merchantPrice || item.product?.price || 0;
-
-        const nubianMarkup = item.nubianMarkup || item.product?.nubianMarkup || 10;
-        const dynamicMarkup = item.dynamicMarkup || item.product?.dynamicMarkup || 0;
+        if (displayOriginalPrice > displayFinalPrice) {
+             const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+             displayDiscountPercentage = Math.round(rawPct);
+        } else {
+             displayOriginalPrice = displayFinalPrice;
+             displayDiscountPercentage = 0;
+        }
 
         return {
           productId: item.product?._id || null,
           name: item.product?.name || "",
-          price: finalPrice,
-          merchantPrice,
-          originalPrice: merchantPrice,
+          price: displayFinalPrice,
+          merchantPrice: snapshotMerchantPrice,
+          originalPrice: displayOriginalPrice, // UPDATED
           discountPrice: item.discountPrice || item.product?.discountPrice || undefined,
-          nubianMarkup,
-          dynamicMarkup,
+          nubianMarkup: snapshotMarkup,
+          dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0,
           pricingBreakdown: {
-            merchantPrice,
-            nubianMarkup,
-            dynamicMarkup,
-            finalPrice,
+            merchantPrice: snapshotMerchantPrice,
+            nubianMarkup: snapshotMarkup,
+            dynamicMarkup: item.dynamicMarkup || 0,
+            finalPrice: displayFinalPrice,
           },
           images: item.product?.images || [],
           category: item.product?.category || "",
           description: item.product?.description || "",
           stock: item.product?.stock || 0,
           quantity: item.quantity,
-          totalPrice: finalPrice * item.quantity,
+          totalPrice: displayFinalPrice * item.quantity,
           attributes: item.attributes || null,
           size: item.size || null,
           variantId: item.variantId || null,
+          
+          // Add explicit fields
+          displayFinalPrice,
+          displayOriginalPrice,
+          displayDiscountPercentage
         };
       }),
       orderSummary: {
@@ -774,40 +837,55 @@ export const getOrderById = async (req, res) => {
       transferProof: order.transferProof || null,
       productsCount: order.products.length,
       productsDetails: order.products.map((item) => {
-        const finalPrice =
-          item.price ||
-          item.product?.finalPrice ||
-          item.product?.discountPrice ||
-          item.product?.price ||
-          0;
+        // SNAPSHOT-BASED DISPLAY LOGIC
+        const snapshotFinalPrice = item.price || 0;
+        const snapshotMerchantPrice = item.merchantPrice || 0;
+        const snapshotMarkup = item.nubianMarkup || 10;
+        
+        // Calculate Display Original Price from Snapshot
+        const initialOriginalPrice = snapshotMerchantPrice > 0 ? (snapshotMerchantPrice * (1 + snapshotMarkup / 100)) : 0;
+        
+        let displayOriginalPrice = initialOriginalPrice;
+        let displayFinalPrice = snapshotFinalPrice;
+        let displayDiscountPercentage = 0;
 
-        const merchantPrice =
-          item.merchantPrice || item.product?.merchantPrice || item.product?.price || 0;
-
-        const nubianMarkup = item.nubianMarkup || item.product?.nubianMarkup || 10;
-        const dynamicMarkup = item.dynamicMarkup || item.product?.dynamicMarkup || 0;
+        if (displayOriginalPrice > displayFinalPrice) {
+             const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+             displayDiscountPercentage = Math.round(rawPct);
+        } else {
+             displayOriginalPrice = displayFinalPrice;
+             displayDiscountPercentage = 0;
+        }
 
         return {
           productId: item.product?._id || null,
           name: item.product?.name || "",
-          price: finalPrice,
-          merchantPrice,
-          originalPrice: merchantPrice,
+          price: displayFinalPrice,
+          merchantPrice: snapshotMerchantPrice,
+          originalPrice: displayOriginalPrice, // UPDATED
           discountPrice: item.discountPrice || item.product?.discountPrice || undefined,
-          nubianMarkup,
-          dynamicMarkup,
+          nubianMarkup: snapshotMarkup,
+          dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0,
           pricingBreakdown: {
-            merchantPrice,
-            nubianMarkup,
-            dynamicMarkup,
-            finalPrice,
+            merchantPrice: snapshotMerchantPrice,
+            nubianMarkup: snapshotMarkup,
+            dynamicMarkup: item.dynamicMarkup || 0,
+            finalPrice: displayFinalPrice,
           },
           images: item.product?.images || [],
           category: item.product?.category || "",
           description: item.product?.description || "",
           stock: item.product?.stock || 0,
           quantity: item.quantity,
-          totalPrice: finalPrice * item.quantity,
+          totalPrice: displayFinalPrice * item.quantity,
+          attributes: item.attributes || null,
+          size: item.size || null,
+          variantId: item.variantId || null,
+          
+          // Add explicit fields
+          displayFinalPrice,
+          displayOriginalPrice,
+          displayDiscountPercentage,
           isAvailable: (item.product?.stock || 0) > 0,
         };
       }),

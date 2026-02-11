@@ -13,7 +13,8 @@ import { convertProductPrices } from '../services/currency.service.js'
 /**
  * Enrich product with pricing breakdown for API responses
  * Adds finalPrice, merchantPrice, and pricingBreakdown to product objects
- */function enrichProductWithPricing(product) {
+ */
+export function enrichProductWithPricing(product) {
   if (!product) return product;
 
   const p = product.toObject ? product.toObject() : product;
@@ -1987,15 +1988,32 @@ export const exploreProducts = async (req, res) => {
     const enrichedProducts = enrichProductsWithPricing(products);
 
     // Apply currency conversion if currencyCode is provided
-    const currencyCode = req.query.currencyCode || req.query.currency;
+    const currencyCode = req.currencyCode || req.query.currencyCode || req.query.currency;
     let finalProducts = enrichedProducts;
     
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
       try {
+        const upperCode = currencyCode.toUpperCase();
+        
+        // Dynamic import to avoid circular dep issues and ensure models are loaded
+        const Currency = (await import('../models/currency.model.js')).default;
+        const { getLatestRate } = await import('../services/fx.service.js');
+
+        // Fetch rate and config ONCE
+        const [currencyConfig, rateInfo] = await Promise.all([
+             Currency.findOne({ code: upperCode }).lean(),
+             getLatestRate(upperCode)
+        ]);
+        
+        const currencyContext = {
+            config: currencyConfig,
+            rate: rateInfo
+        };
+
         finalProducts = await Promise.all(
-          enrichedProducts.map(product => convertProductPrices(product, currencyCode))
+          enrichedProducts.map(product => convertProductPrices(product, currencyCode, currencyContext))
         );
-        logger.debug('Applied currency conversion to explore products', {
+        logger.debug('Applied currency conversion to explore products (optimized)', {
           currencyCode,
           productCount: finalProducts.length,
         });
