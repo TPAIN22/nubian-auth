@@ -105,6 +105,13 @@ const productSchema = new mongoose.Schema(
     variants: { type: [variantSchema], default: [] },
 
     isActive: { type: Boolean, default: true },
+    status: {
+      type: String,
+      enum: ['active', 'draft', 'suspended', 'archived'],
+      default: 'active',
+      index: true,
+    },
+    suspensionReason: { type: String },
 
     // Admin ranking controls
     priorityScore: { type: Number, default: 0, min: 0, max: 100 },

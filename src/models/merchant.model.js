@@ -26,6 +26,17 @@ const merchantSchema = new mongoose.Schema({
     type: String,
     required: false,
   },
+  isFlagged: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  flaggedAt: {
+    type: Date,
+  },
+  flagReason: {
+      type: String,
+  },
   status: {
     type: String,
     enum: ["PENDING", "APPROVED", "REJECTED", "SUSPENDED"],
@@ -56,6 +67,17 @@ const merchantSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  // Wallet / Balance
+  balance: {
+      type: Number,
+      default: 0,
+      min: 0
+  },
+  frozenBalance: {
+      type: Number,
+      default: 0,
+      min: 0
+  }
 }, { timestamps: true });
 
 // Indexes for frequently queried fields

@@ -11,6 +11,8 @@ import reviewRoutes from './routes/reviews.route.js';
 import categoryRoutes from './routes/categories.route.js';
 import userRoutes from './routes/users.route.js';
 import webhookRoutes from './routes/webhook.routes.js';
+import ticketRoutes from './routes/tickets.route.js';
+import disputeRoutes from './routes/disputes.route.js';
 import { clerkMiddleware } from '@clerk/express';
 import NotificationsRoutes from './routes/notifications.route.js';
 import bannerRoutes from './routes/banners.route.js';
@@ -171,6 +173,8 @@ logger.info('Registering API routes', {
 
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', NotificationsRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/disputes', disputeRoutes);
 app.use('/api/carts', cartRoutes);  // POST /api/carts/add -> router.post("/add", ...)
 app.use('/api/orders', orderRoutes);
 app.use('/api/products', productRoutes);
