@@ -1,4 +1,5 @@
 import Order from "../models/orders.model.js";
+import Product from "../models/product.model.js";
 import Cart from "../models/carts.model.js";
 import Address from "../models/address.model.js";
 import Merchant from "../models/merchant.model.js";
