@@ -50,7 +50,7 @@ export function enrichProductWithPricing(product) {
 
     // root finalPrice fallback = lowest active variant finalPrice (for UI "From" price)
     const activeVariants = variants.filter((v) => v.isActive !== false);
-    
+
     // Find the "representative" variant (the one with the lowest final price)
     // We use this variant's properties for the "From" display to ensuring consistency
     let bestVariant = null;
@@ -58,22 +58,22 @@ export function enrichProductWithPricing(product) {
 
     // specific logic to find best variant
     if (activeVariants.length > 0) {
-        activeVariants.forEach(v => {
-            const fp = num(v.finalPrice, 0);
-            if (fp > 0 && fp < minFinal) {
-                minFinal = fp;
-                bestVariant = v;
-            }
-        });
+      activeVariants.forEach(v => {
+        const fp = num(v.finalPrice, 0);
+        if (fp > 0 && fp < minFinal) {
+          minFinal = fp;
+          bestVariant = v;
+        }
+      });
     }
 
     // Default to first variant if no best found (rare)
     if (!bestVariant && variants.length > 0) {
-        bestVariant = variants[0];
+      bestVariant = variants[0];
     }
 
     const rootPrices = normalizePriceBlock(p);
-    
+
     // For variant products, root prices represent "From" price of the BEST variant
     const rootFinal = bestVariant ? num(bestVariant.finalPrice, 0) : rootPrices.finalPrice;
     const rootMerchant = bestVariant ? num(bestVariant.merchantPrice, 0) : rootPrices.merchantPrice;
@@ -83,7 +83,7 @@ export function enrichProductWithPricing(product) {
     // Calculate discount for display using CONSISTENT values from the same variant
     // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount
     const initialOriginalPrice = rootMerchant > 0 ? (rootMerchant * (1 + rootMarkup / 100)) : 0;
-    
+
     // DEFINITIVE DISPLAY LOGIC:
     // 1. Establish Source of Truth
     let displayOriginalPrice = initialOriginalPrice;
@@ -93,13 +93,13 @@ export function enrichProductWithPricing(product) {
     // 2. Strict Sanity Check (Backend Side)
     // Only allow details if Original > Final
     if (displayOriginalPrice > displayFinalPrice) {
-        // Calculate percentage
-        const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-        displayDiscountPercentage = Math.round(rawPct);
+      // Calculate percentage
+      const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+      displayDiscountPercentage = Math.round(rawPct);
     } else {
-        // No valid discount -> Hide Original (set to Final) and Clear Discount
-        displayOriginalPrice = displayFinalPrice;
-        displayDiscountPercentage = 0;
+      // No valid discount -> Hide Original (set to Final) and Clear Discount
+      displayOriginalPrice = displayFinalPrice;
+      displayDiscountPercentage = 0;
     }
 
     return {
@@ -107,14 +107,14 @@ export function enrichProductWithPricing(product) {
       merchantPrice: rootMerchant,
       price: rootMerchant,
       // Pass the specific markup used so frontend can replicate calculation if needed
-      nubianMarkup: rootMarkup, 
+      nubianMarkup: rootMarkup,
       discountPrice: rootPrices.discountPrice,
       finalPrice: displayFinalPrice,
-      
+
       // Explicitly return originalPrice (MSRP) so it persists through currency conversion
       originalPrice: displayOriginalPrice, // Consolidated to displayOriginalPrice
       discountPercentage: displayDiscountPercentage,
-      
+
       // New Explicit Fields for Frontend Simplicity
       displayOriginalPrice,
       displayFinalPrice,
@@ -126,35 +126,35 @@ export function enrichProductWithPricing(product) {
 
   // simple product
   const rootPrices = normalizePriceBlock(p);
-  
+
   // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
   const markup = num(p.nubianMarkup ?? 10);
   const initialOriginalPrice = rootPrices.merchantPrice > 0 ? (rootPrices.merchantPrice * (1 + markup / 100)) : 0;
-  
+
   // DEFINITIVE DISPLAY LOGIC (Simple Product):
   let displayOriginalPrice = initialOriginalPrice;
   let displayFinalPrice = rootPrices.finalPrice;
   let displayDiscountPercentage = 0;
 
   if (displayOriginalPrice > displayFinalPrice) {
-      const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-      displayDiscountPercentage = Math.round(rawPct);
+    const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
+    displayDiscountPercentage = Math.round(rawPct);
   } else {
-      displayOriginalPrice = displayFinalPrice;
-      displayDiscountPercentage = 0;
+    displayOriginalPrice = displayFinalPrice;
+    displayDiscountPercentage = 0;
   }
 
-  return { 
-      ...p, 
-      ...rootPrices,
-      finalPrice: displayFinalPrice,
-      originalPrice: displayOriginalPrice,
-      discountPercentage: displayDiscountPercentage,
-      
-      // New Explicit Fields
-      displayOriginalPrice,
-      displayFinalPrice,
-      displayDiscountPercentage
+  return {
+    ...p,
+    ...rootPrices,
+    finalPrice: displayFinalPrice,
+    originalPrice: displayOriginalPrice,
+    discountPercentage: displayDiscountPercentage,
+
+    // New Explicit Fields
+    displayOriginalPrice,
+    displayFinalPrice,
+    displayDiscountPercentage
   };
 }
 
@@ -178,7 +178,7 @@ export const getProducts = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const { category, merchant } = req.query;
-    
+
     // Log request parameters for debugging
     logger.info('getProducts request', {
       category,
@@ -193,22 +193,22 @@ export const getProducts = async (req, res) => {
     const preferredCategories = getUserPreferredCategories(req);
 
     // Build filter - values are already validated as MongoDB ObjectIds by middleware
-    const filter = { 
+    const filter = {
       isActive: true, // Only return active products by default
       deletedAt: null, // Exclude soft-deleted products
     };
-    
+
     // Handle hierarchical categories: if category has children, include all subcategories
     if (category) {
       try {
         const categoryId = new mongoose.Types.ObjectId(category);
-        
+
         // Find all subcategories (children) of this category
-        const subcategories = await Category.find({ 
+        const subcategories = await Category.find({
           parent: categoryId,
-          isActive: true 
+          isActive: true
         }).select('_id').lean();
-        
+
         // Build array of category IDs: parent + all children
         const categoryIds = [categoryId];
         if (subcategories && subcategories.length > 0) {
@@ -218,10 +218,10 @@ export const getProducts = async (req, res) => {
             }
           });
         }
-        
+
         // Use $in to match products in parent category OR any subcategory
         filter.category = { $in: categoryIds };
-        
+
         logger.info('Category filter with subcategories', {
           categoryId: category,
           subcategoryCount: subcategories.length,
@@ -233,7 +233,7 @@ export const getProducts = async (req, res) => {
         filter.category = category;
       }
     }
-    
+
     if (merchant) {
       filter.merchant = merchant; // Safe: validated as MongoDB ObjectId
     }
@@ -262,7 +262,7 @@ export const getProducts = async (req, res) => {
     const pipeline = [
       // Match filter (same as before)
       { $match: filter },
-      
+
       // Add computed ranking fields
       {
         $addFields: {
@@ -270,7 +270,7 @@ export const getProducts = async (req, res) => {
           featuredBoost: {
             $cond: [{ $ifNull: ['$featured', false] }, FEATURED_BOOST, 0]
           },
-          
+
           // Priority boost (admin-controlled)
           priorityBoost: {
             $multiply: [
@@ -278,7 +278,7 @@ export const getProducts = async (req, res) => {
               PRIORITY_WEIGHT
             ]
           },
-          
+
           // Freshness boost (days since creation)
           daysSinceCreation: {
             $divide: [
@@ -286,12 +286,12 @@ export const getProducts = async (req, res) => {
               1000 * 60 * 60 * 24 // Convert milliseconds to days
             ]
           },
-          
+
           // Stock boost (products with good stock)
           stockValue: { $ifNull: ['$stock', 0] },
         }
       },
-      
+
       // Calculate freshness boost
       {
         $addFields: {
@@ -321,7 +321,7 @@ export const getProducts = async (req, res) => {
           }
         }
       },
-      
+
       // Calculate stock boost
       {
         $addFields: {
@@ -415,7 +415,7 @@ export const getProducts = async (req, res) => {
         as: 'categoryData'
       }
     });
-    
+
     // Unwind and reshape the populated fields
     pipeline.push({
       $addFields: {
@@ -442,7 +442,7 @@ export const getProducts = async (req, res) => {
         }
       }
     });
-    
+
     // Remove temporary lookup arrays
     pipeline.push({
       $project: {
@@ -467,25 +467,25 @@ export const getProducts = async (req, res) => {
     // Apply currency conversion if currencyCode is provided
     const currencyCode = req.currencyCode;
     let finalProducts = enrichedProducts;
-    
+
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
       try {
         // PERF: Fetch rate and config ONCE for all products
         const upperCode = currencyCode.toUpperCase();
-        
+
         // Dynamic import to avoid circular dep issues if any, or just direct import
         // We need: Currency model and getLatestRate service
         const Currency = (await import('../models/currency.model.js')).default;
         const { getLatestRate } = await import('../services/fx.service.js');
 
         const [currencyConfig, rateInfo] = await Promise.all([
-             Currency.findOne({ code: upperCode }).lean(),
-             getLatestRate(upperCode)
+          Currency.findOne({ code: upperCode }).lean(),
+          getLatestRate(upperCode)
         ]);
-        
+
         const currencyContext = {
-            config: currencyConfig,
-            rate: rateInfo
+          config: currencyConfig,
+          rate: rateInfo
         };
 
         finalProducts = await Promise.all(
@@ -539,476 +539,200 @@ export const getProducts = async (req, res) => {
 
 
 export const getProductById = async (req, res) => {
-    try {
-        const product = await Product.findOne({
-            _id: req.params.id,
-            deletedAt: null, // Exclude soft-deleted products
-        })
-            .populate('merchant', 'businessName businessEmail')
-            .populate('category', 'name');
-        
-        if (!product) {
-            return sendNotFound(res, 'Product');
-        }
-        
-        // Return product even if inactive (for admin/merchant viewing)
-        // Frontend can check isActive to handle display
-        
-        // Enrich product with pricing breakdown
-        let enrichedProduct = enrichProductWithPricing(product);
-        
-        // Apply currency conversion
-        const currencyCode = req.currencyCode;
-        if (currencyCode && currencyCode !== 'USD') {
-            try {
-                enrichedProduct = await convertProductPrices(enrichedProduct, currencyCode);
-            } catch (conversionError) {
-                logger.warn('Currency conversion failed for product', {
-                    productId: req.params.id,
-                    currencyCode,
-                    error: conversionError.message,
-                });
-                // Fall back to USD prices
-            }
-        }
-        
-        return sendSuccess(res, {
-            data: enrichedProduct,
-            message: 'Product retrieved successfully',
-        });
-    } catch (error) {
-        // Let error handler middleware handle the response
-        throw error;
+  try {
+    const product = await Product.findOne({
+      _id: req.params.id,
+      deletedAt: null, // Exclude soft-deleted products
+    })
+      .populate('merchant', 'businessName businessEmail')
+      .populate('category', 'name');
+
+    if (!product) {
+      return sendNotFound(res, 'Product');
     }
+
+    // Return product even if inactive (for admin/merchant viewing)
+    // Frontend can check isActive to handle display
+
+    // Enrich product with pricing breakdown
+    let enrichedProduct = enrichProductWithPricing(product);
+
+    // Apply currency conversion
+    const currencyCode = req.currencyCode;
+    if (currencyCode && currencyCode !== 'USD') {
+      try {
+        enrichedProduct = await convertProductPrices(enrichedProduct, currencyCode);
+      } catch (conversionError) {
+        logger.warn('Currency conversion failed for product', {
+          productId: req.params.id,
+          currencyCode,
+          error: conversionError.message,
+        });
+        // Fall back to USD prices
+      }
+    }
+
+    return sendSuccess(res, {
+      data: enrichedProduct,
+      message: 'Product retrieved successfully',
+    });
+  } catch (error) {
+    // Let error handler middleware handle the response
+    throw error;
+  }
 }
+
+// ===== Helper: Validate Variants =====
+const validateVariants = (variants) => {
+  if (!Array.isArray(variants) || variants.length === 0) {
+    throw { message: 'Product must have at least one variant', statusCode: 400, code: 'VALIDATION_ERROR' };
+  }
+
+  const skus = new Set();
+  for (const variant of variants) {
+    variant.sku = variant.sku?.trim().toUpperCase();
+    if (!variant.sku) throw { message: 'All variants must have a SKU', statusCode: 400, code: 'VALIDATION_ERROR' };
+    if (skus.has(variant.sku)) throw { message: `Duplicate SKU found: ${variant.sku}`, statusCode: 400, code: 'VALIDATION_ERROR' };
+    skus.add(variant.sku);
+
+    if (!variant.attributes || !variant.attributes.size || !variant.attributes.color) {
+      throw { message: 'Variant attributes must include both size and color', statusCode: 400, code: 'VALIDATION_ERROR' };
+    }
+
+    if (variant.merchantPrice === undefined || variant.merchantPrice <= 0) {
+      throw { message: 'Variant merchantPrice is required and must be > 0', statusCode: 400, code: 'VALIDATION_ERROR' };
+    }
+
+    if (variant.stock === undefined || variant.stock < 0) {
+      throw { message: 'Variant stock is required and cannot be negative', statusCode: 400, code: 'VALIDATION_ERROR' };
+    }
+  }
+};
+
+// ===== Helper: Validate ObjectId =====
+const validateObjectId = (id, type) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw { message: `Invalid ${type} ID format`, statusCode: 400, code: 'VALIDATION_ERROR' };
+  }
+  return new mongoose.Types.ObjectId(id);
+};
+
+// ===== CREATE PRODUCT =====
 export const createProduct = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    if (!userId) return sendError(res, { message: 'Unauthorized', statusCode: 401, code: 'UNAUTHORIZED' });
+
+    let userRole;
     try {
-        const { userId } = getAuth(req);
-        
-        if (!userId) {
-            logger.warn('Product creation failed: No userId', {
-                requestId: req.requestId,
-                hasAuth: !!req.auth,
-            });
-            return sendError(res, {
-                message: 'Unauthorized',
-                statusCode: 401,
-                code: 'UNAUTHORIZED',
-            });
-        }
-        
-        // Verify user role to ensure middleware passed correctly
-        let userRole = null;
-        try {
-            const user = await clerkClient.users.getUser(userId);
-            userRole = user.publicMetadata?.role;
-            logger.debug('User role verified for product creation', {
-                requestId: req.requestId,
-                userId,
-                userRole,
-                hasMerchant: !!req.merchant,
-            });
-        } catch (clerkError) {
-            logger.error('Failed to verify user role in createProduct', {
-                requestId: req.requestId,
-                userId,
-                error: clerkError.message,
-            });
-            return sendError(res, {
-                message: 'Failed to verify user permissions',
-                statusCode: 500,
-                code: 'CLERK_ERROR',
-            });
-        }
-        
-        // Middleware (isAdminOrApprovedMerchant) already checked:
-        // - User is authenticated
-        // - User is either admin or approved merchant
-        // - If merchant, req.merchant is set and approved
-        
-        // Verify admin or merchant access
-        if (userRole !== 'admin' && userRole !== 'merchant') {
-            logger.warn('Unauthorized product creation attempt', {
-                requestId: req.requestId,
-                userId,
-                userRole,
-            });
-            return sendError(res, {
-                message: 'Only admins and approved merchants can create products',
-                statusCode: 403,
-                code: 'FORBIDDEN',
-            });
-        }
-        
-        // Auto-assign merchant to product if user is a merchant
-        // For admins, merchant field can be null or set explicitly
-        if (req.merchant) {
-            // User is an approved merchant - auto-assign merchant to product
-            req.body.merchant = req.merchant._id;
-            logger.debug('Auto-assigning merchant to product', {
-                requestId: req.requestId,
-                merchantId: req.merchant._id,
-            });
-        } else if (userRole === 'admin') {
-            // Admin can set merchant explicitly or leave null for general products
-            logger.debug('Admin creating product - merchant can be set explicitly or left null', {
-                requestId: req.requestId,
-                providedMerchantId: req.body.merchant,
-            });
-        }
-        
-        // Log received data for debugging
-        logger.info('Creating product', {
-            requestId: req.requestId,
-            userId,
-            userRole,
-            isMerchant: !!req.merchant,
-            isAdmin: userRole === 'admin',
-            merchantId: req.body.merchant || req.merchant?._id || null,
-            hasCategory: !!req.body.category,
-            hasImages: Array.isArray(req.body.images),
-            imagesCount: Array.isArray(req.body.images) ? req.body.images.length : 0,
-        });
-        
-        // Validate required fields match schema
-        if (!req.body.category) {
-            return sendError(res, {
-                message: 'Category is required',
-                statusCode: 400,
-                code: 'VALIDATION_ERROR',
-            });
-        }
-        
-        if (!req.body.images || !Array.isArray(req.body.images) || req.body.images.length === 0) {
-            return sendError(res, {
-                message: 'At least one image is required',
-                statusCode: 400,
-                code: 'VALIDATION_ERROR',
-            });
-        }
-        
-        // Validate variants if provided
-        if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
-            // Check SKU uniqueness within the product
-            const skus = new Set();
-            for (const variant of req.body.variants) {
-                const sku = variant.sku?.trim().toUpperCase();
-                if (!sku) {
-                    return sendError(res, {
-                        message: 'All variants must have a SKU',
-                        statusCode: 400,
-                        code: 'VALIDATION_ERROR',
-                    });
-                }
-                if (skus.has(sku)) {
-                    return sendError(res, {
-                        message: `Duplicate SKU found: ${variant.sku}`,
-                        statusCode: 400,
-                        code: 'VALIDATION_ERROR',
-                    });
-                }
-                skus.add(sku);
-                
-                // Convert attributes object to Map for MongoDB
-                if (variant.attributes && typeof variant.attributes === 'object' && !(variant.attributes instanceof Map)) {
-                    variant.attributes = new Map(Object.entries(variant.attributes));
-                }
-            }
-        }
-        
-        // Ensure category is a valid MongoDB ObjectId
-        let categoryId = req.body.category;
-        if (categoryId && typeof categoryId === 'string') {
-            categoryId = categoryId.trim();
-            // Validate it's a valid MongoDB ObjectId format
-            if (!mongoose.Types.ObjectId.isValid(categoryId)) {
-                logger.error('Invalid category ID format', {
-                    requestId: req.requestId,
-                    userId,
-                    categoryId,
-                    categoryType: typeof categoryId,
-                });
-                return sendError(res, {
-                    message: 'Invalid category ID format',
-                    statusCode: 400,
-                    code: 'VALIDATION_ERROR',
-                });
-            }
-            // Convert to ObjectId
-            req.body.category = new mongoose.Types.ObjectId(categoryId);
-        }
-
-        // ===== SMART PRICING: Sync price with merchantPrice =====
-        // If price is provided but merchantPrice is not, set merchantPrice = price
-        // This ensures backward compatibility and proper pricing calculation
-        if (req.body.price && !req.body.merchantPrice) {
-            req.body.merchantPrice = req.body.price;
-            logger.debug('Syncing merchantPrice with price', {
-                requestId: req.requestId,
-                price: req.body.price,
-                merchantPrice: req.body.merchantPrice,
-            });
-        }
-        // If merchantPrice is provided but price is not, set price = merchantPrice
-        if (req.body.merchantPrice && !req.body.price) {
-            req.body.price = req.body.merchantPrice;
-        }
-        // Set default nubianMarkup if not provided
-        if (!req.body.nubianMarkup && req.body.nubianMarkup !== 0) {
-            req.body.nubianMarkup = 10; // Default 10%
-        }
-        // Initialize dynamicMarkup to 0 if not provided (will be calculated by cron)
-        if (!req.body.dynamicMarkup && req.body.dynamicMarkup !== 0) {
-            req.body.dynamicMarkup = 0;
-        }
-        
-        // Handle variants pricing
-        if (req.body.variants && Array.isArray(req.body.variants)) {
-            req.body.variants.forEach(variant => {
-                // Sync variant price with merchantPrice
-                if (variant.price && !variant.merchantPrice) {
-                    variant.merchantPrice = variant.price;
-                }
-                if (variant.merchantPrice && !variant.price) {
-                    variant.price = variant.merchantPrice;
-                }
-                // Set default nubianMarkup for variant
-                if (!variant.nubianMarkup && variant.nubianMarkup !== 0) {
-                    variant.nubianMarkup = req.body.nubianMarkup || 10;
-                }
-                // Initialize dynamicMarkup for variant
-                if (!variant.dynamicMarkup && variant.dynamicMarkup !== 0) {
-                    variant.dynamicMarkup = 0;
-                }
-            });
-        }
-
-        // Ensure merchant is a valid MongoDB ObjectId if provided
-        if (req.body.merchant && typeof req.body.merchant === 'string') {
-            const merchantId = req.body.merchant.trim();
-            if (mongoose.Types.ObjectId.isValid(merchantId)) {
-                req.body.merchant = new mongoose.Types.ObjectId(merchantId);
-            } else {
-                logger.error('Invalid merchant ID format', {
-                    requestId: req.requestId,
-                    userId,
-                    merchantId,
-                });
-                return sendError(res, {
-                    message: 'Invalid merchant ID format',
-                    statusCode: 400,
-                    code: 'VALIDATION_ERROR',
-                });
-            }
-        }
-
-        logger.info('Attempting to create product in database', {
-            requestId: req.requestId,
-            userId,
-            productName: req.body.name,
-            categoryId: req.body.category?.toString(),
-            categoryIsObjectId: req.body.category instanceof mongoose.Types.ObjectId,
-            merchantId: req.body.merchant?.toString() || null,
-            merchantIsObjectId: req.body.merchant instanceof mongoose.Types.ObjectId,
-        });
-
-        const product = await Product.create(req.body)
-        
-        logger.info('Product created successfully in database', {
-            requestId: req.requestId,
-            userId,
-            productId: product._id,
-            productName: product.name,
-            userRole,
-            categoryId: product.category?.toString() || 'MISSING',
-            categoryType: product.category ? typeof product.category : 'null',
-            categoryIsObjectId: product.category instanceof mongoose.Types.ObjectId,
-            merchantId: product.merchant?.toString() || null,
-            merchantIsObjectId: product.merchant instanceof mongoose.Types.ObjectId,
-        });
-        
-        // Populate multiple fields - when using populate on a document (not query), need to await it
-        const populatedProduct = await Product.findById(product._id)
-            .populate('merchant', 'businessName businessEmail')
-            .populate('category', 'name');
-        
-        // Enrich product with pricing breakdown
-        const enrichedProduct = enrichProductWithPricing(populatedProduct);
-        
-        return sendCreated(res, enrichedProduct, 'Product created successfully');
+      const user = await clerkClient.users.getUser(userId);
+      userRole = user.publicMetadata?.role;
     } catch (error) {
-        logger.error('Error creating product', {
-            requestId: req.requestId,
-            userId,
-            error: error.message,
-            errorName: error.name,
-            errorCode: error.code,
-            errorStack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-            body: {
-                name: req.body.name,
-                category: req.body.category,
-                merchant: req.body.merchant,
-                hasImages: Array.isArray(req.body.images),
-                imagesCount: Array.isArray(req.body.images) ? req.body.images.length : 0,
-            },
-        });
-        // Let error handler middleware handle the response
-        throw error;
+      return sendError(res, { message: 'Failed to verify user permissions', statusCode: 500, code: 'CLERK_ERROR' });
     }
-}
+
+    if (!['admin', 'merchant'].includes(userRole)) {
+      return sendError(res, { message: 'Only admins and approved merchants can create products', statusCode: 403, code: 'FORBIDDEN' });
+    }
+
+    if (req.merchant) req.body.merchant = req.merchant._id;
+
+    if (!req.body.category) return sendError(res, { message: 'Category is required', statusCode: 400, code: 'VALIDATION_ERROR' });
+    if (!req.body.images || !Array.isArray(req.body.images) || req.body.images.length === 0) {
+      return sendError(res, { message: 'At least one image is required', statusCode: 400, code: 'VALIDATION_ERROR' });
+    }
+
+    // Validate Variants
+    validateVariants(req.body.variants);
+
+    // Remove product-level pricing
+    delete req.body.price;
+    delete req.body.merchantPrice;
+    delete req.body.discountPrice;
+
+    // Validate Category & Merchant ObjectIds
+    req.body.category = validateObjectId(req.body.category, 'category');
+    if (req.body.merchant) req.body.merchant = validateObjectId(req.body.merchant, 'merchant');
+
+    const product = await Product.create(req.body);
+
+    // Populate and enrich pricing
+    const populatedProduct = await Product.findById(product._id)
+      .populate([
+        { path: 'merchant', select: 'businessName businessEmail' },
+        { path: 'category', select: 'name' }
+      ]);
+
+    const enrichedProduct = enrichProductWithPricing(populatedProduct);
+
+    return sendCreated(res, enrichedProduct, 'Product created successfully');
+  } catch (error) {
+    logger.error('Error creating product', { error: error.message });
+    if (error.code === 11000 && error.keyPattern?.['variants.sku']) {
+      return sendError(res, { message: `Duplicate SKU detected at DB level`, statusCode: 400, code: 'VALIDATION_ERROR' });
+    }
+    return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR' });
+  }
+};
+
+// ===== UPDATE PRODUCT =====
 export const updateProduct = async (req, res) => {
-    try {
-        const { userId } = getAuth(req);
-        const product = await Product.findById(req.params.id);
-        
-        if (!product) {
-            return sendNotFound(res, 'Product');
-        }
-        
-        // Check if user is merchant and owns this product
-        if (userId) {
-            try {
-                const user = await clerkClient.users.getUser(userId);
-                if (user.publicMetadata?.role === 'merchant') {
-                    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
-                    if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
-                        return sendForbidden(res, 'You can only update your own products');
-                    }
-                }
-            } catch (error) {
-                // Continue if check fails
-            }
-        }
-        
-        // Ensure category is a valid MongoDB ObjectId if provided
-        if (req.body.category !== undefined) {
-            let categoryId = req.body.category;
-            if (categoryId && typeof categoryId === 'string') {
-                categoryId = categoryId.trim();
-                // Validate it's a valid MongoDB ObjectId format
-                if (!mongoose.Types.ObjectId.isValid(categoryId)) {
-                    logger.error('Invalid category ID format in update', {
-                        requestId: req.requestId,
-                        userId,
-                        productId: req.params.id,
-                        categoryId,
-                        categoryType: typeof categoryId,
-                    });
-                    return sendError(res, {
-                        message: 'Invalid category ID format',
-                        statusCode: 400,
-                        code: 'VALIDATION_ERROR',
-                    });
-                }
-                // Convert to ObjectId
-                req.body.category = new mongoose.Types.ObjectId(categoryId);
-            }
-        }
+  try {
+    const { userId } = getAuth(req);
+    const product = await Product.findById(req.params.id);
 
-        // Ensure merchant is a valid MongoDB ObjectId if provided
-        if (req.body.merchant !== undefined && req.body.merchant && typeof req.body.merchant === 'string') {
-            const merchantId = req.body.merchant.trim();
-            if (mongoose.Types.ObjectId.isValid(merchantId)) {
-                req.body.merchant = new mongoose.Types.ObjectId(merchantId);
-            } else {
-                logger.error('Invalid merchant ID format in update', {
-                    requestId: req.requestId,
-                    userId,
-                    productId: req.params.id,
-                    merchantId,
-                });
-                return sendError(res, {
-                    message: 'Invalid merchant ID format',
-                    statusCode: 400,
-                    code: 'VALIDATION_ERROR',
-                });
-            }
-        }
+    if (!product || product.deletedAt) return sendNotFound(res, 'Product');
 
-        // Validate variants if provided in update
-        if (req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0) {
-            // Check SKU uniqueness within the product
-            const skus = new Set();
-            for (const variant of req.body.variants) {
-                const sku = variant.sku?.trim().toUpperCase();
-                if (!sku) {
-                    return sendError(res, {
-                        message: 'All variants must have a SKU',
-                        statusCode: 400,
-                        code: 'VALIDATION_ERROR',
-                    });
-                }
-                if (skus.has(sku)) {
-                    return sendError(res, {
-                        message: `Duplicate SKU found: ${variant.sku}`,
-                        statusCode: 400,
-                        code: 'VALIDATION_ERROR',
-                    });
-                }
-                skus.add(sku);
-                
-                // Convert attributes object to Map for MongoDB
-                if (variant.attributes && typeof variant.attributes === 'object' && !(variant.attributes instanceof Map)) {
-                    variant.attributes = new Map(Object.entries(variant.attributes));
-                }
-            }
+    if (userId) {
+      try {
+        const user = await clerkClient.users.getUser(userId);
+        if (user.publicMetadata?.role === 'merchant') {
+          const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+          if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
+            return sendForbidden(res, 'You can only update your own products');
+          }
         }
-
-        logger.info('Updating product', {
-            requestId: req.requestId,
-            userId,
-            productId: req.params.id,
-            categoryId: req.body.category?.toString() || 'not provided',
-            categoryIsObjectId: req.body.category instanceof mongoose.Types.ObjectId,
-            merchantId: req.body.merchant?.toString() || 'not provided',
-        });
-        
-        // ===== SMART PRICING: Sync price with merchantPrice =====
-        // If price is provided but merchantPrice is not, set merchantPrice = price
-        if (req.body.price !== undefined && req.body.merchantPrice === undefined) {
-            req.body.merchantPrice = req.body.price;
-        }
-        // If merchantPrice is provided but price is not, set price = merchantPrice
-        if (req.body.merchantPrice !== undefined && req.body.price === undefined) {
-            req.body.price = req.body.merchantPrice;
-        }
-        // Handle variants pricing
-        if (req.body.variants && Array.isArray(req.body.variants)) {
-            req.body.variants.forEach(variant => {
-                // Sync variant price with merchantPrice
-                if (variant.price !== undefined && variant.merchantPrice === undefined) {
-                    variant.merchantPrice = variant.price;
-                }
-                if (variant.merchantPrice !== undefined && variant.price === undefined) {
-                    variant.price = variant.merchantPrice;
-                }
-            });
-        }
-        
-        // Apply updates to the document
-        // This triggers the Mongoose 'save' middleware which recalculates smart pricing
-        product.set(req.body);
-        
-        // Explicitly mark variants as modified if they were updated, to ensure pre-save hooks run on them
-        if (req.body.variants) {
-            product.markModified('variants');
-        }
-
-        const updatedProduct = await product.save();
-
-        // Re-populate for response
-        await updatedProduct.populate('merchant', 'businessName businessEmail');
-        await updatedProduct.populate('category', 'name');
-        
-        return sendSuccess(res, {
-            data: updatedProduct,
-            message: 'Product updated successfully',
-        });
-    } catch (error) {
-        // Let error handler middleware handle the response
-        throw error;
+      } catch (error) {
+        // Ignore clerk errors
+      }
     }
-}
+
+    // Validate category & merchant if provided
+    if (req.body.category) req.body.category = validateObjectId(req.body.category, 'category');
+    if (req.body.merchant) req.body.merchant = validateObjectId(req.body.merchant, 'merchant');
+
+    // Validate Variants if provided
+    if (req.body.variants) validateVariants(req.body.variants);
+
+    // Remove product-level pricing
+    delete req.body.price;
+    delete req.body.merchantPrice;
+    delete req.body.discountPrice;
+
+    product.set(req.body);
+    if (req.body.variants) product.markModified('variants');
+
+    const updatedProduct = await product.save();
+
+    await updatedProduct.populate([
+      { path: 'merchant', select: 'businessName businessEmail' },
+      { path: 'category', select: 'name' }
+    ]);
+
+    const enrichedProduct = enrichProductWithPricing(updatedProduct);
+
+    return sendSuccess(res, { data: enrichedProduct, message: 'Product updated successfully' });
+  } catch (error) {
+    logger.error('Error updating product', { error: error.message });
+    if (error.code === 11000 && error.keyPattern?.['variants.sku']) {
+      return sendError(res, { message: `Duplicate SKU detected at DB level`, statusCode: 400, code: 'VALIDATION_ERROR' });
+    }
+    return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR' });
+  }
+};
+
+
+
 export const deleteProduct = async (req, res) => {
   try {
     const productId = req.params.id;
@@ -1083,61 +807,61 @@ export const deleteProduct = async (req, res) => {
 
 // Get merchant's products
 export const getMerchantProducts = async (req, res) => {
-    try {
-        const { userId } = getAuth(req);
-        
-        if (!userId) {
-            return res.status(401).json({ message: 'Unauthorized' });
-        }
-        
-        const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
-        if (!merchant) {
-            return res.status(403).json({ message: 'Merchant not found or not approved' });
-        }
-        
-        const MAX_LIMIT = 100;
-        const MAX_PAGE = 10000;
-        const DEFAULT_LIMIT = 100;
-        const page = Math.max(1, Math.min(parseInt(req.query.page) || 1, MAX_PAGE));
-        const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
-        const skip = (page - 1) * limit;
-        
-        const { category, isActive } = req.query;
-        
-        // Build filter - category is validated as MongoDB ObjectId by middleware
-        const filter = { 
-            merchant: merchant._id,
-            deletedAt: null, // Exclude soft-deleted products
-        };
-        if (category) {
-            filter.category = category; // Safe: validated as MongoDB ObjectId
-        }
-        if (isActive !== undefined) {
-            filter.isActive = isActive === 'true';
-        }
-        
-        const products = await Product.find(filter)
-            .populate('category', 'name')
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit);
+  try {
+    const { userId } = getAuth(req);
 
-        const totalProducts = await Product.countDocuments(filter);
-        
-        // Enrich products with pricing breakdown
-        const enrichedProducts = enrichProductsWithPricing(products);
-        
-        return sendPaginated(res, {
-            data: enrichedProducts,
-            page,
-            limit,
-            total: totalProducts,
-            message: 'Merchant products retrieved successfully',
-        });
-    } catch (error) {
-        // Let error handler middleware handle the response
-        throw error;
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthorized' });
     }
+
+    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    if (!merchant) {
+      return res.status(403).json({ message: 'Merchant not found or not approved' });
+    }
+
+    const MAX_LIMIT = 100;
+    const MAX_PAGE = 10000;
+    const DEFAULT_LIMIT = 100;
+    const page = Math.max(1, Math.min(parseInt(req.query.page) || 1, MAX_PAGE));
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
+    const skip = (page - 1) * limit;
+
+    const { category, isActive } = req.query;
+
+    // Build filter - category is validated as MongoDB ObjectId by middleware
+    const filter = {
+      merchant: merchant._id,
+      deletedAt: null, // Exclude soft-deleted products
+    };
+    if (category) {
+      filter.category = category; // Safe: validated as MongoDB ObjectId
+    }
+    if (isActive !== undefined) {
+      filter.isActive = isActive === 'true';
+    }
+
+    const products = await Product.find(filter)
+      .populate('category', 'name')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const totalProducts = await Product.countDocuments(filter);
+
+    // Enrich products with pricing breakdown
+    const enrichedProducts = enrichProductsWithPricing(products);
+
+    return sendPaginated(res, {
+      data: enrichedProducts,
+      page,
+      limit,
+      total: totalProducts,
+      message: 'Merchant products retrieved successfully',
+    });
+  } catch (error) {
+    // Let error handler middleware handle the response
+    throw error;
+  }
 }
 
 // ============================================
@@ -1149,111 +873,111 @@ export const getMerchantProducts = async (req, res) => {
  * Allows admins to see all products including inactive and soft-deleted ones
  */
 export const getAllProductsAdmin = async (req, res) => {
-    try {
-        // Pagination validation with max limits
-        const MAX_LIMIT = 100;
-        const MAX_PAGE = 10000;
-        const DEFAULT_LIMIT = 50;
-        const page = Math.max(1, Math.min(parseInt(req.query.page) || 1, MAX_PAGE));
-        const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
-        const skip = (page - 1) * limit;
+  try {
+    // Pagination validation with max limits
+    const MAX_LIMIT = 100;
+    const MAX_PAGE = 10000;
+    const DEFAULT_LIMIT = 50;
+    const page = Math.max(1, Math.min(parseInt(req.query.page) || 1, MAX_PAGE));
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT));
+    const skip = (page - 1) * limit;
 
-        const { 
-            category, 
-            merchant, 
-            isActive, 
-            includeDeleted,
-            search,
-            sortBy = 'createdAt',
-            sortOrder = 'desc'
-        } = req.query;
+    const {
+      category,
+      merchant,
+      isActive,
+      includeDeleted,
+      search,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
 
-        // Build filter - admin can see all products including inactive/deleted
-        const filter = {};
-        
-        // Include soft-deleted products only if explicitly requested
-        if (includeDeleted !== 'true') {
-            filter.deletedAt = null;
-        }
-        
-        if (category) {
-            filter.category = category;
-        }
-        if (merchant) {
-            filter.merchant = merchant;
-        }
-        if (isActive !== undefined) {
-            filter.isActive = isActive === 'true';
-        }
-        
-        // Text search on name and description
-        if (search && search.trim()) {
-            filter.$or = [
-                { name: { $regex: search.trim(), $options: 'i' } },
-                { description: { $regex: search.trim(), $options: 'i' } }
-            ];
-        }
+    // Build filter - admin can see all products including inactive/deleted
+    const filter = {};
 
-        // Build sort object
-        const sort = {};
-        const validSortFields = ['createdAt', 'name', 'price', 'averageRating', 'isActive', 'priorityScore', 'featured'];
-        const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
-        
-        // Special handling for featured/priorityScore combo (admin ranking view)
-        if (sortBy === 'priorityScore' || sortBy === 'featured') {
-            // Sort by featured first (boolean), then priorityScore, then createdAt
-            sort.featured = -1; // Featured products first
-            sort.priorityScore = sortOrder === 'asc' ? 1 : -1;
-            sort.createdAt = -1; // Tie-breaker
-        } else {
-            sort[sortField] = sortOrder === 'asc' ? 1 : -1;
-        }
-
-        const products = await Product.find(filter)
-            .populate('merchant', 'businessName businessEmail status')
-            .populate('category', 'name')
-            .sort(sort)
-            .skip(skip)
-            .limit(limit);
-
-        const totalProducts = await Product.countDocuments(filter);
-        const absoluteTotal = await Product.countDocuments({}); // Check if DB is empty
-
-        // DEBUG LOGGING
-        logger.info('DEBUG: getAllProductsAdmin', {
-            filter,
-            totalFound: totalProducts,
-            absoluteTotalInDB: absoluteTotal,
-            paramIsActive: isActive,
-            paramIncludeDeleted: includeDeleted
-        });
-
-        // Enrich products with pricing breakdown
-        const enrichedProducts = enrichProductsWithPricing(products);
-
-        logger.info('Admin retrieved all products', {
-            requestId: req.requestId,
-            userId: getAuth(req).userId,
-            total: totalProducts,
-            page,
-            limit,
-            filters: { category, merchant, isActive, includeDeleted, search },
-        });
-
-        return sendPaginated(res, {
-            data: enrichedProducts,
-            page,
-            limit,
-            total: totalProducts,
-            message: 'All products retrieved successfully',
-        });
-    } catch (error) {
-        logger.error('Error in getAllProductsAdmin', {
-            requestId: req.requestId,
-            error: error.message,
-        });
-        throw error;
+    // Include soft-deleted products only if explicitly requested
+    if (includeDeleted !== 'true') {
+      filter.deletedAt = null;
     }
+
+    if (category) {
+      filter.category = category;
+    }
+    if (merchant) {
+      filter.merchant = merchant;
+    }
+    if (isActive !== undefined) {
+      filter.isActive = isActive === 'true';
+    }
+
+    // Text search on name and description
+    if (search && search.trim()) {
+      filter.$or = [
+        { name: { $regex: search.trim(), $options: 'i' } },
+        { description: { $regex: search.trim(), $options: 'i' } }
+      ];
+    }
+
+    // Build sort object
+    const sort = {};
+    const validSortFields = ['createdAt', 'name', 'price', 'averageRating', 'isActive', 'priorityScore', 'featured'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+
+    // Special handling for featured/priorityScore combo (admin ranking view)
+    if (sortBy === 'priorityScore' || sortBy === 'featured') {
+      // Sort by featured first (boolean), then priorityScore, then createdAt
+      sort.featured = -1; // Featured products first
+      sort.priorityScore = sortOrder === 'asc' ? 1 : -1;
+      sort.createdAt = -1; // Tie-breaker
+    } else {
+      sort[sortField] = sortOrder === 'asc' ? 1 : -1;
+    }
+
+    const products = await Product.find(filter)
+      .populate('merchant', 'businessName businessEmail status')
+      .populate('category', 'name')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    const totalProducts = await Product.countDocuments(filter);
+    const absoluteTotal = await Product.countDocuments({}); // Check if DB is empty
+
+    // DEBUG LOGGING
+    logger.info('DEBUG: getAllProductsAdmin', {
+      filter,
+      totalFound: totalProducts,
+      absoluteTotalInDB: absoluteTotal,
+      paramIsActive: isActive,
+      paramIncludeDeleted: includeDeleted
+    });
+
+    // Enrich products with pricing breakdown
+    const enrichedProducts = enrichProductsWithPricing(products);
+
+    logger.info('Admin retrieved all products', {
+      requestId: req.requestId,
+      userId: getAuth(req).userId,
+      total: totalProducts,
+      page,
+      limit,
+      filters: { category, merchant, isActive, includeDeleted, search },
+    });
+
+    return sendPaginated(res, {
+      data: enrichedProducts,
+      page,
+      limit,
+      total: totalProducts,
+      message: 'All products retrieved successfully',
+    });
+  } catch (error) {
+    logger.error('Error in getAllProductsAdmin', {
+      requestId: req.requestId,
+      error: error.message,
+    });
+    throw error;
+  }
 };
 
 /**
@@ -1261,101 +985,101 @@ export const getAllProductsAdmin = async (req, res) => {
  * Toggles isActive flag without deleting the product
  */
 export const toggleProductActive = async (req, res) => {
-    try {
-        const { userId } = getAuth(req);
-        const { id } = req.params;
-        const { isActive } = req.body;
+  try {
+    const { userId } = getAuth(req);
+    const { id } = req.params;
+    const { isActive } = req.body;
 
-        if (typeof isActive !== 'boolean') {
-            return sendError(res, {
-                message: 'isActive must be a boolean value',
-                statusCode: 400,
-                code: 'VALIDATION_ERROR',
-            });
-        }
-
-        const product = await Product.findOne({
-            _id: id,
-            deletedAt: null, // Only allow toggling non-deleted products
-        })
-            .populate('merchant', 'businessName businessEmail');
-
-        if (!product) {
-            return sendNotFound(res, 'Product');
-        }
-
-        product.isActive = isActive;
-        await product.save();
-
-        logger.info('Product active status toggled by admin', {
-            requestId: req.requestId,
-            userId: userId,
-            productId: product._id,
-            isActive: product.isActive,
-            merchantId: product.merchant?._id,
-        });
-
-        // Populate for response
-        const populatedProduct = await Product.findById(product._id)
-            .populate('merchant', 'businessName businessEmail')
-            .populate('category', 'name');
-
-        return sendSuccess(res, {
-            data: populatedProduct,
-            message: `Product ${isActive ? 'enabled' : 'disabled'} successfully`,
-        });
-    } catch (error) {
-        logger.error('Error toggling product active status', {
-            requestId: req.requestId,
-            productId: req.params.id,
-            error: error.message,
-        });
-        throw error;
+    if (typeof isActive !== 'boolean') {
+      return sendError(res, {
+        message: 'isActive must be a boolean value',
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+      });
     }
+
+    const product = await Product.findOne({
+      _id: id,
+      deletedAt: null, // Only allow toggling non-deleted products
+    })
+      .populate('merchant', 'businessName businessEmail');
+
+    if (!product) {
+      return sendNotFound(res, 'Product');
+    }
+
+    product.isActive = isActive;
+    await product.save();
+
+    logger.info('Product active status toggled by admin', {
+      requestId: req.requestId,
+      userId: userId,
+      productId: product._id,
+      isActive: product.isActive,
+      merchantId: product.merchant?._id,
+    });
+
+    // Populate for response
+    const populatedProduct = await Product.findById(product._id)
+      .populate('merchant', 'businessName businessEmail')
+      .populate('category', 'name');
+
+    return sendSuccess(res, {
+      data: populatedProduct,
+      message: `Product ${isActive ? 'enabled' : 'disabled'} successfully`,
+    });
+  } catch (error) {
+    logger.error('Error toggling product active status', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+    });
+    throw error;
+  }
 };
 
 /**
  * Admin: Restore soft-deleted product
  */
 export const restoreProduct = async (req, res) => {
-    try {
-        const { userId } = getAuth(req);
-        const { id } = req.params;
+  try {
+    const { userId } = getAuth(req);
+    const { id } = req.params;
 
-        const product = await Product.findOne({
-            _id: id,
-            deletedAt: { $ne: null }, // Only find soft-deleted products
-        });
+    const product = await Product.findOne({
+      _id: id,
+      deletedAt: { $ne: null }, // Only find soft-deleted products
+    });
 
-        if (!product) {
-            return sendNotFound(res, 'Deleted product');
-        }
-
-        product.deletedAt = null;
-        await product.save();
-
-        logger.info('Product restored by admin', {
-            requestId: req.requestId,
-            userId: userId,
-            productId: product._id,
-        });
-
-        const populatedProduct = await Product.findById(product._id)
-            .populate('merchant', 'businessName businessEmail')
-            .populate('category', 'name');
-
-        return sendSuccess(res, {
-            data: populatedProduct,
-            message: 'Product restored successfully',
-        });
-    } catch (error) {
-        logger.error('Error restoring product', {
-            requestId: req.requestId,
-            productId: req.params.id,
-            error: error.message,
-        });
-        throw error;
+    if (!product) {
+      return sendNotFound(res, 'Deleted product');
     }
+
+    product.deletedAt = null;
+    await product.save();
+
+    logger.info('Product restored by admin', {
+      requestId: req.requestId,
+      userId: userId,
+      productId: product._id,
+    });
+
+    const populatedProduct = await Product.findById(product._id)
+      .populate('merchant', 'businessName businessEmail')
+      .populate('category', 'name');
+
+    return sendSuccess(res, {
+      data: populatedProduct,
+      message: 'Product restored successfully',
+    });
+  } catch (error) {
+    logger.error('Error restoring product', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+    });
+    throw error;
+  }
 };
 
 /**
@@ -1363,38 +1087,38 @@ export const restoreProduct = async (req, res) => {
  * Only admins can hard delete. Use with caution.
  */
 export const hardDeleteProduct = async (req, res) => {
-    try {
-        const { userId } = getAuth(req);
-        const { id } = req.params;
+  try {
+    const { userId } = getAuth(req);
+    const { id } = req.params;
 
-        const product = await Product.findById(id);
+    const product = await Product.findById(id);
 
-        if (!product) {
-            return sendNotFound(res, 'Product');
-        }
-
-        // Log before deletion for audit trail
-        logger.warn('Product hard deleted by admin', {
-            requestId: req.requestId,
-            userId: userId,
-            productId: product._id,
-            productName: product.name,
-            merchantId: product.merchant,
-        });
-
-        await Product.findByIdAndDelete(id);
-
-        return sendSuccess(res, {
-            message: 'Product permanently deleted',
-        });
-    } catch (error) {
-        logger.error('Error hard deleting product', {
-            requestId: req.requestId,
-            productId: req.params.id,
-            error: error.message,
-        });
-        throw error;
+    if (!product) {
+      return sendNotFound(res, 'Product');
     }
+
+    // Log before deletion for audit trail
+    logger.warn('Product hard deleted by admin', {
+      requestId: req.requestId,
+      userId: userId,
+      productId: product._id,
+      productName: product.name,
+      merchantId: product.merchant,
+    });
+
+    await Product.findByIdAndDelete(id);
+
+    return sendSuccess(res, {
+      message: 'Product permanently deleted',
+    });
+  } catch (error) {
+    logger.error('Error hard deleting product', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+    });
+    throw error;
+  }
 };
 
 /**
@@ -1402,85 +1126,85 @@ export const hardDeleteProduct = async (req, res) => {
  * This endpoint allows admins to control product ranking/ordering
  */
 export const updateProductRanking = async (req, res) => {
-    try {
-        const { userId } = getAuth(req);
-        const { id } = req.params;
-        const { priorityScore, featured } = req.body;
+  try {
+    const { userId } = getAuth(req);
+    const { id } = req.params;
+    const { priorityScore, featured } = req.body;
 
-        // Validate that at least one ranking field is provided
-        if (priorityScore === undefined && featured === undefined) {
-            return sendError(res, {
-                message: 'At least one ranking field (priorityScore or featured) must be provided',
-                statusCode: 400,
-                code: 'VALIDATION_ERROR',
-            });
-        }
-
-        // Validate priorityScore if provided
-        if (priorityScore !== undefined) {
-            const score = parseInt(priorityScore);
-            if (isNaN(score) || score < 0 || score > 100) {
-                return sendError(res, {
-                    message: 'priorityScore must be a number between 0 and 100',
-                    statusCode: 400,
-                    code: 'VALIDATION_ERROR',
-                });
-            }
-        }
-
-        // Validate featured if provided
-        if (featured !== undefined && typeof featured !== 'boolean') {
-            return sendError(res, {
-                message: 'featured must be a boolean value',
-                statusCode: 400,
-                code: 'VALIDATION_ERROR',
-            });
-        }
-
-        const product = await Product.findOne({
-            _id: id,
-            deletedAt: null, // Only allow updating non-deleted products
-        });
-
-        if (!product) {
-            return sendNotFound(res, 'Product');
-        }
-
-        // Update ranking fields
-        if (priorityScore !== undefined) {
-            product.priorityScore = priorityScore;
-        }
-        if (featured !== undefined) {
-            product.featured = featured;
-        }
-
-        await product.save();
-
-        logger.info('Product ranking updated by admin', {
-            requestId: req.requestId,
-            userId: userId,
-            productId: product._id,
-            priorityScore: product.priorityScore,
-            featured: product.featured,
-        });
-
-        // Populate for response
-        const populatedProduct = await Product.findById(product._id)
-            .populate('merchant', 'businessName businessEmail')
-            .populate('category', 'name');
-
-        return sendSuccess(res, {
-            data: populatedProduct,
-            message: 'Product ranking updated successfully',
-        });
-    } catch (error) {
-        logger.error('Error updating product ranking', {
-            requestId: req.requestId,
-            productId: req.params.id,
-            error: error.message,
-        });
-        throw error;
+    // Validate that at least one ranking field is provided
+    if (priorityScore === undefined && featured === undefined) {
+      return sendError(res, {
+        message: 'At least one ranking field (priorityScore or featured) must be provided',
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+      });
     }
+
+    // Validate priorityScore if provided
+    if (priorityScore !== undefined) {
+      const score = parseInt(priorityScore);
+      if (isNaN(score) || score < 0 || score > 100) {
+        return sendError(res, {
+          message: 'priorityScore must be a number between 0 and 100',
+          statusCode: 400,
+          code: 'VALIDATION_ERROR',
+        });
+      }
+    }
+
+    // Validate featured if provided
+    if (featured !== undefined && typeof featured !== 'boolean') {
+      return sendError(res, {
+        message: 'featured must be a boolean value',
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+      });
+    }
+
+    const product = await Product.findOne({
+      _id: id,
+      deletedAt: null, // Only allow updating non-deleted products
+    });
+
+    if (!product) {
+      return sendNotFound(res, 'Product');
+    }
+
+    // Update ranking fields
+    if (priorityScore !== undefined) {
+      product.priorityScore = priorityScore;
+    }
+    if (featured !== undefined) {
+      product.featured = featured;
+    }
+
+    await product.save();
+
+    logger.info('Product ranking updated by admin', {
+      requestId: req.requestId,
+      userId: userId,
+      productId: product._id,
+      priorityScore: product.priorityScore,
+      featured: product.featured,
+    });
+
+    // Populate for response
+    const populatedProduct = await Product.findById(product._id)
+      .populate('merchant', 'businessName businessEmail')
+      .populate('category', 'name');
+
+    return sendSuccess(res, {
+      data: populatedProduct,
+      message: 'Product ranking updated successfully',
+    });
+  } catch (error) {
+    logger.error('Error updating product ranking', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+    });
+    throw error;
+  }
 };
 
 /**
@@ -1505,7 +1229,7 @@ export const updateProductRanking = async (req, res) => {
 export const exploreProducts = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    
+
     // Pagination
     const MAX_LIMIT = 50;
     const DEFAULT_LIMIT = 20;
@@ -1543,7 +1267,7 @@ export const exploreProducts = async (req, res) => {
     if (minPrice || maxPrice) {
       const minPriceVal = minPrice ? parseFloat(minPrice) : null;
       const maxPriceVal = maxPrice ? parseFloat(maxPrice) : null;
-      
+
       filter.$and = filter.$and || [];
       filter.$and.push({
         $or: [
@@ -1592,13 +1316,13 @@ export const exploreProducts = async (req, res) => {
     if (category) {
       try {
         const categoryId = new mongoose.Types.ObjectId(category);
-        
+
         // Find all subcategories (children) of this category
-        const subcategories = await Category.find({ 
+        const subcategories = await Category.find({
           parent: categoryId,
-          isActive: true 
+          isActive: true
         }).select('_id').lean();
-        
+
         // Build array of category IDs: parent + all children
         const categoryIds = [categoryId];
         if (subcategories && subcategories.length > 0) {
@@ -1608,10 +1332,10 @@ export const exploreProducts = async (req, res) => {
             }
           });
         }
-        
+
         // Use $in to match products in parent category OR any subcategory
         filter.category = { $in: categoryIds };
-        
+
         logger.info('Explore category filter with subcategories', {
           categoryId: category,
           subcategoryCount: subcategories.length,
@@ -1740,7 +1464,7 @@ export const exploreProducts = async (req, res) => {
         return null;
       }
     }).filter(id => id !== null);
-    
+
     const viewedProductObjectIds = viewedProductIds.map(id => {
       try {
         return new mongoose.Types.ObjectId(id);
@@ -1748,7 +1472,7 @@ export const exploreProducts = async (req, res) => {
         return null;
       }
     }).filter(id => id !== null);
-    
+
     const clickedProductObjectIds = clickedProductIds.map(id => {
       try {
         return new mongoose.Types.ObjectId(id);
@@ -1776,8 +1500,8 @@ export const exploreProducts = async (req, res) => {
       },
 
       // Filter by verified store
-      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] : 
-          verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
+      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] :
+        verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
           []),
 
       // Calculate ranking and affinity scores
@@ -1794,7 +1518,7 @@ export const exploreProducts = async (req, res) => {
             $divide: [{ $subtract: [now, '$createdAt'] }, 1000 * 60 * 60 * 24],
           },
           stockValue: { $ifNull: ['$stock', 0] },
-          
+
           // User affinity (from views/clicks)
           userAffinityScore: {
             $cond: [
@@ -1976,8 +1700,8 @@ export const exploreProducts = async (req, res) => {
         },
       },
       { $unwind: { path: '$merchant', preserveNullAndEmptyArrays: true } },
-      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] : 
-          verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
+      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] :
+        verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
           []),
       { $count: 'total' },
     ];
@@ -1990,24 +1714,24 @@ export const exploreProducts = async (req, res) => {
     // Apply currency conversion if currencyCode is provided
     const currencyCode = req.currencyCode || req.query.currencyCode || req.query.currency;
     let finalProducts = enrichedProducts;
-    
+
     if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
       try {
         const upperCode = currencyCode.toUpperCase();
-        
+
         // Dynamic import to avoid circular dep issues and ensure models are loaded
         const Currency = (await import('../models/currency.model.js')).default;
         const { getLatestRate } = await import('../services/fx.service.js');
 
         // Fetch rate and config ONCE
         const [currencyConfig, rateInfo] = await Promise.all([
-             Currency.findOne({ code: upperCode }).lean(),
-             getLatestRate(upperCode)
+          Currency.findOne({ code: upperCode }).lean(),
+          getLatestRate(upperCode)
         ]);
-        
+
         const currencyContext = {
-            config: currencyConfig,
-            rate: rateInfo
+          config: currencyConfig,
+          rate: rateInfo
         };
 
         finalProducts = await Promise.all(

@@ -57,14 +57,14 @@ app.use(cors({
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'Accept', 
-    'Origin', 
-    'X-Requested-With', 
-    'x-currency', 
+    'Content-Type',
+    'Authorization',
+    'Accept',
+    'Origin',
+    'X-Requested-With',
+    'x-currency',
     'x-country',
-    'x-token' 
+    'x-token'
   ],
   exposedHeaders: ['Set-Cookie']
 }));
@@ -224,7 +224,7 @@ const PORT = process.env.PORT || 5000;
   try {
     // Connect to database first
     await connect();
-    
+
     // Initialize cron jobs for pricing and visibility score recalculation
     try {
       const { initializeCronJobs } = await import('./services/cron.service.js');
@@ -235,12 +235,12 @@ const PORT = process.env.PORT || 5000;
         note: 'Cron jobs will not run. Install node-cron package if needed.',
       });
     }
-    
+
     // Start server only after successful database connection
     const server = app.listen(PORT, '0.0.0.0', () => {
       const address = server.address();
-      logger.info(`Server started on port ${PORT}`, { 
-        port: PORT, 
+      logger.info(`Server started on port ${PORT}`, {
+        port: PORT,
         env: process.env.NODE_ENV || 'development',
         database: 'connected',
         address: address ? `${address.address}:${address.port}` : 'unknown',
