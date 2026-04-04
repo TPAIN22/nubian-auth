@@ -1282,7 +1282,7 @@ export const exploreProducts = async (req, res) => {
 
     // Base filter
     const filter = {
-      isActive: true,
+      isActive: { $ne: false }, // Include legacy docs where isActive was never stored
       deletedAt: null,
     };
 

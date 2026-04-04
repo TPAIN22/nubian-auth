@@ -30,6 +30,7 @@ import uploadRoutes from './routes/upload.route.js';
 import metaRoutes from './routes/meta.route.js';
 import fxRoutes from './routes/fx.route.js';
 import preferencesRoutes from './routes/preferences.route.js';
+import currencyAdminRoutes from './routes/currency.admin.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { currencyMiddleware } from './middleware/currency.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
@@ -194,6 +195,7 @@ app.use('/api/recommendations', recommendationsRoutes);
 app.use('/api/tracking', trackingRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/admin/currencies', currencyAdminRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {
@@ -234,6 +236,34 @@ const PORT = process.env.PORT || 5000;
         error: error.message,
         note: 'Cron jobs will not run. Install node-cron package if needed.',
       });
+    }
+
+    // Bootstrap FX rates: if no exchange rates in DB, fetch immediately on startup.
+    // This ensures prices work on first deploy without waiting for 4AM cron.
+    try {
+      const ExchangeRate = (await import('./models/exchangeRate.model.js')).default;
+      const latest = await ExchangeRate.getLatest();
+      if (!latest) {
+        logger.info('🌍 No FX rates found in DB — bootstrapping exchange rates now...');
+        const { fetchLatestRates } = await import('./services/fx.service.js');
+        const result = await fetchLatestRates();
+        if (result.success) {
+          logger.info('✅ FX bootstrap complete', {
+            date: result.date,
+            ratesCount: result.ratesCount,
+            missingCurrencies: result.missingCurrencies,
+          });
+        } else {
+          logger.warn('⚠️  FX bootstrap failed (prices will fall back to USD)', {
+            errors: result.errors,
+          });
+        }
+      } else {
+        const ageHours = ((Date.now() - new Date(latest.fetchedAt).getTime()) / 3600000).toFixed(1);
+        logger.info(`✅ FX rates in DB (${ageHours}h old, date: ${latest.date}) — skipping bootstrap`);
+      }
+    } catch (fxError) {
+      logger.warn('FX bootstrap check failed', { error: fxError.message });
     }
 
     // Start server only after successful database connection

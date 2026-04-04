@@ -27,23 +27,16 @@ export const getHomeData = async (req, res) => {
 
     // Build base filter for available products
     const baseProductFilter = {
-      isActive: true,
+      // Use $ne: false to include legacy docs where isActive was never stored
+      isActive: { $ne: false },
       deletedAt: null,
-      // Check if product has stock (either main stock or variant stock)
+      // Only check variant-level stock (top-level `stock` is a virtual, not a stored field)
+      'variants.stock': { $gt: 0 },
+      // Only show products from approved merchants or admin-created products (no merchant)
       $or: [
-        { stock: { $gt: 0 } },
-        { 'variants.stock': { $gt: 0 } },
-        { variants: { $size: 0 } } // Products without variants need main stock
+        { merchant: { $in: approvedMerchantIds } },
+        { merchant: null },
       ],
-      // Only show products from approved merchants or products without merchant
-      $and: [
-        {
-          $or: [
-            { merchant: { $in: approvedMerchantIds } },
-            { merchant: null }
-          ]
-        }
-      ]
     };
 
     // Parallel fetch all sections

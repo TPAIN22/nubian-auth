@@ -49,7 +49,7 @@ const currencies = [
     roundingStrategy: "NEAREST_10",
     sortOrder: 3,
     allowManualRate: true, // Allow manual rate since Frankfurter may not support SDG
-    manualRate: 600, // Approximate rate - should be updated manually
+    manualRate: 1300, // Approximate rate - should be updated manually
     manualRateUpdatedAt: new Date(),
   },
   {
@@ -118,7 +118,7 @@ const isMainModule = process.argv[1] && (__filename === process.argv[1] || __fil
 
 if (isMainModule) {
   const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
-  
+
   if (!MONGO_URI) {
     console.error("MONGODB_URI environment variable is required");
     process.exit(1);
