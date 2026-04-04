@@ -14,9 +14,7 @@ import logger from '../lib/logger.js';
 function getBaseFilter() {
   return {
     isActive: true,
-    deletedAt: null,
-    // Ensure merchant is active
-    'merchant.status': 'APPROVED',
+    deletedAt: null
   };
 }
 
@@ -132,7 +130,10 @@ async function getForYouRecommendations(userId, baseFilter, limit = 20) {
       },
       {
         $match: {
-          'merchant.status': 'APPROVED',
+          $or: [
+            { merchant: null },
+            { 'merchant.status': 'APPROVED' }
+          ]
         },
       },
       
@@ -206,7 +207,10 @@ async function getTrendingProducts(baseFilter, limit = 20) {
       },
       {
         $match: {
-          'merchant.status': 'APPROVED',
+          $or: [
+            { merchant: null },
+            { 'merchant.status': 'APPROVED' }
+          ]
         },
       },
       
@@ -272,7 +276,10 @@ async function getFlashDeals(baseFilter, limit = 20) {
       },
       {
         $match: {
-          'merchant.status': 'APPROVED',
+          $or: [
+            { merchant: null },
+            { 'merchant.status': 'APPROVED' }
+          ]
         },
       },
       
@@ -357,7 +364,10 @@ async function getNewArrivals(baseFilter, limit = 20) {
       },
       {
         $match: {
-          'merchant.status': 'APPROVED',
+          $or: [
+            { merchant: null },
+            { 'merchant.status': 'APPROVED' }
+          ]
         },
       },
       

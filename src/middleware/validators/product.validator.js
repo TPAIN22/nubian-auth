@@ -38,20 +38,15 @@ const validateAttributes = body('attributes')
   .isArray()
   .withMessage('attributes must be an array')
   .custom((attributes) => {
-    if (!Array.isArray(attributes)) return true; // Handled by isArray
+    if (!Array.isArray(attributes)) return true;
     
     for (const attr of attributes) {
       if (!attr.name || typeof attr.name !== 'string' || attr.name.trim().length === 0) {
         throw new Error('Each attribute must have a non-empty name');
       }
-      if (!attr.displayName || typeof attr.displayName !== 'string' || attr.displayName.trim().length === 0) {
-        throw new Error('Each attribute must have a non-empty displayName');
-      }
-      if (!['select', 'text', 'number'].includes(attr.type)) {
+      // Relaxed requirements for wizard compatibility
+      if (attr.type && !['select', 'text', 'number'].includes(attr.type)) {
         throw new Error('Attribute type must be one of: select, text, number');
-      }
-      if (attr.type === 'select' && (!Array.isArray(attr.options) || attr.options.length === 0)) {
-        throw new Error('Select-type attributes must have at least one option');
       }
     }
     return true;
@@ -63,7 +58,7 @@ const validateVariants = body('variants')
   .isArray()
   .withMessage('variants must be an array')
   .custom((variants, { req }) => {
-    if (!Array.isArray(variants)) return true; // Handled by isArray
+    if (!Array.isArray(variants)) return true;
     
     if (variants.length === 0) {
       throw new Error('If variants array is provided, it must contain at least one variant');
@@ -71,95 +66,47 @@ const validateVariants = body('variants')
     
     const skus = new Set();
     const attributes = req.body.attributes || [];
-    const attributeNames = new Set(attributes.map(a => a.name));
     
     for (const variant of variants) {
-      // Validate SKU
       if (!variant.sku || typeof variant.sku !== 'string' || variant.sku.trim().length === 0) {
         throw new Error('Each variant must have a non-empty SKU');
       }
       
-      // Check SKU uniqueness
       if (skus.has(variant.sku.trim().toUpperCase())) {
         throw new Error(`Duplicate SKU found: ${variant.sku}`);
       }
       skus.add(variant.sku.trim().toUpperCase());
       
-      // Validate attributes
       if (!variant.attributes || typeof variant.attributes !== 'object') {
         throw new Error('Each variant must have an attributes object');
       }
       
-      // Validate that variant attributes match product attribute definitions
-      if (attributes.length > 0) {
-        for (const attr of attributes) {
-          if (attr.required && !variant.attributes[attr.name]) {
-            throw new Error(`Variant missing required attribute: ${attr.displayName || attr.name}`);
-          }
-          if (variant.attributes[attr.name] && attr.type === 'select') {
-            if (!attr.options || !attr.options.includes(variant.attributes[attr.name])) {
-              throw new Error(`Variant attribute "${attr.name}" value "${variant.attributes[attr.name]}" is not in allowed options`);
-            }
-          }
-        }
-        
-        // Check for extra attributes not defined in product
-        for (const key in variant.attributes) {
-          if (!attributeNames.has(key)) {
-            throw new Error(`Variant has attribute "${key}" that is not defined in product attributes`);
-          }
-        }
+      // Validate merchantPrice (formerly price)
+      if (typeof variant.merchantPrice !== 'number' || variant.merchantPrice < 0.01) {
+        throw new Error('Each variant must have a merchantPrice greater than 0');
       }
       
-      // Validate price
-      if (typeof variant.price !== 'number' || variant.price < 0.01) {
-        throw new Error('Each variant must have a price greater than 0');
-      }
-      
-      // Validate stock
       if (typeof variant.stock !== 'number' || variant.stock < 0 || !Number.isInteger(variant.stock)) {
         throw new Error('Each variant must have a non-negative integer stock value');
-      }
-      
-      // Validate discountPrice if provided
-      if (variant.discountPrice !== undefined) {
-        if (typeof variant.discountPrice !== 'number' || variant.discountPrice < 0) {
-          throw new Error('Variant discountPrice must be a non-negative number');
-        }
-      }
-      
-      // Validate variant images if provided
-      if (variant.images !== undefined) {
-        if (!Array.isArray(variant.images)) {
-          throw new Error('Variant images must be an array');
-        }
-        for (const img of variant.images) {
-          if (typeof img !== 'string' || !img.startsWith('http://') && !img.startsWith('https://')) {
-            throw new Error('Each variant image must be a valid URL');
-          }
-        }
       }
     }
     
     return true;
   });
 
-// Custom validator to ensure price/stock are provided when no variants
-const validatePriceStockForSimpleProduct = body()
+// Custom validator to ensure pricing is provided
+const validatePricingForSimpleProduct = body()
   .custom((value, { req }) => {
     const hasVariants = req.body.variants && Array.isArray(req.body.variants) && req.body.variants.length > 0;
     
-    // If product has variants, price and stock are optional (calculated from variants)
-    if (hasVariants) {
-      return true;
-    }
+    if (hasVariants) return true;
     
-    // If product has no variants, price and stock are required
-    if (req.body.price === undefined || req.body.price === null) {
-      throw new Error('Price is required for products without variants');
+    // Fallback check for old simple product format
+    if (req.body.merchantPrice === undefined && req.body.price === undefined) {
+      throw new Error('Price (merchantPrice) is required');
     }
-    if (req.body.stock === undefined || req.body.stock === null) {
-      throw new Error('Stock is required for products without variants');
+    if (req.body.stock === undefined) {
+      throw new Error('Stock is required');
     }
     
     return true;
@@ -209,7 +156,7 @@ export const validateProductCreate = [
   validateVariants,
   
   // Ensure price/stock are provided for simple products
-  validatePriceStockForSimpleProduct,
+  validatePricingForSimpleProduct,
   
   body('category')
     .notEmpty()

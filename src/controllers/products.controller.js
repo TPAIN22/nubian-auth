@@ -194,7 +194,9 @@ export const getProducts = async (req, res) => {
 
     // Build filter - values are already validated as MongoDB ObjectIds by middleware
     const filter = {
-      isActive: true, // Only return active products by default
+      // Use $ne: false to also match legacy products where isActive was never written
+      // (old schema did not declare isActive, so strict mode prevented saves via document.save())
+      isActive: { $ne: false },
       deletedAt: null, // Exclude soft-deleted products
     };
 
@@ -287,8 +289,22 @@ export const getProducts = async (req, res) => {
             ]
           },
 
-          // Stock boost (products with good stock)
-          stockValue: { $ifNull: ['$stock', 0] },
+          // Stock boost: sum stock from all active variants
+          stockValue: {
+            $sum: {
+              $map: {
+                input: {
+                  $filter: {
+                    input: { $ifNull: ['$variants', []] },
+                    as: 'v',
+                    cond: { $ne: ['$$v.isActive', false] }
+                  }
+                },
+                as: 'av',
+                in: { $ifNull: ['$$av.stock', 0] }
+              }
+            }
+          },
         }
       },
 
@@ -595,8 +611,14 @@ const validateVariants = (variants) => {
     if (skus.has(variant.sku)) throw { message: `Duplicate SKU found: ${variant.sku}`, statusCode: 400, code: 'VALIDATION_ERROR' };
     skus.add(variant.sku);
 
-    if (!variant.attributes || !variant.attributes.size || !variant.attributes.color) {
-      throw { message: 'Variant attributes must include both size and color', statusCode: 400, code: 'VALIDATION_ERROR' };
+    // Validate attributes: must be a non-empty object (any attributes allowed, not just size/color)
+    if (
+      !variant.attributes ||
+      typeof variant.attributes !== 'object' ||
+      Array.isArray(variant.attributes) ||
+      Object.keys(variant.attributes).length === 0
+    ) {
+      throw { message: 'Each variant must have at least one attribute (e.g. size, color)', statusCode: 400, code: 'VALIDATION_ERROR' };
     }
 
     if (variant.merchantPrice === undefined || variant.merchantPrice <= 0) {
@@ -998,25 +1020,23 @@ export const toggleProductActive = async (req, res) => {
       });
     }
 
-    const product = await Product.findOne({
-      _id: id,
-      deletedAt: null, // Only allow toggling non-deleted products
-    })
-      .populate('merchant', 'businessName businessEmail');
-
+    const product = await Product.findOne({ _id: id, deletedAt: null });
     if (!product) {
       return sendNotFound(res, 'Product');
     }
 
-    product.isActive = isActive;
-    await product.save();
+    // Use updateOne to avoid triggering the pre-save pricing middleware on variants
+    await Product.updateOne(
+      { _id: id },
+      { $set: { isActive } },
+      { runValidators: false }
+    );
 
     logger.info('Product active status toggled by admin', {
       requestId: req.requestId,
-      userId: userId,
+      userId,
       productId: product._id,
-      isActive: product.isActive,
-      merchantId: product.merchant?._id,
+      isActive,
     });
 
     // Populate for response
@@ -1055,12 +1075,16 @@ export const restoreProduct = async (req, res) => {
       return sendNotFound(res, 'Deleted product');
     }
 
-    product.deletedAt = null;
-    await product.save();
+    // Use updateOne to avoid triggering pricing middleware on variants
+    await Product.updateOne(
+      { _id: id },
+      { $set: { deletedAt: null, isActive: true } },
+      { runValidators: false }
+    );
 
     logger.info('Product restored by admin', {
       requestId: req.requestId,
-      userId: userId,
+      userId,
       productId: product._id,
     });
 
