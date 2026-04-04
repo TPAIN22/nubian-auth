@@ -10,10 +10,14 @@ const variantSchema = new mongoose.Schema(
 
     merchantPrice: { type: Number, required: true, min: 1 },
 
-    nubianMarkup: { type: Number, default: 10, min: 0 },
+    // Nubian's fixed margin on top of merchant price (admin-set, default 30%)
+    nubianMarkup: { type: Number, default: 30, min: 0, max: 200 },
+    // System-computed demand & scarcity adjustment (-20% to +50%)
     dynamicMarkup: { type: Number, default: 0, min: -20, max: 50 },
+    // One-off absolute discount the merchant provides (₩ amount, not %)
     merchantDiscount: { type: Number, default: 0, min: 0 },
 
+    // Computed and stored by pre-save + dynamic pricing cron
     finalPrice: { type: Number, default: 0, min: 0 },
 
     stock: { type: Number, required: true, min: 0 },
@@ -37,6 +41,7 @@ const productSchema = new mongoose.Schema(
       },
     },
 
+    // Minimum variant finalPrice — kept in sync by cron and pre-save
     finalPrice: { type: Number, default: 0, min: 0 },
 
     appliedOfferId: {
@@ -55,11 +60,15 @@ const productSchema = new mongoose.Schema(
     // === Visibility & Status ===
     isActive: { type: Boolean, default: true, index: true },
 
+    // === Dynamic Pricing Toggle ===
+    // When false, dynamicMarkup is frozen at 0 (admin locks the price)
+    dynamicPricingEnabled: { type: Boolean, default: true },
+
     // === Admin Ranking Fields (top-level for easy querying/sorting) ===
     priorityScore: { type: Number, default: 0, min: 0, max: 100, index: true },
     featured: { type: Boolean, default: false, index: true },
 
-    // === Internal ranking metrics (computed by system) ===
+    // === Internal ranking metrics (computed by productScoring cron) ===
     ranking: {
       visibilityScore: { type: Number, default: 0, min: 0 },
       conversionRate: { type: Number, default: 0, min: 0, max: 100 },
@@ -83,6 +92,16 @@ const productSchema = new mongoose.Schema(
     merchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', default: null },
 
     deletedAt: { type: Date, default: null, index: true },
+
+    // === Tracking Signals (updated by cron every hour) ===
+    // Used by dynamic pricing & scoring to compute adjustments
+    trackingFields: {
+      views24h:      { type: Number, default: 0, min: 0 },
+      cartCount24h:  { type: Number, default: 0, min: 0 },
+      sales24h:      { type: Number, default: 0, min: 0 },
+      favoritesCount: { type: Number, default: 0, min: 0 },
+      scoreCalculatedAt: { type: Date, default: null },
+    },
   },
   {
     timestamps: true,
@@ -114,6 +133,8 @@ productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });
 
 // ===== Pre-save Middleware: Smart Pricing Calculation =====
+// Recomputes variant.finalPrice from merchantPrice + nubianMarkup + dynamicMarkup - merchantDiscount.
+// If dynamicPricingEnabled is false, dynamicMarkup contribution is forced to 0.
 productSchema.pre('save', function (next) {
   if (!this.variants || this.variants.length === 0) return next();
 
@@ -121,18 +142,23 @@ productSchema.pre('save', function (next) {
 
   this.variants.forEach((variant) => {
     const base = variant.merchantPrice || 0;
-    const markupAmt = base * ((variant.nubianMarkup ?? 10) / 100);
-    const dynamicAmt = base * ((variant.dynamicMarkup ?? 0) / 100);
+    const markupAmt = base * ((variant.nubianMarkup ?? 30) / 100);
+
+    // Respect per-product dynamic pricing toggle
+    const effectiveDynamic = this.dynamicPricingEnabled ? (variant.dynamicMarkup ?? 0) : 0;
+    const dynamicAmt = base * (effectiveDynamic / 100);
+
     variant.sku = variant.sku.trim().toUpperCase();
     const merchDiscount = variant.merchantDiscount || 0;
 
-    let final = base + (markupAmt + dynamicAmt) - merchDiscount;
+    let final = base + markupAmt + dynamicAmt - merchDiscount;
 
+    // Never sell below cost price even with merchant discount
     if (final < base && merchDiscount === 0) {
       final = base;
     }
 
-    variant.finalPrice = Math.max(1, final);
+    variant.finalPrice = Math.max(1, Math.round(final * 100) / 100);
 
     if (variant.isActive && variant.finalPrice > 0 && variant.finalPrice < minFinal) {
       minFinal = variant.finalPrice;

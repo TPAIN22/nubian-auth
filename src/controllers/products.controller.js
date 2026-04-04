@@ -78,7 +78,7 @@ export function enrichProductWithPricing(product) {
     const rootFinal = bestVariant ? num(bestVariant.finalPrice, 0) : rootPrices.finalPrice;
     const rootMerchant = bestVariant ? num(bestVariant.merchantPrice, 0) : rootPrices.merchantPrice;
     // Use the markup of the representative variant, or fallback to product default
-    const rootMarkup = bestVariant ? num(bestVariant.nubianMarkup ?? p.nubianMarkup ?? 10) : num(p.nubianMarkup ?? 10);
+    const rootMarkup = bestVariant ? num(bestVariant.nubianMarkup ?? p.nubianMarkup ?? 30) : num(p.nubianMarkup ?? 30);
 
     // Calculate discount for display using CONSISTENT values from the same variant
     // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount
@@ -128,7 +128,7 @@ export function enrichProductWithPricing(product) {
   const rootPrices = normalizePriceBlock(p);
 
   // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
-  const markup = num(p.nubianMarkup ?? 10);
+  const markup = num(p.nubianMarkup ?? 30);
   const initialOriginalPrice = rootPrices.merchantPrice > 0 ? (rootPrices.merchantPrice * (1 + markup / 100)) : 0;
 
   // DEFINITIVE DISPLAY LOGIC (Simple Product):
@@ -1185,34 +1185,23 @@ export const updateProductRanking = async (req, res) => {
       });
     }
 
-    const product = await Product.findOne({
-      _id: id,
-      deletedAt: null, // Only allow updating non-deleted products
-    });
+    const product = await Product.findOne({ _id: id, deletedAt: null });
+    if (!product) return sendNotFound(res, 'Product');
 
-    if (!product) {
-      return sendNotFound(res, 'Product');
-    }
+    // Build update — use updateOne to avoid triggering pre-save pricing middleware
+    const update = {};
+    if (priorityScore !== undefined) update.priorityScore = parseInt(priorityScore);
+    if (featured !== undefined) update.featured = featured;
 
-    // Update ranking fields
-    if (priorityScore !== undefined) {
-      product.priorityScore = priorityScore;
-    }
-    if (featured !== undefined) {
-      product.featured = featured;
-    }
-
-    await product.save();
+    await Product.updateOne({ _id: id }, { $set: update }, { runValidators: false });
 
     logger.info('Product ranking updated by admin', {
       requestId: req.requestId,
-      userId: userId,
+      userId,
       productId: product._id,
-      priorityScore: product.priorityScore,
-      featured: product.featured,
+      update,
     });
 
-    // Populate for response
     const populatedProduct = await Product.findById(product._id)
       .populate('merchant', 'businessName businessEmail')
       .populate('category', 'name');
@@ -1223,6 +1212,108 @@ export const updateProductRanking = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error updating product ranking', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Admin: Toggle dynamic pricing for a product
+ * When disabled, dynamicMarkup is frozen at 0 — price = merchantPrice × (1 + nubianMarkup/100)
+ * PATCH /api/products/:id/dynamic-pricing
+ * Body: { enabled: boolean, nubianMarkup?: number }
+ */
+export const toggleDynamicPricing = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    const { id } = req.params;
+    const { enabled, nubianMarkup } = req.body;
+
+    if (typeof enabled !== 'boolean') {
+      return sendError(res, {
+        message: 'enabled must be a boolean',
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+      });
+    }
+
+    if (nubianMarkup !== undefined) {
+      const nm = Number(nubianMarkup);
+      if (!Number.isFinite(nm) || nm < 0 || nm > 200) {
+        return sendError(res, {
+          message: 'nubianMarkup must be a number between 0 and 200',
+          statusCode: 400,
+          code: 'VALIDATION_ERROR',
+        });
+      }
+    }
+
+    const product = await Product.findOne({ _id: id, deletedAt: null });
+    if (!product) return sendNotFound(res, 'Product');
+
+    // Build top-level update
+    const update = { dynamicPricingEnabled: enabled };
+
+    // If disabling, freeze dynamicMarkup at 0 on all variants immediately
+    // If enabling, the cron will recalculate on next run
+    const variantUpdates = {};
+    if (!enabled) {
+      product.variants.forEach((v, idx) => {
+        variantUpdates[`variants.${idx}.dynamicMarkup`] = 0;
+      });
+    }
+
+    // If admin also overrides nubianMarkup, apply to all variants
+    if (nubianMarkup !== undefined) {
+      product.variants.forEach((_, idx) => {
+        variantUpdates[`variants.${idx}.nubianMarkup`] = Number(nubianMarkup);
+      });
+    }
+
+    // Compute updated finalPrices immediately (so UI is instant, no wait for cron)
+    const effectiveDynamic = enabled ? null : 0; // null means "keep existing", 0 means force clear
+    if (!enabled || nubianMarkup !== undefined) {
+      product.variants.forEach((v, idx) => {
+        const nm = nubianMarkup !== undefined ? Number(nubianMarkup) : (v.nubianMarkup ?? 30);
+        const dm = enabled ? (v.dynamicMarkup ?? 0) : 0;
+        const base = v.merchantPrice || 0;
+        const newFinal = Math.max(1, Math.round((base + base * nm / 100 + base * dm / 100 - (v.merchantDiscount || 0)) * 100) / 100);
+        variantUpdates[`variants.${idx}.finalPrice`] = newFinal;
+      });
+      // Also recalc root finalPrice
+      const finals = product.variants.map((v, idx) =>
+        variantUpdates[`variants.${idx}.finalPrice`] || v.finalPrice || 0
+      ).filter(n => n > 0);
+      if (finals.length) update.finalPrice = Math.min(...finals);
+    }
+
+    await Product.updateOne(
+      { _id: id },
+      { $set: { ...update, ...variantUpdates } },
+      { runValidators: false }
+    );
+
+    logger.info('Product dynamic pricing toggled by admin', {
+      requestId: req.requestId,
+      userId,
+      productId: id,
+      enabled,
+      nubianMarkup,
+    });
+
+    const populatedProduct = await Product.findById(id)
+      .populate('merchant', 'businessName businessEmail')
+      .populate('category', 'name');
+
+    return sendSuccess(res, {
+      data: populatedProduct,
+      message: `Dynamic pricing ${enabled ? 'enabled' : 'disabled'} for product`,
+    });
+  } catch (error) {
+    logger.error('Error toggling dynamic pricing', {
       requestId: req.requestId,
       productId: req.params.id,
       error: error.message,

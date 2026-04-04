@@ -1,7 +1,7 @@
 // services/cron.service.js
 import cron from "node-cron";
 import logger from "../lib/logger.js";
-import { recalculateAllProductPricing } from "./pricing.service.js";
+import { runDynamicPricingCron } from "../crons/dynamicPricing.cron.js";
 import { calculateProductScores } from "./productScoring.service.js";
 import { fetchLatestRates } from "./fx.service.js";
 import Coupon from "../models/coupon.model.js";
@@ -47,24 +47,24 @@ export function initializeCronJobs() {
       }
       hourlyLock = true;
 
-      logger.info("🕐 Hourly cron job started: Recalculating pricing and visibility scores");
+      logger.info("🕐 Hourly cron job started: Dynamic pricing + visibility scoring");
       const startTime = Date.now();
 
       try {
         const [pricingResult, scoringResult] = await Promise.allSettled([
-          recalculateAllProductPricing(),
+          runDynamicPricingCron(),
           calculateProductScores(),
         ]);
 
         const durationMs = Date.now() - startTime;
 
         if (pricingResult.status === "fulfilled") {
-          logger.info("✅ Pricing recalculation completed", {
+          logger.info("✅ Dynamic pricing cron completed", {
             ...(pricingResult.value || {}),
             durationMs,
           });
         } else {
-          logger.error("❌ Pricing recalculation failed", {
+          logger.error("❌ Dynamic pricing cron failed", {
             error: pricingResult.reason?.message || String(pricingResult.reason) || "Unknown error",
           });
         }
