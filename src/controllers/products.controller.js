@@ -228,16 +228,25 @@ export const getProducts = async (req, res) => {
           categoryId: category,
           subcategoryCount: subcategories.length,
           totalCategoryIds: categoryIds.length,
+          requestId: req.requestId,
         });
       } catch (e) {
-        // Invalid ObjectId, fallback to direct match
-        logger.warn('Invalid category ID, using direct match', { category, error: e.message });
-        filter.category = category;
+        // Invalid ObjectId, don't fallback to a string match against ObjectId field
+        // as it will always fail in aggregation anyway. Instead, log and filter by null
+        // to return zero results (safest) OR just skip this filter if that's preferred.
+        // Given 'category' was provided but is invalid, returning zero results is more correct than returning everything.
+        logger.warn('Invalid category ID provided', { category, error: e.message, requestId: req.requestId });
+        filter.category = new mongoose.Types.ObjectId(); // Non-matching random ObjectId
       }
     }
 
     if (merchant) {
-      filter.merchant = merchant; // Safe: validated as MongoDB ObjectId
+      try {
+        filter.merchant = new mongoose.Types.ObjectId(merchant);
+      } catch (e) {
+        logger.warn('Invalid merchant ID provided', { merchant, error: e.message, requestId: req.requestId });
+        filter.merchant = new mongoose.Types.ObjectId(); // Non-matching random ObjectId
+      }
     }
 
     // Calculate ranking using aggregation pipeline for efficient sorting
