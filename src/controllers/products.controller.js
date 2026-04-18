@@ -167,6 +167,29 @@ export function enrichProductsWithPricing(products) {
   return products.map(enrichProductWithPricing);
 }
 
+/**
+ * Recursively find all descendant category IDs for a given parent
+ */
+async function getCategoryDescendants(parentId) {
+  try {
+    const children = await Category.find({ parent: parentId, isActive: true }).select('_id').lean();
+    let ids = children.map(c => c._id);
+    
+    if (ids.length > 0) {
+      const grandchildPromises = ids.map(id => getCategoryDescendants(id));
+      const grandchildResults = await Promise.all(grandchildPromises);
+      grandchildResults.forEach(gIds => {
+        ids = [...ids, ...gIds];
+      });
+    }
+    
+    return ids;
+  } catch (error) {
+    logger.error('Error fetching category descendants', { parentId, error: error.message });
+    return [];
+  }
+}
+
 export const getProducts = async (req, res) => {
   try {
     // Pagination validation with max limits
@@ -200,41 +223,26 @@ export const getProducts = async (req, res) => {
       deletedAt: null, // Exclude soft-deleted products
     };
 
-    // Handle hierarchical categories: if category has children, include all subcategories
+    // Handle hierarchical categories: if category has children, include all subcategories recursively
     if (category) {
       try {
         const categoryId = new mongoose.Types.ObjectId(category);
 
-        // Find all subcategories (children) of this category
-        const subcategories = await Category.find({
-          parent: categoryId,
-          isActive: true
-        }).select('_id').lean();
+        // Fetch ALL levels of descendants recursively
+        const descendantIds = await getCategoryDescendants(categoryId);
 
-        // Build array of category IDs: parent + all children
-        const categoryIds = [categoryId];
-        if (subcategories && subcategories.length > 0) {
-          subcategories.forEach(sub => {
-            if (sub._id) {
-              categoryIds.push(sub._id);
-            }
-          });
-        }
+        // Build array of category IDs: parent + all descendants
+        const categoryIds = [categoryId, ...descendantIds];
 
-        // Use $in to match products in parent category OR any subcategory
+        // Use $in to match products in parent category OR any child/grandchild category
         filter.category = { $in: categoryIds };
 
-        logger.info('Category filter with subcategories', {
+        logger.info('Category filter with recursive descendants', {
           categoryId: category,
-          subcategoryCount: subcategories.length,
-          totalCategoryIds: categoryIds.length,
+          totalCategoryCount: categoryIds.length,
           requestId: req.requestId,
         });
       } catch (e) {
-        // Invalid ObjectId, don't fallback to a string match against ObjectId field
-        // as it will always fail in aggregation anyway. Instead, log and filter by null
-        // to return zero results (safest) OR just skip this filter if that's preferred.
-        // Given 'category' was provided but is invalid, returning zero results is more correct than returning everything.
         logger.warn('Invalid category ID provided', { category, error: e.message, requestId: req.requestId });
         filter.category = new mongoose.Types.ObjectId(); // Non-matching random ObjectId
       }

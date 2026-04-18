@@ -196,6 +196,11 @@ export async function convertAndFormatPrice(amountUSD, currencyCode, options = {
   const upperCode = currencyCode?.toUpperCase() || "USD";
   const { preloadedConfig, preloadedRate } = options;
 
+  // Use SYNC path if possible to avoid micro-task overhead
+  if (preloadedConfig && (preloadedRate || upperCode === "USD")) {
+    return convertAndFormatPriceSync(amountUSD, currencyCode, preloadedRate, preloadedConfig);
+  }
+
   // Get currency config (use preloaded or fetch)
   let currencyConfig = preloadedConfig;
   if (!currencyConfig) {
@@ -213,16 +218,31 @@ export async function convertAndFormatPrice(amountUSD, currencyCode, options = {
   // Get Rate (use preloaded or fetch)
   let rateInfo = preloadedRate;
   if (!rateInfo) {
-    // If we're here, we're doing the "slow" individual fetch
     if (upperCode === "USD") {
       rateInfo = { rate: 1, date: new Date().toISOString().split("T")[0], rateUnavailable: false, provider: "system" };
     } else {
-        // We reuse the existing logic but we should optimize this call too if possible in future
-        // For now, relied on the caller passing preloadedRate
-        const fromFx = await getLatestRate(upperCode); 
-        rateInfo = fromFx;
+      rateInfo = await getLatestRate(upperCode); 
     }
   }
+
+  return convertAndFormatPriceSync(amountUSD, currencyCode, rateInfo, currencyConfig);
+}
+
+/**
+ * Synchronous version of convertAndFormatPrice for hot loops
+ */
+export function convertAndFormatPriceSync(amountUSD, currencyCode, rateInfo, currencyConfig) {
+  const upperCode = currencyCode?.toUpperCase() || "USD";
+  
+  // Use system default if no config provided (for USD)
+  const config = currencyConfig || {
+    code: "USD",
+    symbol: "$",
+    decimals: 2,
+    roundingStrategy: "NONE",
+    symbolPosition: "before",
+    marketMarkupAdjustment: 0,
+  };
 
   // Calculate Amount
   let amountConverted = amountUSD;
@@ -230,42 +250,42 @@ export async function convertAndFormatPrice(amountUSD, currencyCode, options = {
   let rateUnavailable = false; 
 
   if (upperCode !== "USD") {
-     if (rateInfo.rateUnavailable || rateInfo.rate === null) {
-        rateUnavailable = true;
-     } else {
-        rate = rateInfo.rate;
-        amountConverted = amountUSD * rate;
-     }
+    if (!rateInfo || rateInfo.rateUnavailable || rateInfo.rate === null) {
+      rateUnavailable = true;
+    } else {
+      rate = rateInfo.rate;
+      amountConverted = amountUSD * rate;
+    }
   }
 
   // Apply psychological pricing
   let finalAmount = amountConverted;
   if (!rateUnavailable) {
-    finalAmount = applyPsychologicalPricing(finalAmount, currencyConfig);
+    finalAmount = applyPsychologicalPricing(finalAmount, config);
     
-    const marketAdjustment = currencyConfig.marketMarkupAdjustment || 0;
+    const marketAdjustment = config.marketMarkupAdjustment || 0;
     if (marketAdjustment !== 0) {
       const adjustmentAmount = (finalAmount * marketAdjustment) / 100;
       finalAmount = finalAmount + adjustmentAmount;
-      finalAmount = applyPsychologicalPricing(finalAmount, currencyConfig);
+      finalAmount = applyPsychologicalPricing(finalAmount, config);
     }
   }
 
   // Format
-  const priceDisplay = formatPrice(finalAmount, currencyConfig);
+  const priceDisplay = formatPrice(finalAmount, config);
 
   return {
     priceUSD: amountUSD,
     priceConverted: finalAmount,
     priceDisplay,
     currencyCode: upperCode,
-    symbol: currencyConfig.symbol,
+    symbol: config.symbol,
     rate: rate,
-    rateDate: rateInfo.date,
-    rateProvider: rateInfo.provider,
+    rateDate: rateInfo?.date,
+    rateProvider: rateInfo?.provider,
     rateUnavailable: rateUnavailable,
-    roundingStrategy: currencyConfig.roundingStrategy,
-    marketMarkupAdjustment: currencyConfig.marketMarkupAdjustment || 0,
+    roundingStrategy: config.roundingStrategy,
+    marketMarkupAdjustment: config.marketMarkupAdjustment || 0,
   };
 }
 
@@ -277,141 +297,109 @@ export async function convertAndFormatPrice(amountUSD, currencyCode, options = {
  * @returns {Promise<Object>} - Product with converted prices
  */
 export async function convertProductPrices(product, currencyCode, context = {}) {
+  const upperCode = currencyCode?.toUpperCase() || "USD";
+  if (!product) return product;
+
+  // Optimization: If it's USD, we still want to add display fields but we can skip many steps
+  // If preloaded context is missing, we must fetch (slow path)
+  let config = context.config;
+  let rate = context.rate;
+  
+  if (!config && upperCode !== "USD") {
+    config = await Currency.findOne({ code: upperCode }).lean();
+  }
+  if (!rate && upperCode !== "USD") {
+    rate = await getLatestRate(upperCode);
+  }
+
+  const convert = (val) => convertAndFormatPriceSync(val, upperCode, rate, config);
+
   const result = { ...product };
   
-  // If context is provided, use it. Otherwise, defaults will cause individual fetches (backward compat).
-  const options = {
-      preloadedConfig: context.config,
-      preloadedRate: context.rate
-  };
-
   // 1. Root-level standard fields
   if (product.finalPrice !== undefined) {
-    const converted = await convertAndFormatPrice(product.finalPrice, currencyCode, options);
-    result.finalPrice = converted.priceConverted;
-    result.priceConverted = converted.priceConverted; 
-    result.priceDisplay = converted.priceDisplay;
-    result.currencyCode = converted.currencyCode;
-    result.rate = converted.rate;
-    result.rateDate = converted.rateDate;
-    result.rateUnavailable = converted.rateUnavailable;
+    const c = convert(product.finalPrice);
+    result.finalPrice = c.priceConverted;
+    result.priceConverted = c.priceConverted; 
+    result.priceDisplay = c.priceDisplay;
+    result.currencyCode = c.currencyCode;
+    result.rate = c.rate;
+    result.rateDate = c.rateDate;
+    result.rateUnavailable = c.rateUnavailable;
   }
 
   if (product.merchantPrice !== undefined) {
-    const converted = await convertAndFormatPrice(product.merchantPrice, currencyCode, options);
-    result.merchantPrice = converted.priceConverted;
-    
-    // Only default originalPrice to merchantPrice if explicit originalPrice is NOT provided
+    const c = convert(product.merchantPrice);
+    result.merchantPrice = c.priceConverted;
     if (product.originalPrice === undefined) {
-        result.originalPrice = converted.priceConverted;
+        result.originalPrice = c.priceConverted;
     }
   }
 
   if (product.originalPrice !== undefined) {
-    const converted = await convertAndFormatPrice(product.originalPrice, currencyCode, options);
-    result.originalPrice = converted.priceConverted;
+    result.originalPrice = convert(product.originalPrice).priceConverted;
   }
 
-  // --- DEFINITIVE DISPLAY PRICING HANDLING ---
-  // Convert and Sanitize valid display prices
   if (product.displayFinalPrice !== undefined) {
-      const converted = await convertAndFormatPrice(product.displayFinalPrice, currencyCode, options);
-      result.displayFinalPrice = converted.priceConverted;
+      result.displayFinalPrice = convert(product.displayFinalPrice).priceConverted;
   }
   
   if (product.displayOriginalPrice !== undefined) {
-      const converted = await convertAndFormatPrice(product.displayOriginalPrice, currencyCode, options);
-      result.displayOriginalPrice = converted.priceConverted;
+      result.displayOriginalPrice = convert(product.displayOriginalPrice).priceConverted;
   }
 
   // RE-APPLY SANITY CHECK ON CONVERTED VALUES
-  // This prevents rounding errors from creating "Same Price Discounts"
   if (result.displayFinalPrice !== undefined && result.displayOriginalPrice !== undefined) {
       if (result.displayOriginalPrice > result.displayFinalPrice) {
-          const rawPct = ((result.displayOriginalPrice - result.displayFinalPrice) / result.displayOriginalPrice) * 100;
-          result.displayDiscountPercentage = Math.round(rawPct);
+          result.displayDiscountPercentage = Math.round(((result.displayOriginalPrice - result.displayFinalPrice) / result.displayOriginalPrice) * 100);
       } else {
-          // Force consistency
           result.displayOriginalPrice = result.displayFinalPrice;
           result.displayDiscountPercentage = 0;
       }
   }
 
-
   if (product.discountPrice !== undefined && product.discountPrice > 0) {
-    const converted = await convertAndFormatPrice(product.discountPrice, currencyCode, options);
-    result.discountPrice = converted.priceConverted;
-    result.discountPriceDisplay = converted.priceDisplay;
+    const c = convert(product.discountPrice);
+    result.discountPrice = c.priceConverted;
+    result.discountPriceDisplay = c.priceDisplay;
   }
 
   if (product.price !== undefined) {
-    const converted = await convertAndFormatPrice(product.price, currencyCode, options);
-    result.price = converted.priceConverted;
+    result.price = convert(product.price).priceConverted;
   }
 
-  // 2. Convered nested fields (simple)
+  // 2. Nested fields (simple)
   if (product.simple) {
-    const simple = { ...product.simple };
-    if (simple.finalPrice !== undefined) {
-      const converted = await convertAndFormatPrice(simple.finalPrice, currencyCode, options);
-      simple.finalPrice = converted.priceConverted;
-    }
-    if (simple.merchantPrice !== undefined) {
-      const converted = await convertAndFormatPrice(simple.merchantPrice, currencyCode, options);
-      simple.merchantPrice = converted.priceConverted;
-    }
-    if (simple.discountPrice !== undefined && simple.discountPrice > 0) {
-      const converted = await convertAndFormatPrice(simple.discountPrice, currencyCode, options);
-      simple.discountPrice = converted.priceConverted;
-    }
-    result.simple = simple;
+    const s = { ...product.simple };
+    if (s.finalPrice !== undefined) s.finalPrice = convert(s.finalPrice).priceConverted;
+    if (s.merchantPrice !== undefined) s.merchantPrice = convert(s.merchantPrice).priceConverted;
+    if (s.discountPrice !== undefined && s.discountPrice > 0) s.discountPrice = convert(s.discountPrice).priceConverted;
+    result.simple = s;
   }
 
-  // 3. Convert nested fields (productLevelPricing)
+  // 3. Nested fields (productLevelPricing)
   if (product.productLevelPricing) {
     const plp = { ...product.productLevelPricing };
-    if (plp.finalPrice !== undefined) {
-      const converted = await convertAndFormatPrice(plp.finalPrice, currencyCode, options);
-      plp.finalPrice = converted.priceConverted;
-    }
-    if (plp.merchantPrice !== undefined) {
-      const converted = await convertAndFormatPrice(plp.merchantPrice, currencyCode, options);
-      plp.merchantPrice = converted.priceConverted;
-    }
-    if (plp.discountPrice !== undefined && plp.discountPrice > 0) {
-      const converted = await convertAndFormatPrice(plp.discountPrice, currencyCode, options);
-      plp.discountPrice = converted.priceConverted;
-    }
+    if (plp.finalPrice !== undefined) plp.finalPrice = convert(plp.finalPrice).priceConverted;
+    if (plp.merchantPrice !== undefined) plp.merchantPrice = convert(plp.merchantPrice).priceConverted;
+    if (plp.discountPrice !== undefined && plp.discountPrice > 0) plp.discountPrice = convert(plp.discountPrice).priceConverted;
     result.productLevelPricing = plp;
   }
 
-  // 4. Handle variants if present
-  if (product.variants && Array.isArray(product.variants) && product.variants.length > 0) {
-    // Parallel variant conversion
-    result.variants = await Promise.all(
-      product.variants.map(async (variant) => {
-        const variantResult = { ...variant };
-        
-        if (variant.finalPrice !== undefined) {
-          const converted = await convertAndFormatPrice(variant.finalPrice, currencyCode, options);
-          variantResult.finalPrice = converted.priceConverted;
-          variantResult.priceConverted = converted.priceConverted;
-          variantResult.priceDisplay = converted.priceDisplay;
-        }
-        
-        if (variant.merchantPrice !== undefined) {
-          const converted = await convertAndFormatPrice(variant.merchantPrice, currencyCode, options);
-          variantResult.merchantPrice = converted.priceConverted;
-        }
-        
-        if (variant.discountPrice !== undefined && variant.discountPrice > 0) {
-          const converted = await convertAndFormatPrice(variant.discountPrice, currencyCode, options);
-          variantResult.discountPrice = converted.priceConverted;
-        }
-
-        return variantResult;
-      })
-    );
+  // 4. Handle variants
+  if (Array.isArray(product.variants) && product.variants.length > 0) {
+    result.variants = product.variants.map((v) => {
+      const vr = { ...v };
+      if (v.finalPrice !== undefined) {
+        const c = convert(v.finalPrice);
+        vr.finalPrice = c.priceConverted;
+        vr.priceConverted = c.priceConverted;
+        vr.priceDisplay = c.priceDisplay;
+      }
+      if (v.merchantPrice !== undefined) vr.merchantPrice = convert(v.merchantPrice).priceConverted;
+      if (v.discountPrice !== undefined && v.discountPrice > 0) vr.discountPrice = convert(v.discountPrice).priceConverted;
+      return vr;
+    });
   }
 
   return result;

@@ -1,7 +1,18 @@
 import Category from '../models/categories.model.js'
+import { invalidateHomeCache } from './home.controller.js';
+
+let categoriesCache = null;
+let cacheTimestamp = 0;
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 export const getCategories = async (req, res) => {
     try {
-        const categories = await Category.find().sort({ createdAt: -1 }).populate('parent', 'name');
+        if (categoriesCache && Date.now() - cacheTimestamp < CACHE_TTL) {
+            return res.status(200).json(categoriesCache);
+        }
+        const categories = await Category.find().sort({ createdAt: -1 }).lean();
+        categoriesCache = categories;
+        cacheTimestamp = Date.now();
         res.status(200).json(categories)
     } catch (error) {
         res.status(500).json({ message: error.message })
@@ -10,7 +21,7 @@ export const getCategories = async (req, res) => {
 // مثال لـ getCategoryById
 export const getCategoryById = async (req, res) => {
     try {
-        const category = await Category.findById(req.params.id);
+        const category = await Category.findById(req.params.id).lean();
         if (!category) {
             return res.status(404).json({ message: 'الفئة غير موجودة' });
         }
@@ -41,6 +52,8 @@ export const createCategory = async (req, res) => {
         }
         
         const category = await Category.create(req.body)
+        categoriesCache = null; // Invalidate categories cache
+        invalidateHomeCache(); // Invalidate home cache
         res.status(201).json(category)
     } catch (error) {
         res.status(500).json({ message: error.message })
@@ -94,7 +107,8 @@ export const updateCategory = async (req, res) => {
             return res.status(404).json({ message: 'الفئة غير موجودة' });
         }
         
-        
+        categoriesCache = null; // Invalidate categories cache
+        invalidateHomeCache(); // Invalidate home cache
         res.status(200).json(category);
     } catch (error) {
         
@@ -121,6 +135,8 @@ export const deleteCategory = async (req, res) => {
         }
 
         await Category.findByIdAndDelete(categoryId);
+        categoriesCache = null; // Invalidate categories cache
+        invalidateHomeCache(); // Invalidate home cache
         res.status(200).json({ message: 'تم حذف الفئة بنجاح' });
     } catch (error) {
         res.status(500).json({ message: error.message });

@@ -11,6 +11,17 @@ import { getAuth } from '@clerk/express';
 import mongoose from 'mongoose';
 import { convertProductPrices } from '../services/currency.service.js';
 import { enrichProductsWithPricing } from './products.controller.js';
+import { getCategories as getCategoriesInternal } from './category.controller.js';
+
+let homeDataCache = null;
+let homeCacheTimestamp = 0;
+const HOME_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+export const invalidateHomeCache = () => {
+    homeDataCache = null;
+    homeCacheTimestamp = 0;
+    logger.info('Home data cache invalidated');
+};
 
 /**
  * Get home screen data - all sections in one optimized endpoint
@@ -19,95 +30,79 @@ import { enrichProductsWithPricing } from './products.controller.js';
 export const getHomeData = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    const now = new Date();
+    const isAnonymous = !userId;
 
-    // Check merchant status - only show products from approved merchants
+    // --- CACHE HIT PATH (FAST) ---
+    if (isAnonymous && homeDataCache && (Date.now() - homeCacheTimestamp < HOME_CACHE_TTL)) {
+      const resp = JSON.parse(JSON.stringify(homeDataCache));
+      resp.forYou = resp.trending?.slice(0, 20) || [];
+      return sendSuccess(res, { data: resp, message: 'Home data retrieved (cached)' });
+    }
+
+    // --- COLD START / AUTHENTICATED PATH ---
     const approvedMerchants = await Merchant.find({ status: 'APPROVED' }).select('_id').lean();
     const approvedMerchantIds = approvedMerchants.map(m => m._id);
 
-    // Build base filter for available products
     const baseProductFilter = {
-      // Use $ne: false to include legacy docs where isActive was never stored
       isActive: { $ne: false },
       deletedAt: null,
-      // Only check variant-level stock (top-level `stock` is a virtual, not a stored field)
       'variants.stock': { $gt: 0 },
-      // Only show products from approved merchants or admin-created products (no merchant)
       $or: [
         { merchant: { $in: approvedMerchantIds } },
         { merchant: null },
       ],
     };
 
-    // Parallel fetch all sections
-    const [
-      banners,
-      categories,
-      trendingProducts,
-      flashDeals,
-      newArrivals,
-      stores
-    ] = await Promise.all([
-      // 1. Hero Banners
-      Banner.find({ isActive: true })
-        .sort({ order: 1, createdAt: -1 })
-        .limit(10)
-        .lean(),
-
-      // 2. Categories (active only, with image)
-      Category.find({ isActive: true, parent: null })
-        .sort({ createdAt: -1 })
-        .limit(12)
-        .lean(),
-
-      // 3. Trending Now - products ordered by orders, views, favorites
-      getTrendingProducts(baseProductFilter),
-
-      // 4. Flash Deals - products with discount > 0
-      getFlashDeals(baseProductFilter),
-
-      // 5. New Arrivals - latest products
-      Product.find(baseProductFilter)
-        .populate('merchant', 'businessName status')
-        .populate('category', 'name')
-        .sort({ createdAt: -1 })
-        .limit(20)
-        .lean(),
-
-      // 6. Store Highlights - approved merchants with high sales
-      getStoreHighlights()
-    ]);
-
     // 7. For You - personalized recommendations
     let forYouProducts = [];
-    if (userId) {
-      forYouProducts = await getForYouProducts(userId, baseProductFilter);
+
+    // Try to use cached global data if available
+    let response;
+    
+    if (isAnonymous && homeDataCache && (Date.now() - homeCacheTimestamp < HOME_CACHE_TTL)) {
+      response = JSON.parse(JSON.stringify(homeDataCache));
     } else {
-      // If not logged in, use most popular products
-      forYouProducts = trendingProducts.slice(0, 20);
+      // Parallel fetch all sections
+      const [
+        bannersData,
+        categoriesData,
+        trendingData,
+        flashDealsData,
+        newArrivalsData,
+        storesData
+      ] = await Promise.all([
+        Banner.find({ isActive: true }).sort({ order: 1, createdAt: -1 }).limit(10).lean(),
+        Category.find({ isActive: true }).sort({ createdAt: -1 }).limit(12).lean(),
+        getTrendingProducts(baseProductFilter),
+        getFlashDeals(baseProductFilter),
+        Product.find(baseProductFilter).populate('merchant', 'businessName status').populate('category', 'name').sort({ createdAt: -1 }).limit(20).lean(),
+        getStoreHighlights()
+      ]);
+
+      response = {
+        banners: bannersData,
+        categories: categoriesData,
+        trending: enrichProductsWithPricing(trendingData),
+        flashDeals: enrichProductsWithPricing(flashDealsData),
+        newArrivals: enrichProductsWithPricing(newArrivalsData),
+        stores: storesData
+      };
+
+      // Save to cache if anonymous
+      if (isAnonymous) {
+        homeDataCache = response;
+        homeCacheTimestamp = Date.now();
+      }
     }
 
-    // Use centralized definitive pricing logic
-    const response = {
-      banners: banners.map(b => ({
-        _id: b._id,
-        image: b.image,
-        title: b.title,
-        description: b.description,
-        order: b.order
-      })),
-      categories: categories.map(c => ({
-        _id: c._id,
-        name: c.name,
-        image: c.image,
-        description: c.description
-      })),
-      trending: enrichProductsWithPricing(trendingProducts),
-      flashDeals: enrichProductsWithPricing(flashDeals),
-      newArrivals: enrichProductsWithPricing(newArrivals),
-      forYou: enrichProductsWithPricing(forYouProducts),
-      stores: stores
-    };
+    // Personalized For You section
+    if (userId) {
+      forYouProducts = await getForYouProducts(userId, baseProductFilter);
+      response.forYou = enrichProductsWithPricing(forYouProducts);
+    } else {
+      // If not logged in, use most popular products from trending
+      response.forYou = response.trending.slice(0, 20);
+    }
 
     // Apply currency conversion if currencyCode is provided
     // Middleware already extracts it from headers or query
@@ -154,13 +149,13 @@ export const getHomeData = async (req, res) => {
     logger.info('Home data retrieved', {
       requestId: req.requestId,
       userId: userId || 'anonymous',
-      bannersCount: banners.length,
-      categoriesCount: categories.length,
-      trendingCount: trendingProducts.length,
-      flashDealsCount: flashDeals.length,
-      newArrivalsCount: newArrivals.length,
-      forYouCount: forYouProducts.length,
-      storesCount: stores.length
+      bannersCount: response.banners?.length || 0,
+      categoriesCount: response.categories?.length || 0,
+      trendingCount: response.trending?.length || 0,
+      flashDealsCount: response.flashDeals?.length || 0,
+      newArrivalsCount: response.newArrivals?.length || 0,
+      forYouCount: response.forYou?.length || 0,
+      storesCount: response.stores?.length || 0
     });
 
     return sendSuccess(res, {
@@ -189,9 +184,8 @@ async function getTrendingProducts(baseFilter) {
       .populate('category', 'name')
       .sort({ 
         featured: -1, 
-        priorityScore: -1, 
-        averageRating: -1, 
-        createdAt: -1 
+        priorityScore: -1,
+        createdAt: -1
       })
       .limit(20)
       .lean();
@@ -243,7 +237,7 @@ async function getForYouProducts(clerkId, baseFilter) {
       return Product.find(baseFilter)
         .populate('merchant', 'businessName status')
         .populate('category', 'name')
-        .sort({ averageRating: -1, createdAt: -1 })
+        .sort({ featured: -1, priorityScore: -1, createdAt: -1 })
         .limit(20)
         .lean();
     }
@@ -301,7 +295,6 @@ async function getForYouProducts(clerkId, baseFilter) {
       .sort({ 
         featured: -1,
         priorityScore: -1,
-        averageRating: -1,
         createdAt: -1 
       })
       .limit(20)
@@ -312,7 +305,7 @@ async function getForYouProducts(clerkId, baseFilter) {
       const popularProducts = await Product.find(baseFilter)
         .populate('merchant', 'businessName status')
         .populate('category', 'name')
-        .sort({ averageRating: -1, createdAt: -1 })
+        .sort({ featured: -1, priorityScore: -1, createdAt: -1 })
         .limit(20 - recommendedProducts.length)
         .lean();
       
@@ -326,7 +319,7 @@ async function getForYouProducts(clerkId, baseFilter) {
     return Product.find(baseFilter)
       .populate('merchant', 'businessName status')
       .populate('category', 'name')
-      .sort({ averageRating: -1, createdAt: -1 })
+      .sort({ featured: -1, priorityScore: -1, createdAt: -1 })
       .limit(20)
       .lean();
   }

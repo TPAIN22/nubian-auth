@@ -132,6 +132,13 @@ productSchema.index({ 'ranking.visibilityScore': -1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });
 
+// Optimization indexes for Home Screen & Category Filtering
+productSchema.index({ 'variants.stock': 1, isActive: 1, deletedAt: 1 });
+productSchema.index({ discountPrice: -1, createdAt: -1 });
+productSchema.index({ 'variants.discountPrice': -1 });
+productSchema.index({ displayFinalPrice: 1, createdAt: -1 });
+productSchema.index({ category: 1, isActive: 1, deletedAt: 1, createdAt: -1 });
+
 // ===== Pre-save Middleware: Smart Pricing Calculation =====
 // Recomputes variant.finalPrice from merchantPrice + nubianMarkup + dynamicMarkup - merchantDiscount.
 // If dynamicPricingEnabled is false, dynamicMarkup contribution is forced to 0.
