@@ -56,10 +56,25 @@ class AffiliateService {
         referralLink: `${process.env.AFFILIATE_BASE_URL || 'https://nubian-sd.store'}?ref=${code}`
       }], { session });
 
-      // 5. Update user role and referral code
+      // 5. Update user role and referral code in MongoDB
       user.role = "marketer";
       user.referralCode = code;
       await user.save({ session });
+
+      // 6. Sync role to Clerk public metadata
+      try {
+        await clerkClient.users.updateUserMetadata(clerkId, {
+          publicMetadata: {
+            role: "marketer",
+            referralCode: code
+          }
+        });
+        logger.info(`Clerk metadata updated for ${clerkId} with marketer role`);
+      } catch (clerkMetaError) {
+        // We don't abort the transaction here because the DB is updated, 
+        // but we log it as a warning. The user is still a marketer in our DB.
+        logger.warn(`Failed to update Clerk metadata for ${clerkId}:`, clerkMetaError.message);
+      }
 
       await session.commitTransaction();
       return marketer[0];
