@@ -83,6 +83,7 @@ const orderSchema = new mongoose.Schema(
 
     marketer: { type: mongoose.Schema.Types.ObjectId, ref: "Marketer", default: null },
     marketerCommission: { type: Number, default: 0 },
+    referralCodeUsed: { type: String, default: null, trim: true, uppercase: true },
 
     merchants: [{ type: mongoose.Schema.Types.ObjectId, ref: "Merchant" }],
     merchantRevenue: { type: [merchantRevenueSchema], default: [] },

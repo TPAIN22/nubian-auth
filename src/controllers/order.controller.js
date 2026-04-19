@@ -8,6 +8,8 @@ import User from "../models/user.model.js";
 import { sendOrderEmail } from "../lib/mail.js";
 import Coupon from "../models/coupon.model.js";
 import Marketer from "../models/marketer.model.js";
+import CommissionService from "../services/commission.service.js";
+import ReferralTrackingLog from "../models/referralTrackingLog.model.js";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendNotFound, sendForbidden } from "../lib/response.js";
 import { getProductPrice, mapToObject } from "../utils/cartUtils.js";
@@ -115,17 +117,13 @@ export const updateOrderStatus = async (req, res) => {
     if (
       status === "delivered" &&
       oldStatus !== "delivered" &&
-      order.marketer &&
-      (!order.marketerCommission || order.marketerCommission === 0)
+      order.marketer
     ) {
-      const marketer = await Marketer.findById(order.marketer);
-      if (marketer) {
-        const commission = order.finalAmount * marketer.commissionRate;
-        order.marketerCommission = commission;
-        await order.save();
-
-        marketer.totalEarnings += commission;
-        await marketer.save();
+      try {
+        await CommissionService.createCommission(order._id);
+        logger.info(`Commission record created for delivered order: ${order.orderNumber}`);
+      } catch (commError) {
+        logger.error(`Failed to create commission for order ${order._id}:`, commError);
       }
     }
 
@@ -617,9 +615,8 @@ export const createOrder = async (req, res) => {
 
       transferProof,
 
-      marketer: req.body.marketerCode
-        ? (await Marketer.findOne({ code: String(req.body.marketerCode).toUpperCase() }))?._id
-        : null,
+      marketer: null, // Will be set below
+      referralCodeUsed: null, // Will be set below
       marketerCommission: 0,
 
       merchants: Array.from(merchantIds),
@@ -632,6 +629,35 @@ export const createOrder = async (req, res) => {
       discountAmountConverted: null,
       finalAmountConverted: null,
     });
+
+    // ---------- Referral & Marketer Linking ----------
+    const referralCode = req.body.referralCode || req.referralCode;
+    if (referralCode) {
+      const refCode = String(referralCode).toUpperCase().trim();
+      const marketer = await Marketer.findOne({ code: refCode, status: 'active' });
+      
+      if (marketer) {
+        // Prevent self-referral
+        if (marketer.clerkId === userId) {
+          logger.warn(`Self-referral blocked for user: ${userId}`);
+        } else {
+          order.marketer = marketer._id;
+          order.referralCodeUsed = refCode;
+          
+          // Mark the tracking log as converted if it exists
+          try {
+            await ReferralTrackingLog.findOneAndUpdate(
+              { referralCode: refCode, ip: req.ip || req.connection.remoteAddress, converted: false },
+              { $set: { converted: true, orderId: order._id } },
+              { sort: { createdAt: -1 } }
+            );
+          } catch (trackingErr) {
+            logger.error("Error linking tracking log to order:", trackingErr);
+          }
+        }
+      }
+    }
+    await order.save();
 
     // Calculate converted amounts in user's selected currency
     const selectedCurrency = req.body.currencyCode || user.currencyCode || "USD";

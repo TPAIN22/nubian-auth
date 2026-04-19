@@ -31,6 +31,10 @@ import metaRoutes from './routes/meta.route.js';
 import fxRoutes from './routes/fx.route.js';
 import preferencesRoutes from './routes/preferences.route.js';
 import currencyAdminRoutes from './routes/currency.admin.route.js';
+import marketerAdminRoutes from './routes/marketer.route.js';
+import affiliateRoutes from './routes/affiliate.route.js';
+import referralTrackingRoutes from './routes/referralTracking.route.js';
+import adminCommissionRoutes from './routes/adminCommission.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { currencyMiddleware } from './middleware/currency.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
@@ -196,6 +200,10 @@ app.use('/api/tracking', trackingRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/admin/currencies', currencyAdminRoutes);
+app.use('/api/admin/marketers', marketerAdminRoutes);
+app.use('/api/affiliate', affiliateRoutes);
+app.use('/api/track', referralTrackingRoutes);
+app.use('/api/admin/commissions', adminCommissionRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {
