@@ -1,5 +1,6 @@
 import Marketer from '../models/marketer.model.js';
 import Order from '../models/orders.model.js';
+import { sendSuccess, sendCreated, sendError, sendNotFound } from '../lib/response.js';
 
 // إضافة مسوّق جديد
 export const createMarketer = async (req, res) => {
@@ -9,7 +10,7 @@ export const createMarketer = async (req, res) => {
         // نتأكد الكود ما مكرر
         const existing = await Marketer.findOne({ code: code.toUpperCase() });
         if (existing) {
-            return res.status(400).json({ message: 'Marketer code already exists' });
+            return sendError(res, { message: 'Marketer code already exists', statusCode: 400 });
         }
 
         const marketer = await Marketer.create({
@@ -19,9 +20,9 @@ export const createMarketer = async (req, res) => {
             discountRate
         });
 
-        res.status(201).json(marketer);
+        return sendCreated(res, marketer, 'Marketer created successfully');
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return sendError(res, { message: error.message });
     }
 };
 
@@ -29,9 +30,9 @@ export const createMarketer = async (req, res) => {
 export const getMarketers = async (req, res) => {
     try {
         const marketers = await Marketer.find().sort({ createdAt: -1 });
-        res.status(200).json(marketers);
+        return sendSuccess(res, { data: marketers });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return sendError(res, { message: error.message });
     }
 };
 
@@ -40,33 +41,39 @@ export const getMarketerById = async (req, res) => {
     try {
         const marketer = await Marketer.findById(req.params.id);
         if (!marketer) {
-            return res.status(404).json({ message: 'Marketer not found' });
+            return sendNotFound(res, 'Marketer');
         }
-        res.status(200).json(marketer);
+        return sendSuccess(res, { data: marketer });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return sendError(res, { message: error.message });
     }
 };
 
 // تعديل بيانات المسوّق
 export const updateMarketer = async (req, res) => {
     try {
-        const { name, code, commissionRate, discountRate } = req.body;
+        const { name, code, commissionRate, discountRate, status, phone } = req.body;
 
         const marketer = await Marketer.findById(req.params.id);
         if (!marketer) {
-            return res.status(404).json({ message: 'Marketer not found' });
+            return sendNotFound(res, 'Marketer');
         }
 
         marketer.name = name || marketer.name;
         marketer.code = code ? code.toUpperCase() : marketer.code;
         marketer.commissionRate = commissionRate ?? marketer.commissionRate;
         marketer.discountRate = discountRate ?? marketer.discountRate;
+        marketer.status = status || marketer.status;
+        marketer.phone = phone || marketer.phone;
 
         await marketer.save();
-        res.status(200).json(marketer);
+        return sendSuccess(res, { data: marketer, message: 'Marketer updated successfully' });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        console.error('Update Marketer Error:', error);
+        return sendError(res, { 
+            message: error.message, 
+            statusCode: error.name === 'MongoServerError' && error.code === 11000 ? 409 : (error.statusCode || 500) 
+        });
     }
 };
 
@@ -75,11 +82,11 @@ export const deleteMarketer = async (req, res) => {
     try {
         const marketer = await Marketer.findByIdAndDelete(req.params.id);
         if (!marketer) {
-            return res.status(404).json({ message: 'Marketer not found' });
+            return sendNotFound(res, 'Marketer');
         }
-        res.status(200).json({ message: 'Marketer deleted successfully' });
+        return sendSuccess(res, { message: 'Marketer deleted successfully' });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return sendError(res, { message: error.message });
     }
 };
 
@@ -87,7 +94,7 @@ export const getMarketerStats = async (req, res) => {
   try {
     const marketer = await Marketer.findById(req.params.id);
     if (!marketer) {
-      return res.status(404).json({ message: 'Marketer not found' });
+      return sendNotFound(res, 'Marketer');
     }
 
     const stats = await Order.aggregate([
@@ -108,13 +115,15 @@ export const getMarketerStats = async (req, res) => {
       .sort({ createdAt: -1 })
       .select("orderNumber totalAmount marketerCommission finalAmount createdAt");
 
-    res.status(200).json({
-      marketer,
-      stats: stats[0] || { totalOrders: 0, totalEarnings: 0, totalSales: 0 },
-      orders
+    return sendSuccess(res, {
+      data: {
+        marketer,
+        stats: stats[0] || { totalOrders: 0, totalEarnings: 0, totalSales: 0 },
+        orders
+      }
     });
 
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    return sendError(res, { message: error.message });
   }
 };

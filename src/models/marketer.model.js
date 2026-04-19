@@ -5,13 +5,11 @@ const marketerSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    unique: true,
+    // Removed unique to support legacy data updates
   },
   clerkId: {
     type: String,
-    required: true,
-    unique: true,
+    // Removed unique to support legacy data updates
   },
   name: {
     type: String,
