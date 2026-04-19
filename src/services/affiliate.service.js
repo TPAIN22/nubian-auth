@@ -4,6 +4,7 @@ import Order from "../models/orders.model.js";
 import ReferralTrackingLog from "../models/referralTrackingLog.model.js";
 import mongoose from "mongoose";
 import logger from "../lib/logger.js";
+import { clerkClient } from "@clerk/express";
 
 class AffiliateService {
   /**
@@ -14,9 +15,29 @@ class AffiliateService {
     session.startTransaction();
 
     try {
-      // 1. Check if user exists
-      const user = await User.findOne({ clerkId }).session(session);
-      if (!user) throw new Error("User not found");
+      // 1. Check if user exists, if not sync from Clerk
+      let user = await User.findOne({ clerkId }).session(session);
+      
+      if (!user) {
+        logger.info(`User record missing for ${clerkId}, attempting lazy sync...`);
+        try {
+          const clerkUser = await clerkClient.users.getUser(clerkId);
+          const firstName = clerkUser.firstName || '';
+          const lastName = clerkUser.lastName || '';
+          
+          user = await User.create([{
+            clerkId,
+            fullName: `${firstName} ${lastName}`.trim() || clerkUser.username || "User",
+            emailAddress: clerkUser.emailAddresses?.[0]?.emailAddress || "",
+            phone: clerkUser.phoneNumbers?.[0]?.phoneNumber || ""
+          }], { session });
+          user = user[0];
+          logger.info(`User record lazy-synced for ${clerkId}`);
+        } catch (clerkError) {
+          logger.error(`Failed to sync user ${clerkId} from Clerk:`, clerkError);
+          throw new Error("Unable to verify user account. Please try again later.");
+        }
+      }
 
       // 2. Check if already a marketer
       const existingMarketer = await Marketer.findOne({ clerkId }).session(session);
