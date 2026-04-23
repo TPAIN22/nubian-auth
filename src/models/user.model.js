@@ -199,7 +199,6 @@ userSchema.index({ lastActive: -1 }); // For sorting by activity
 userSchema.index({ 'viewedProducts.product': 1 }); // For product view queries
 userSchema.index({ 'clickedProducts.product': 1 }); // For product click queries
 userSchema.index({ 'purchasedCategories.category': 1 }); // For category preference queries
-userSchema.index({ referralCode: 1 }); // For affiliate referral lookups
 userSchema.index({ referredBy: 1 }); // For tracking who referred whom
 
 const User = mongoose.model("User", userSchema);

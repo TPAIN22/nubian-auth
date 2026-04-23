@@ -873,7 +873,14 @@ export const getMerchantProducts = async (req, res) => {
       deletedAt: null, // Exclude soft-deleted products
     };
     if (category) {
-      filter.category = category; // Safe: validated as MongoDB ObjectId
+      try {
+        const categoryId = new mongoose.Types.ObjectId(category);
+        const descendantIds = await getCategoryDescendants(categoryId);
+        const categoryIds = [categoryId, ...descendantIds];
+        filter.category = { $in: categoryIds };
+      } catch (e) {
+        filter.category = new mongoose.Types.ObjectId();
+      }
     }
     if (isActive !== undefined) {
       filter.isActive = isActive === 'true';
@@ -940,7 +947,14 @@ export const getAllProductsAdmin = async (req, res) => {
     }
 
     if (category) {
-      filter.category = category;
+      try {
+        const categoryId = new mongoose.Types.ObjectId(category);
+        const descendantIds = await getCategoryDescendants(categoryId);
+        const categoryIds = [categoryId, ...descendantIds];
+        filter.category = { $in: categoryIds };
+      } catch (e) {
+        filter.category = new mongoose.Types.ObjectId();
+      }
     }
     if (merchant) {
       filter.merchant = merchant;
@@ -1444,38 +1458,29 @@ export const exploreProducts = async (req, res) => {
       });
     }
 
-    // Category filter - handle hierarchical categories
+    // Category filter - handle hierarchical categories recursively
     if (category) {
       try {
         const categoryId = new mongoose.Types.ObjectId(category);
 
-        // Find all subcategories (children) of this category
-        const subcategories = await Category.find({
-          parent: categoryId,
-          isActive: true
-        }).select('_id').lean();
+        // Fetch ALL levels of descendants recursively
+        const descendantIds = await getCategoryDescendants(categoryId);
 
-        // Build array of category IDs: parent + all children
-        const categoryIds = [categoryId];
-        if (subcategories && subcategories.length > 0) {
-          subcategories.forEach(sub => {
-            if (sub._id) {
-              categoryIds.push(sub._id);
-            }
-          });
-        }
+        // Build array of category IDs: parent + all descendants
+        const categoryIds = [categoryId, ...descendantIds];
 
-        // Use $in to match products in parent category OR any subcategory
+        // Use $in to match products in parent category OR any child/grandchild category
         filter.category = { $in: categoryIds };
 
-        logger.info('Explore category filter with subcategories', {
+        logger.info('Explore category filter with recursive descendants', {
           categoryId: category,
-          subcategoryCount: subcategories.length,
-          totalCategoryIds: categoryIds.length,
+          totalCategoryCount: categoryIds.length,
+          requestId: req.requestId,
         });
       } catch (e) {
-        // Invalid ObjectId, skip filter
-        logger.warn('Invalid category ID in explore, skipping filter', { category, error: e.message });
+        // Invalid ObjectId or recursion failed, set non-matching filter
+        logger.warn('Invalid category ID in explore, ensuring 0 results', { category, error: e.message });
+        filter.category = new mongoose.Types.ObjectId(); 
       }
     }
 

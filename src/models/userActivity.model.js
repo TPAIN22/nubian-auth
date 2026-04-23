@@ -65,7 +65,6 @@ const userActivitySchema = new mongoose.Schema({
     type: Date,
     required: true,
     default: Date.now,
-    index: true,
   },
   device: {
     type: String,

@@ -6,6 +6,8 @@ import {
   updateManualRate,
   toggleCurrencyActive,
   getExchangeRateStatus,
+  createCurrency,
+  updateCurrency,
 } from '../controllers/currency.admin.controller.js';
 
 const router = Router();
@@ -15,6 +17,12 @@ router.use(requireAuth(), isAdmin);
 
 // GET  /api/admin/currencies            — list all with current rates
 router.get('/', listAllCurrencies);
+
+// POST /api/admin/currencies            — create new
+router.post('/', createCurrency);
+
+// PUT  /api/admin/currencies/:id        — update existing
+router.put('/:id', updateCurrency);
 
 // GET  /api/admin/currencies/rates      — exchange rate DB status (age, missing, etc.)
 router.get('/rates', getExchangeRateStatus);

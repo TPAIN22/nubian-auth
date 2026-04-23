@@ -175,3 +175,64 @@ export const getExchangeRateStatus = async (req, res) => {
     return sendError(res, { message: 'Failed to get exchange rates', statusCode: 500 });
   }
 };
+
+/**
+ * POST /api/admin/currencies
+ * Create a new currency.
+ */
+export const createCurrency = async (req, res) => {
+  try {
+    const { code, name, nameAr, symbol, symbolPosition, isActive, decimals, roundingStrategy, sortOrder, allowManualRate, manualRate, marketMarkupAdjustment } = req.body;
+    
+    if (!code || !name || !symbol) {
+      return sendError(res, { message: 'Code, name, and symbol are required', statusCode: 400 });
+    }
+
+    const existing = await Currency.findOne({ code: code.toUpperCase() });
+    if (existing) {
+      return sendError(res, { message: 'Currency code already exists', statusCode: 400 });
+    }
+
+    const newCurrency = await Currency.create({
+      code: code.toUpperCase(),
+      name,
+      nameAr,
+      symbol,
+      symbolPosition: symbolPosition || 'before',
+      isActive: isActive || false,
+      decimals: decimals || 2,
+      roundingStrategy: roundingStrategy || 'NONE',
+      sortOrder: sortOrder || 0,
+      allowManualRate: allowManualRate || false,
+      manualRate: manualRate || 0,
+      marketMarkupAdjustment: marketMarkupAdjustment || 0
+    });
+
+    return sendSuccess(res, { data: newCurrency, message: 'Currency created' });
+  } catch (error) {
+    logger.error('Failed to create currency', { error: error.message });
+    return sendError(res, { message: 'Failed to create currency', statusCode: 500 });
+  }
+};
+
+/**
+ * PUT /api/admin/currencies/:id
+ * Update an existing currency.
+ */
+export const updateCurrency = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const body = req.body;
+    
+    if (body.code) body.code = body.code.toUpperCase();
+
+    const updated = await Currency.findByIdAndUpdate(id, { $set: body }, { new: true });
+    
+    if (!updated) return sendNotFound(res, `Currency ${id}`);
+
+    return sendSuccess(res, { data: updated, message: 'Currency updated' });
+  } catch (error) {
+    logger.error('Failed to update currency', { error: error.message });
+    return sendError(res, { message: 'Failed to update currency', statusCode: 500 });
+  }
+};

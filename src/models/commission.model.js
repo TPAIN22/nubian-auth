@@ -49,8 +49,6 @@ const commissionSchema = new mongoose.Schema({
 commissionSchema.index({ marketer: 1, status: 1 });
 commissionSchema.index({ marketer: 1, createdAt: -1 });
 commissionSchema.index({ status: 1, createdAt: -1 });
-commissionSchema.index({ order: 1 });
-
 const Commission = mongoose.model('Commission', commissionSchema);
 
 export default Commission;
