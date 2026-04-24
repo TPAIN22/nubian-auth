@@ -154,9 +154,11 @@ export async function fetchLatestRates() {
     }
 
     // Persist to database (upsert for idempotency)
+    // Use effectiveDate (not raw `date`) so a null from a failed fetch doesn't
+    // break the required schema field and lose the failure record entirely.
     const exchangeRate = await ExchangeRate.upsertRates({
       base: "USD",
-      date,
+      date: effectiveDate,
       rates,
       provider: "frankfurter",
       fetchStatus: missingCurrencies.length > 0 ? "partial" : "success",
@@ -167,7 +169,7 @@ export async function fetchLatestRates() {
     const durationMs = Date.now() - startTime;
 
     logger.info("✅ FX rates updated successfully", {
-      date,
+      date: effectiveDate,
       ratesCount: Object.keys(rates).length,
       missingCurrencies,
       durationMs,
@@ -175,7 +177,7 @@ export async function fetchLatestRates() {
 
     return {
       success: true,
-      date,
+      date: effectiveDate,
       ratesCount: Object.keys(rates).length,
       errors,
       missingCurrencies,
@@ -239,11 +241,9 @@ export async function getLatestRate(currencyCode) {
     };
   }
 
-  const rate = latestExchangeRate.getRate
-    ? latestExchangeRate.getRate(upperCode)
-    : (latestExchangeRate.rates instanceof Map
-        ? latestExchangeRate.rates.get(upperCode)
-        : latestExchangeRate.rates?.[upperCode]) || null;
+  // getLatest() uses .lean(), so the result is a plain object — not a Mongoose
+  // document (no .getRate() method) and rates is a plain object (not a Map).
+  const rate = latestExchangeRate.rates?.[upperCode] ?? null;
 
   return {
     rate,

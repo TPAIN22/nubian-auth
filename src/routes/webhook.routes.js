@@ -1,19 +1,12 @@
 import express from 'express';
 import User from '../models/user.model.js';
 import { Webhook } from 'svix';
-import dotenv from 'dotenv';
 import logger from '../lib/logger.js';
-
-dotenv.config();
 
 const router = express.Router();
 
+// envValidator.js already guarantees CLERK_WEBHOOK_SECRET is present at startup.
 const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
-
-if (!WEBHOOK_SECRET) {
-  logger.error('CLERK_WEBHOOK_SECRET is missing - webhook routes will not work');
-  process.exit(1);
-}
 
 // Helper function to extract user data from Clerk event
 const extractUserData = (data) => {
@@ -72,44 +65,18 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
     switch (type) {
       case 'user.created':
         {
+          // findOneAndUpdate with upsert is atomic — handles retries and race conditions
+          // without a separate findOne pre-check.
           const clerkId = data.id;
           logger.info('Processing user.created event', { clerkId });
 
-          // Check if user already exists (handles webhook retries/race conditions)
-          let existingUser = await User.findOne({ clerkId });
-          
-          if (existingUser) {
-            logger.warn('User already exists in database, skipping creation (webhook retry)', {
-              clerkId,
-              userId: existingUser._id,
-            });
-            return res.status(200).json({ 
-              success: true, 
-              message: "User already exists",
-              eventType: type,
-              userId: existingUser._id.toString(),
-            });
-          }
-
-          const userData = extractUserData(data);
-          
-          // Use findOneAndUpdate with upsert to handle race conditions
           const newUser = await User.findOneAndUpdate(
-            { clerkId: clerkId },
-            userData,
-            {
-              new: true,
-              upsert: true,
-              runValidators: true,
-              setDefaultsOnInsert: true,
-            }
+            { clerkId },
+            extractUserData(data),
+            { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true }
           );
 
-          logger.info('User created successfully via webhook', {
-            clerkId,
-            userId: newUser._id,
-            emailAddress: newUser.emailAddress,
-          });
+          logger.info('User created/confirmed via webhook', { clerkId, userId: newUser._id });
         }
         break;
 
@@ -146,20 +113,31 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
 
       case 'user.deleted':
         {
+          // Soft-delete: anonymise PII but keep the document so that all
+          // Orders, Tickets, Reviews, and Addresses referencing this user._id
+          // remain intact. Hard-deleting leaves dangling ObjectIds everywhere.
           const clerkId = data.id;
           logger.info('Processing user.deleted event', { clerkId });
 
-          const deletedUser = await User.findOneAndDelete({ clerkId: clerkId });
-          
+          const deletedUser = await User.findOneAndUpdate(
+            { clerkId },
+            {
+              isDeleted: true,
+              deletedAt: new Date(),
+              fullName: 'Deleted User',
+              emailAddress: '',
+              phone: '',
+            },
+            { new: true }
+          );
+
           if (deletedUser) {
-            logger.info('User deleted successfully via webhook', {
+            logger.info('User soft-deleted via webhook', {
               clerkId,
               userId: deletedUser._id,
             });
           } else {
-            logger.warn('User deletion: User not found in database (may have been already deleted)', {
-              clerkId,
-            });
+            logger.warn('User deletion: user not found in database', { clerkId });
           }
         }
         break;

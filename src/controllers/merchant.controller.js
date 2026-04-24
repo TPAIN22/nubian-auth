@@ -1,6 +1,6 @@
 import Merchant from "../models/merchant.model.js";
 import Product from "../models/product.model.js";
-import Notify from "../models/notify.model.js";
+import Notify from "../models/merchantNotify.model.js";
 import { clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
 import { getAuth } from "@clerk/express";

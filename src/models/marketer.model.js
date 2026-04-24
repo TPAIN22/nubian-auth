@@ -1,16 +1,8 @@
 import mongoose from "mongoose";
 
 const marketerSchema = new mongoose.Schema({
-  // Link to User document
-  user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    // Removed unique to support legacy data updates
-  },
-  clerkId: {
-    type: String,
-    // Removed unique to support legacy data updates
-  },
+  user:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true, sparse: true },
+  clerkId: { type: String, unique: true, sparse: true },
   name: {
     type: String,
     required: true,
@@ -86,30 +78,16 @@ const marketerSchema = new mongoose.Schema({
   },
 
   // ===== CONTACT / PAYOUT =====
-  phone: {
-    type: String,
-    default: null,
-    trim: true,
-  },
+  phone: { type: String, default: null, trim: true },
   payoutMethod: {
     type: String,
     enum: ['bankak', 'cash', 'bank_transfer', null],
     default: null,
   },
-  payoutDetails: {
-    type: String,
-    default: null,
-    trim: true,
-  },
-
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
+  payoutDetails: { type: String, default: null, trim: true },
+  // createdAt removed — provided by timestamps: true
 }, { timestamps: true });
 
-// Indexes for frequently queried fields
-// Note: code, user, clerkId indexes are automatically created by unique: true
 marketerSchema.index({ status: 1 });
 marketerSchema.index({ createdAt: -1 });
 marketerSchema.index({ totalEarnings: -1 }); // For top marketers leaderboard

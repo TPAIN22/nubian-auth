@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
 import {
   getCoupons,
@@ -15,18 +16,27 @@ import {
 
 const router = express.Router();
 
-// Public routes
-router.get('/available', getAvailableCoupons); // Get available coupons for recommendations
-router.get('/code/:code', getCouponByCode); // Get coupon by code (for validation)
-router.post('/validate', validateCoupon); // Validate coupon
+// 10 validation attempts per 15 minutes per IP — prevents automated coupon brute-forcing
+const couponValidateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  message: 'Too many coupon validation attempts, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Authenticated-only routes — prevents unauthenticated enumeration of active codes
+router.get('/available',  isAuthenticated, getAvailableCoupons);
+router.get('/code/:code', isAuthenticated, getCouponByCode);
+router.post('/validate',  couponValidateLimiter, isAuthenticated, validateCoupon);
 
 // Admin routes
-router.get('/', isAuthenticated, isAdmin, getCoupons); // Get all coupons with filters
-router.get('/:id', isAuthenticated, isAdmin, getCouponById); // Get coupon by ID
-router.get('/:id/analytics', isAuthenticated, isAdmin, getCouponAnalytics); // Get coupon analytics
-router.post('/', isAuthenticated, isAdmin, createCoupon); // Create coupon
-router.put('/:id', isAuthenticated, isAdmin, updateCoupon); // Update coupon
-router.patch('/:id/deactivate', isAuthenticated, isAdmin, deactivateCoupon); // Deactivate coupon
-router.delete('/:id', isAuthenticated, isAdmin, deleteCoupon); // Delete coupon
+router.get('/',               isAuthenticated, isAdmin, getCoupons);
+router.get('/:id',            isAuthenticated, isAdmin, getCouponById);
+router.get('/:id/analytics',  isAuthenticated, isAdmin, getCouponAnalytics);
+router.post('/',              isAuthenticated, isAdmin, createCoupon);
+router.put('/:id',            isAuthenticated, isAdmin, updateCoupon);
+router.patch('/:id/deactivate', isAuthenticated, isAdmin, deactivateCoupon);
+router.delete('/:id',         isAuthenticated, isAdmin, deleteCoupon);
 
-export default router; 
+export default router;

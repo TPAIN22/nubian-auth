@@ -8,6 +8,12 @@ const disputeSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
     orderId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Order", // Assuming Order model exists
@@ -61,6 +67,10 @@ const disputeSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+disputeSchema.index({ merchantId: 1, status: 1 });
+disputeSchema.index({ orderId: 1 });
+disputeSchema.index({ status: 1, createdAt: -1 });
 
 const Dispute = mongoose.model("Dispute", disputeSchema);
 export default Dispute;

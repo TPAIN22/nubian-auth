@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import 'dotenv/config'; // Must be first — loads .env before any other module reads process.env
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -38,9 +38,9 @@ import adminCommissionRoutes from './routes/adminCommission.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { currencyMiddleware } from './middleware/currency.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
+import { enforceHTTPS } from './middleware/https.middleware.js';
 import logger from './lib/logger.js';
 import { validateEnv } from './lib/envValidator.js';
-dotenv.config();
 
 // Validate environment variables on startup
 try {
@@ -50,14 +50,39 @@ try {
   process.exit(1);
 }
 
+// Register process-level safety nets early so they cover all async startup code and cron jobs
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught Exception — shutting down', { error: err.message, stack: err.stack });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled Promise Rejection — shutting down', {
+    reason: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+  process.exit(1);
+});
+
 const app = express();
 
+// Redirect HTTP → HTTPS in production (must be before all other middleware)
+app.use(enforceHTTPS);
+
 // 🧩 CORS Configuration - MUST BE FIRST
-logger.info('CORS: Enabled for all origins with credentials');
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
+logger.info('CORS: Configured for specific origins', { origins: allowedOrigins });
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow all origins (origin will be undefined for mobile apps/non-browser requests)
-    callback(null, true);
+    // Allow requests with no origin (mobile apps, server-to-server, curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS: origin '${origin}' not allowed`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -90,19 +115,19 @@ app.use(helmet({
 // 🛡️ Security: Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 5000, // Increased to 5000 to handle multiple reloads and dashboard requests
+  limit: 300, // 300 requests per 15 min per IP (~20 req/min)
   message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  validate: { trustProxy: false }, // Disable trust proxy validation in development
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
-// Stricter rate limit for authentication-related endpoints
+// Strict rate limit for webhook/auth endpoints
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 5000, // Limit each IP to 5000 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  limit: 20, // 20 requests per 15 min per IP
   message: 'Too many authentication attempts, please try again later.',
-  validate: { trustProxy: false }, // Disable trust proxy validation in development
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 
@@ -125,19 +150,17 @@ app.use('/api/webhooks', authLimiter, express.raw({ type: 'application/json' }),
 // 🛡️ Security: Request size limits (prevent large payload attacks)
 // Register body parsers AFTER webhook routes so webhooks can access raw body
 // These parsers will apply to all subsequent routes
-app.use(express.json({ limit: '10mb' })); // Limit JSON payload to 10MB
-app.use(express.urlencoded({ extended: true, limit: '10mb' })); // Limit URL-encoded payload to 10MB
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // Apply general rate limiting to all other API routes
 // This applies to routes that don't match the more specific routes above
 app.use('/api', limiter);
 
 
-// Configure Clerk middleware to handle Bearer tokens from Authorization header
-// This is essential for mobile app authentication
-// Trust proxy for proper IP detection behind reverse proxy (Render)
-// This fixes the rate limiting warning about X-Forwarded-For header
-app.set('trust proxy', true);
+// Trust exactly 1 proxy hop in production (Render, etc.), none in development.
+// Setting this to `true` in dev lets clients spoof X-Forwarded-For and bypass rate limiting.
+app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
 
 // Note: clerkMiddleware should NOT block routes - it just adds auth context
 app.use(clerkMiddleware({
@@ -147,34 +170,22 @@ app.use(clerkMiddleware({
   // The middleware will automatically extract and validate these tokens
 }));
 
-// Debug middleware to log all incoming API requests
-app.use('/api', (req, res, next) => {
-  logger.info('Incoming API request', {
-    requestId: req.requestId,
-    method: req.method,
-    url: req.url,
-    path: req.path,
-    originalUrl: req.originalUrl,
-    baseUrl: req.baseUrl,
-    route: req.route?.path,
+// Verbose per-request debug logging (development only)
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/api', (req, res, next) => {
+    logger.debug('Incoming API request', {
+      requestId: req.requestId,
+      method: req.method,
+      url: req.url,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      baseUrl: req.baseUrl,
+    });
+    next();
   });
-  next();
-});
+}
 
-// API routes - order matters, more specific routes first
-// Log route registration for debugging
-logger.info('Registering API routes', {
-  routes: [
-    '/api/reviews',
-    '/api/notifications',
-    '/api/carts',
-    '/api/orders',
-    '/api/products',
-    '/api/meta',
-    '/api/fx',
-    '/api/me/preferences',
-  ]
-});
+// API routes
 
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/notifications', NotificationsRoutes);
@@ -226,7 +237,6 @@ app.use(notFoundHandler);
 // Error handler middleware (must be last)
 app.use(errorHandler);
 
-// 🟢 بدء السيرفر
 const PORT = process.env.PORT || 5000;
 
 // Start server only after database connection is established

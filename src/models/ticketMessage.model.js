@@ -23,6 +23,7 @@ const ticketMessageSchema = new mongoose.Schema(
     message: {
       type: String,
       required: true,
+      maxlength: 5000,
     },
     attachments: [
       {
@@ -40,6 +41,8 @@ const ticketMessageSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+ticketMessageSchema.index({ ticketId: 1, createdAt: 1 });
 
 const TicketMessage = mongoose.model("TicketMessage", ticketMessageSchema);
 export default TicketMessage;

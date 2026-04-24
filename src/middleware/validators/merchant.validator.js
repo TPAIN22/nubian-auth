@@ -36,8 +36,8 @@ export const validateMerchantUpdate = [
 export const validateMerchantStatusUpdate = [
   body('status')
     .optional()
-    .isIn(['APPROVED', 'REJECTED', 'PENDING'])
-    .withMessage('Status must be APPROVED, REJECTED, or PENDING'),
+    .isIn(['APPROVED', 'REJECTED'])
+    .withMessage('Status must be APPROVED or REJECTED'),
   body('rejectionReason')
     .optional()
     .trim()

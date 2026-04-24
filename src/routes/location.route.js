@@ -78,14 +78,14 @@ router.post('/countries',
 );
 
 router.put('/countries/:id',
-  isAuthenticated,
-  isAdmin,
+  isAuthenticated, isAdmin,
+  validateCountryId, handleValidationErrors,
   updateCountry
 );
 
 router.delete('/countries/:id',
-  isAuthenticated,
-  isAdmin,
+  isAuthenticated, isAdmin,
+  validateCountryId, handleValidationErrors,
   deleteCountry
 );
 
@@ -100,14 +100,14 @@ router.post('/countries/:countryId/cities',
 );
 
 router.put('/cities/:id',
-  isAuthenticated,
-  isAdmin,
+  isAuthenticated, isAdmin,
+  validateCityId, handleValidationErrors,
   updateCity
 );
 
 router.delete('/cities/:id',
-  isAuthenticated,
-  isAdmin,
+  isAuthenticated, isAdmin,
+  validateCityId, handleValidationErrors,
   deleteCity
 );
 
@@ -122,14 +122,14 @@ router.post('/cities/:cityId/subcities',
 );
 
 router.put('/subcities/:id',
-  isAuthenticated,
-  isAdmin,
+  isAuthenticated, isAdmin,
+  validateSubCityId, handleValidationErrors,
   updateSubCity
 );
 
 router.delete('/subcities/:id',
-  isAuthenticated,
-  isAdmin,
+  isAuthenticated, isAdmin,
+  validateSubCityId, handleValidationErrors,
   deleteSubCity
 );
 

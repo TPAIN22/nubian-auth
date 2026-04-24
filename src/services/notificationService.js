@@ -2,7 +2,7 @@ import axios from 'axios';
 import mongoose from 'mongoose';
 import Notification from '../models/notification.model.js';
 import NotificationPreferences from '../models/notificationPreferences.model.js';
-import PushToken from '../models/notifications.model.js';
+import PushToken from '../models/pushToken.model.js';
 import logger from '../lib/logger.js';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';

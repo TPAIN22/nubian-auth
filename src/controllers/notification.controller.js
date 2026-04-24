@@ -1,6 +1,6 @@
 import notificationService from '../services/notificationService.js';
 import NotificationPreferences from '../models/notificationPreferences.model.js';
-import PushToken from '../models/notifications.model.js';
+import PushToken from '../models/pushToken.model.js';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';
 import { getAuth } from '@clerk/express';

@@ -2,8 +2,13 @@ import User from "../models/user.model.js";
 import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
 import logger from "../lib/logger.js";
-import { sendSuccess, sendError, sendCreated } from "../lib/response.js";
+import { sendSuccess, sendError, sendCreated, sendPaginated } from "../lib/response.js";
 import { sendWelcomeEmail } from "../lib/mail.js";
+
+// Fields exposed to clients. Excludes internal behaviour-tracking arrays
+// (viewedProducts, cartEvents, searchKeywords, etc.) which are server-only intelligence.
+const USER_PUBLIC_FIELDS = 'clerkId fullName emailAddress phone role countryCode currencyCode createdAt updatedAt';
+const USER_ADMIN_FIELDS  = 'clerkId fullName emailAddress phone role isAdmin isDeleted deletedAt lastActive countryCode currencyCode createdAt updatedAt';
 
 /**
  * Get or create user in MongoDB from Clerk
@@ -28,7 +33,7 @@ export const syncUser = async (req, res) => {
     });
 
     // Check if user already exists
-    let user = await User.findOne({ clerkId: userId });
+    let user = await User.findOne({ clerkId: userId }).select(USER_PUBLIC_FIELDS).lean();
     const isNewUser = !user;
     
     if (user) {
@@ -54,10 +59,10 @@ export const syncUser = async (req, res) => {
         error: clerkError.message,
       });
       return sendError(res, {
-        message: "Failed to fetch user data from Clerk",
+        message: "Failed to fetch user data",
         statusCode: 500,
         code: "CLERK_ERROR",
-        details: clerkError.message,
+        details: process.env.NODE_ENV === 'development' ? clerkError.message : undefined,
       });
     }
 
@@ -85,6 +90,7 @@ export const syncUser = async (req, res) => {
         upsert: true,
         runValidators: true,
         setDefaultsOnInsert: true,
+        select: USER_PUBLIC_FIELDS,
       }
     );
 
@@ -134,7 +140,7 @@ export const syncUser = async (req, res) => {
       // User was created by another request, fetch it
       try {
         const { userId } = getAuth(req);
-        const existingUser = await User.findOne({ clerkId: userId });
+        const existingUser = await User.findOne({ clerkId: userId }).select(USER_PUBLIC_FIELDS).lean();
         if (existingUser) {
           return sendSuccess(res, {
             data: existingUser,
@@ -190,8 +196,8 @@ export const getCurrentUser = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ clerkId: userId });
-    
+    const user = await User.findOne({ clerkId: userId }).select(USER_PUBLIC_FIELDS).lean();
+
     if (!user) {
       return sendError(res, {
         message: "User not found in database. Please sync your account.",
@@ -218,21 +224,24 @@ export const getCurrentUser = async (req, res) => {
 };
 
 export const getAllUsers = async (req, res) => {
-    try {
-        const users = await User.find().select('-__v').sort({ createdAt: -1 });
-        return sendSuccess(res, {
-            data: users,
-            message: "Users retrieved successfully",
-        });
-    } catch (error) {
-        logger.error('Error getting all users', {
-            requestId: req.requestId,
-            error: error.message,
-        });
-        return sendError(res, {
-            message: "Failed to retrieve users",
-            statusCode: 500,
-            code: "INTERNAL_ERROR",
-        });
-    }
+  try {
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip  = (page - 1) * limit;
+
+    const [users, total] = await Promise.all([
+      User.find({ isDeleted: { $ne: true } })
+        .select(USER_ADMIN_FIELDS)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      User.countDocuments({ isDeleted: { $ne: true } }),
+    ]);
+
+    return sendPaginated(res, { data: users, page, limit, total, message: "Users retrieved successfully" });
+  } catch (error) {
+    logger.error('Error getting all users', { requestId: req.requestId, error: error.message });
+    return sendError(res, { message: "Failed to retrieve users", statusCode: 500, code: "INTERNAL_ERROR" });
+  }
 };

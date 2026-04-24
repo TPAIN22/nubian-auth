@@ -10,27 +10,23 @@ import {
   handleValidationErrors,
 } from '../validation.middleware.js';
 
-// Custom validator to check if images array has valid URLs
-const validateImagesArray = body('images')
-  .custom((value) => {
-    if (!Array.isArray(value)) {
-      throw new Error('images must be an array');
-    }
-    if (value.length < 1 || value.length > 10) {
-      throw new Error('images must contain between 1 and 10 items');
-    }
-    // Validate each URL
+// Validates an images array: 1–10 items, all must be https:// URLs
+const buildImagesValidator = (optional = false) => {
+  let v = body('images');
+  if (optional) v = v.optional();
+  return v.custom((value) => {
+    if (!Array.isArray(value)) throw new Error('images must be an array');
+    if (value.length < 1 || value.length > 10) throw new Error('images must contain between 1 and 10 items');
     for (const url of value) {
-      if (typeof url !== 'string' || url.trim().length === 0) {
-        throw new Error('Each image must be a non-empty string');
-      }
-      // Basic URL validation (express-validator will do more detailed check)
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        throw new Error('Each image must be a valid URL starting with http:// or https://');
+      if (typeof url !== 'string' || !url.startsWith('https://')) {
+        throw new Error('Each image must be a valid HTTPS URL');
       }
     }
     return true;
   });
+};
+const validateImagesArray         = buildImagesValidator(false); // required on create
+const validateImagesArrayOptional = buildImagesValidator(true);  // optional on update
 
 // Custom validator for attributes array
 const validateAttributes = body('attributes')
@@ -126,10 +122,6 @@ export const validateProductCreate = [
   
   // Use custom validator for images to avoid conflicts between array and item validation
   validateImagesArray,
-  // Additional URL validation for each image
-  body('images.*')
-    .isURL({ protocols: ['http', 'https'], require_protocol: true })
-    .withMessage('Each image must be a valid URL'),
   
   // Legacy sizes field - no longer restricted to enum
   validateArray('sizes', { min: 0, max: 20, optional: true }),
@@ -176,8 +168,8 @@ export const validateProductUpdate = [
   validateNumber('price', { min: 0, max: 1000000, optional: true }),
   validateNumber('discountPrice', { min: 0, max: 1000000, optional: true }),
   validateInteger('stock', { min: 0, max: 100000, optional: true }),
-  // Use custom validator for images instead of generic validateArray
-  validateImagesArray,
+  // Images are optional on update — a patch to name/description shouldn't require re-uploading all images
+  validateImagesArrayOptional,
   validateArray('sizes', { min: 0, max: 20, optional: true }),
   body('sizes.*')
     .optional()

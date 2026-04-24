@@ -1,5 +1,14 @@
 import mongoose from "mongoose";
 
+const bankakApprovalSchema = new mongoose.Schema({
+  status:     { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  approvedAt: { type: Date },
+  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  rejectedAt: { type: Date },
+  rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  reason:     { type: String },
+}, { _id: false });
+
 const orderProductSchema = new mongoose.Schema(
   {
     product: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
@@ -35,9 +44,9 @@ const orderSchema = new mongoose.Schema(
 
     products: { type: [orderProductSchema], default: [] },
 
-    totalAmount: { type: Number, required: true },
-    discountAmount: { type: Number, default: 0 },
-    finalAmount: { type: Number, default: 0 },
+    totalAmount:    { type: Number, required: true, min: 0 },
+    discountAmount: { type: Number, default: 0,     min: 0 },
+    finalAmount:    { type: Number, default: 0,     min: 0 },
 
     status: {
       type: String,
@@ -56,14 +65,7 @@ const orderSchema = new mongoose.Schema(
       enum: ["pending", "paid", "failed"],
       default: "pending",
     },
-    bankakApproval: {
-        status: { type: String, enum: ["PENDING", "APPROVED", "REJECTED"], default: "PENDING" },
-        approvedAt: Date,
-        approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        rejectedAt: Date,
-        rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-        reason: String,
-      },
+    bankakApproval: { type: bankakApprovalSchema, default: () => ({}) },
     orderDate: { type: Date, default: Date.now },
     orderNumber: { type: String, unique: true },
 
@@ -128,6 +130,7 @@ orderSchema.index({ merchants: 1, orderDate: -1 });
 orderSchema.index({ status: 1, paymentStatus: 1 });
 orderSchema.index({ status: 1, orderDate: -1 });
 orderSchema.index({ marketer: 1, status: 1 });
+orderSchema.index({ paymentMethod: 1, paymentStatus: 1 }); // BANKAK approval queue
 
 const Order = mongoose.model("Order", orderSchema);
 export default Order;

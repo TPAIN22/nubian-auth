@@ -86,8 +86,15 @@ const productSchema = new mongoose.Schema(
       },
     },
 
-    reviews: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Review' }],
+    // reviews array removed — query Review.find({ product }) instead.
+    // Keeping an embedded array of ObjectIds caused unbounded document growth
+    // and had no query benefit over the indexed Review collection.
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
+
+    // Persisted sum of active-variant stocks. Kept in sync by the pre-save hook
+    // and by any variant stock mutation. Using a real field (vs a virtual) ensures
+    // it is accessible in lean() queries and aggregation pipelines.
+    stock: { type: Number, default: 0, min: 0, index: true },
 
     merchant: { type: mongoose.Schema.Types.ObjectId, ref: 'Merchant', default: null },
 
@@ -111,18 +118,10 @@ const productSchema = new mongoose.Schema(
 );
 
 // ===== Virtuals =====
-// Total stock across ALL variants (including inactive)
+// Total stock across ALL variants including inactive — for internal/admin use only
 productSchema.virtual('totalStock').get(function () {
   if (!this.variants) return 0;
-  return this.variants.reduce((total, variant) => total + (variant.stock || 0), 0);
-});
-
-// Active stock: sum of stock from active variants only (used by aggregation + UI)
-productSchema.virtual('stock').get(function () {
-  if (!this.variants) return 0;
-  return this.variants
-    .filter((v) => v.isActive !== false)
-    .reduce((total, variant) => total + (variant.stock || 0), 0);
+  return this.variants.reduce((total, v) => total + (v.stock || 0), 0);
 });
 
 // ===== Indexes =====
@@ -132,12 +131,13 @@ productSchema.index({ 'ranking.visibilityScore': -1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });
 
-// Optimization indexes for Home Screen & Category Filtering
+// Home screen & category listing queries
 productSchema.index({ 'variants.stock': 1, isActive: 1, deletedAt: 1 });
-productSchema.index({ discountPrice: -1, createdAt: -1 });
-productSchema.index({ 'variants.discountPrice': -1 });
-productSchema.index({ displayFinalPrice: 1, createdAt: -1 });
 productSchema.index({ category: 1, isActive: 1, deletedAt: 1, createdAt: -1 });
+// Full product listing filter (status + isActive + soft-delete + sort fields)
+productSchema.index({ status: 1, isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });
+// Note: discountPrice and displayFinalPrice do not exist as top-level schema fields
+// and were removed to avoid wasted index write overhead.
 
 // ===== Pre-save Middleware: Smart Pricing Calculation =====
 // Recomputes variant.finalPrice from merchantPrice + nubianMarkup + dynamicMarkup - merchantDiscount.
@@ -173,7 +173,20 @@ productSchema.pre('save', function (next) {
   });
 
   this.finalPrice = minFinal === Infinity ? null : minFinal;
+
+  // Keep persisted stock field in sync with active variants
+  this.stock = this.variants
+    .filter((v) => v.isActive !== false)
+    .reduce((sum, v) => sum + (v.stock || 0), 0);
+
   next();
+});
+
+// Automatically exclude soft-deleted products from all find queries
+productSchema.pre(/^find/, function () {
+  if (this.getFilter().deletedAt === undefined) {
+    this.where({ deletedAt: null });
+  }
 });
 
 const Product = mongoose.model('Product', productSchema);

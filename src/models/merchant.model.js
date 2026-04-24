@@ -60,13 +60,11 @@ const merchantSchema = new mongoose.Schema({
     required: false,
   },
   approvedBy: {
-    type: String, // Clerk ID of admin who approved
-    required: false,
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
   },
-  appliedAt: {
-    type: Date,
-    default: Date.now,
-  },
+  // appliedAt removed — use createdAt from timestamps instead
   // Wallet / Balance
   balance: {
       type: Number,
@@ -83,12 +81,9 @@ const merchantSchema = new mongoose.Schema({
 // Indexes for frequently queried fields
 // Note: clerkId index is automatically created by unique: true, so we don't need to add it again
 // Note: status index is automatically created by index: true in schema, so we don't need to add it again
-merchantSchema.index({ appliedAt: -1 }); // For sorting by application date
-merchantSchema.index({ businessEmail: 1 }); // For email lookups
-
-// Compound indexes for common query patterns
-merchantSchema.index({ status: 1, appliedAt: -1 }); // Merchants by status sorted by application date
-merchantSchema.index({ status: 1, approvedAt: -1 }); // Approved merchants sorted by approval date
+merchantSchema.index({ businessEmail: 1 });
+merchantSchema.index({ status: 1, createdAt: -1 });
+merchantSchema.index({ status: 1, approvedAt: -1 });
 
 const Merchant = mongoose.model("Merchant", merchantSchema);
 export default Merchant;

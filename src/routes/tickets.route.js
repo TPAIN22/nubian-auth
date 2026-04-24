@@ -1,5 +1,5 @@
 import express from "express";
-import { body, param, query, validationResult } from "express-validator";
+import { body, param, query } from "express-validator";
 import {
   createTicket,
   getTickets,
@@ -8,25 +8,9 @@ import {
   addMessage,
   getStats,
 } from "../controllers/tickets.controller.js";
-import { validate } from "../middleware/validate.middleware.js";
+import { handleValidationErrors } from "../middleware/validation.middleware.js";
 
 const router = express.Router();
-
-// Validation Middleware Wrapper (if needed, but importing generic 'validate' is better if standard)
-// Since we import 'validate' from middleware, we should use it.
-// BUT current code uses 'handleValidationErrors' inline. I will use the imported validate.
-
-const handleValidationErrors = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      message: "Validation Error",
-      errors: errors.array(),
-    });
-  }
-  next();
-};
 
 // POST /tickets
 router.post(

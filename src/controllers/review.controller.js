@@ -67,13 +67,15 @@ export const createReview = async (req, res) => {
             rating: req.body.rating,
             comment: req.body.comment,
         });
-        const product = await Product.findById(review.product)
-        if (product) {
-            product.reviews.push(review._id)
-            const allReviews = await Review.find({ product: product._id })
-            const avgRating = allReviews.reduce((acc, r) => acc + r.rating, 0) / allReviews.length
-            product.averageRating = avgRating
-            await product.save()
+        // Update averageRating via aggregation — avoids loading all reviews into memory
+        const [agg] = await Review.aggregate([
+            { $match: { product: review.product } },
+            { $group: { _id: null, avg: { $avg: '$rating' } } },
+        ]);
+        if (agg) {
+            await Product.findByIdAndUpdate(review.product, {
+                averageRating: Math.round(agg.avg * 10) / 10,
+            });
         }
         res.status(201).json(review)
     } catch (error) {

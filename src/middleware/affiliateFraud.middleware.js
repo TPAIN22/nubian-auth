@@ -15,21 +15,20 @@ export const checkReferralFraud = async (req, res, next) => {
       return next(); // Nothing to check
     }
 
-    const ip = req.ip || req.connection.remoteAddress;
+    const ip       = req.ip || req.socket?.remoteAddress;
     const deviceId = req.headers['x-device-id'] || (req.body && req.body.deviceId);
 
     const fraudResult = await ReferralFraudService.evaluateReferralRisk({
       referralCode: referralCode.toUpperCase(),
       ip,
       deviceId,
-      userId
+      userId,
     });
 
-    // Attach to request for controller use
     req.fraudResult = fraudResult;
 
-    // If extremely high fraud score, we might want to block immediately
-    if (fraudResult.fraudScore >= 100) {
+    const threshold = parseInt(process.env.FRAUD_SCORE_THRESHOLD) || 80;
+    if (fraudResult.fraudScore >= threshold) {
       logger.warn("Blocking high-risk referral attempt", {
         referralCode,
         ip,

@@ -87,9 +87,11 @@ export const sanitizeString = (field, options = {}) => {
     validator = validator.optional();
   }
   
+  // .escape() is intentionally omitted — it HTML-encodes & < > which corrupts
+  // legitimate business names (e.g. "Smith & Jones" → "Smith &amp; Jones").
+  // XSS protection belongs at the output/template layer, not in storage.
   return validator
     .trim()
-    .escape()
     .isLength({ min, max })
     .withMessage(`${field} must be between ${min} and ${max} characters`);
 };

@@ -238,29 +238,22 @@ function getProductPrice(product, attributes = null) {
   if (hasVariants) {
     const variant = findMatchingVariant(product, attributes);
     if (variant) {
-      // Variant: prefer finalPrice (smart pricing), fallback to discountPrice, then merchantPrice
-      if (variant.finalPrice && variant.finalPrice > 0) {
-        return variant.finalPrice;
-      }
-      if (variant.discountPrice && variant.discountPrice > 0) {
-        return variant.discountPrice;
-      }
-      return variant.merchantPrice || variant.price || 0;
+      // Use finalPrice (system-computed with all markups applied).
+      // discountPrice is intentionally excluded — it is a display-only field that
+      // may be lower than finalPrice, which would create underpriced orders.
+      return (variant.finalPrice > 0 ? variant.finalPrice : null)
+        ?? variant.merchantPrice
+        ?? 0;
     }
-    
-    // If no variant matched but product has variants, return 0 for order safety
-    // or return the root finalPrice if it's intended to be a "From" price
     return product.finalPrice || 0;
   }
-  
-  // Product: prefer finalPrice (smart pricing), fallback to discountPrice, then merchantPrice
-  if (product.finalPrice && product.finalPrice > 0) {
-    return product.finalPrice;
-  }
-  if (product.discountPrice && product.discountPrice > 0) {
-    return product.discountPrice;
-  }
-  return product.merchantPrice || product.price || 0;
+
+  // Simple product: prefer finalPrice, then merchantPrice.
+  // discountPrice excluded for the same reason as above.
+  return (product.finalPrice > 0 ? product.finalPrice : null)
+    ?? product.merchantPrice
+    ?? product.price
+    ?? 0;
 }
 
 export {

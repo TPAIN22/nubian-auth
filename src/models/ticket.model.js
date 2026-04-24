@@ -4,9 +4,9 @@ const ticketSchema = new mongoose.Schema(
   {
     ticketNumber: {
       type: String,
-      required: true,
       unique: true,
       index: true,
+      // Generated automatically in pre-save via atomic counter — do not set manually
     },
     userId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -95,8 +95,23 @@ const ticketSchema = new mongoose.Schema(
   }
 );
 
-// Compound index for efficient filtering by user and status
 ticketSchema.index({ userId: 1, status: 1 });
+ticketSchema.index({ status: 1, priority: 1, createdAt: -1 });
+ticketSchema.index({ status: 1, createdAt: -1 });
+ticketSchema.index({ category: 1, status: 1 });
+
+ticketSchema.pre('save', async function (next) {
+  if (this.isNew && !this.ticketNumber) {
+    const Counter = mongoose.model('Counter');
+    const counter = await Counter.findOneAndUpdate(
+      { _id: 'ticketNumber' },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+    this.ticketNumber = `TKT-${String(counter.seq).padStart(5, '0')}`;
+  }
+  next();
+});
 
 const Ticket = mongoose.model("Ticket", ticketSchema);
 export default Ticket;

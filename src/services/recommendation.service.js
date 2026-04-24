@@ -2,6 +2,7 @@
 import mongoose from 'mongoose';
 import Product from '../models/product.model.js';
 import User from '../models/user.model.js';
+import UserActivity from '../models/userActivity.model.js';
 import Order from '../models/orders.model.js';
 import Cart from '../models/carts.model.js';
 import Wishlist from '../models/wishlist.model.js';
@@ -70,40 +71,60 @@ export async function getHomeRecommendations(userId) {
  */
 async function getForYouRecommendations(userId, baseFilter, limit = 20) {
   try {
-    const user = await User.findOne({ clerkId: userId })
-      .populate('viewedProducts.product', 'category')
-      .populate('clickedProducts.product', 'category')
-      .populate('purchasedCategories.category')
-      .lean();
-    
-    if (!user || (!user.viewedProducts?.length && !user.purchasedCategories?.length)) {
-      // Fallback to trending if no user data
+    const [viewEvents, purchaseEvents] = await Promise.all([
+      UserActivity.find({
+        userId,
+        event: { $in: ['product_view', 'product_click'] },
+        productId: { $ne: null },
+      })
+        .sort({ timestamp: -1 })
+        .limit(50)
+        .select('productId categoryId')
+        .lean(),
+      UserActivity.find({
+        userId,
+        event: 'purchase',
+        categoryId: { $ne: null },
+      })
+        .sort({ timestamp: -1 })
+        .limit(20)
+        .select('categoryId')
+        .lean(),
+    ]);
+
+    if (!viewEvents.length && !purchaseEvents.length) {
       return getTrendingProducts(baseFilter, limit);
     }
-    
-    // Get user's preferred categories
+
     const categoryIds = new Set();
-    user.viewedProducts?.forEach(vp => {
-      if (vp.product?.category) {
-        categoryIds.add(vp.product.category.toString());
+    const productIdsNeedingCategory = [];
+
+    viewEvents.forEach(ev => {
+      if (ev.categoryId) {
+        categoryIds.add(ev.categoryId.toString());
+      } else if (ev.productId) {
+        productIdsNeedingCategory.push(ev.productId);
       }
     });
-    user.clickedProducts?.forEach(cp => {
-      if (cp.product?.category) {
-        categoryIds.add(cp.product.category.toString());
-      }
+    purchaseEvents.forEach(ev => {
+      if (ev.categoryId) categoryIds.add(ev.categoryId.toString());
     });
-    user.purchasedCategories?.forEach(pc => {
-      categoryIds.add(pc.category._id.toString());
-    });
-    
+
+    if (productIdsNeedingCategory.length > 0) {
+      const viewedProductDocs = await Product.find(
+        { _id: { $in: productIdsNeedingCategory } },
+        { category: 1 }
+      ).lean();
+      viewedProductDocs.forEach(p => {
+        if (p.category) categoryIds.add(p.category.toString());
+      });
+    }
+
     const preferredCategories = Array.from(categoryIds);
-    
-    // Get user's viewed/clicked product IDs (to exclude from recommendations)
-    const viewedProductIds = [
-      ...(user.viewedProducts?.map(vp => vp.product?._id?.toString()).filter(Boolean) || []),
-      ...(user.clickedProducts?.map(cp => cp.product?._id?.toString()).filter(Boolean) || []),
-    ];
+
+    const viewedProductIds = viewEvents
+      .filter(ev => ev.productId)
+      .map(ev => ev.productId.toString());
     
     const pipeline = [
       {
@@ -674,24 +695,42 @@ async function getFrequentlyBoughtTogether(productId, baseFilter, limit = 20) {
  */
 async function getYouMayAlsoLike(userId, productId, product, baseFilter, limit = 20) {
   try {
-    const user = await User.findOne({ clerkId: userId })
-      .populate('viewedProducts.product', 'category')
+    const viewEvents = await UserActivity.find({
+      userId,
+      event: { $in: ['product_view', 'product_click'] },
+      productId: { $ne: null },
+    })
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .select('productId categoryId')
       .lean();
-    
-    if (!user?.viewedProducts?.length) {
+
+    if (!viewEvents.length) {
       return getSimilarItems(productId, product, baseFilter, limit);
     }
-    
-    // Get categories from user's viewed products
+
     const categoryIds = new Set();
-    user.viewedProducts.forEach(vp => {
-      if (vp.product?.category) {
-        categoryIds.add(vp.product.category.toString());
+    const productIdsNeedingCategory = [];
+    viewEvents.forEach(ev => {
+      if (ev.categoryId) {
+        categoryIds.add(ev.categoryId.toString());
+      } else if (ev.productId) {
+        productIdsNeedingCategory.push(ev.productId);
       }
     });
-    
+
+    if (productIdsNeedingCategory.length > 0) {
+      const viewedProductDocs = await Product.find(
+        { _id: { $in: productIdsNeedingCategory } },
+        { category: 1 }
+      ).lean();
+      viewedProductDocs.forEach(p => {
+        if (p.category) categoryIds.add(p.category.toString());
+      });
+    }
+
     const preferredCategories = Array.from(categoryIds);
-    
+
     if (preferredCategories.length === 0) {
       return getSimilarItems(productId, product, baseFilter, limit);
     }

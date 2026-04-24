@@ -31,8 +31,8 @@ router.get('/:id', ...validateObjectId('id'), handleValidationErrors, getProduct
 
 // Product creation/update/delete (merchant and admin)
 router.post('/', isAuthenticated, isAdminOrApprovedMerchant, validateProductCreate, createProduct)
-router.put('/:id', isAuthenticated, ...validateObjectId('id'), handleValidationErrors, validateProductUpdate, updateProduct)
-router.delete('/:id', isAuthenticated, ...validateObjectId('id'), handleValidationErrors, deleteProduct)
+router.put('/:id',    isAuthenticated, isAdminOrApprovedMerchant, ...validateObjectId('id'), handleValidationErrors, validateProductUpdate, updateProduct)
+router.delete('/:id', isAuthenticated, isAdminOrApprovedMerchant, ...validateObjectId('id'), handleValidationErrors, deleteProduct)
 
 // Admin-only routes for managing all products
 router.get('/admin/all', isAuthenticated, isAdmin, validatePagination, validateCategoryFilter, validateMerchantFilter, getAllProductsAdmin)

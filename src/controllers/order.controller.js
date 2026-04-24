@@ -1,56 +1,65 @@
 import Order from "../models/orders.model.js";
-import Product from "../models/product.model.js";
-import Cart from "../models/carts.model.js";
-import Address from "../models/address.model.js";
 import Merchant from "../models/merchant.model.js";
 import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
 import { sendOrderEmail } from "../lib/mail.js";
-import Coupon from "../models/coupon.model.js";
-import Marketer from "../models/marketer.model.js";
 import CommissionService from "../services/commission.service.js";
-import ReferralTrackingLog from "../models/referralTrackingLog.model.js";
 import logger from "../lib/logger.js";
-import { sendSuccess, sendError, sendNotFound, sendForbidden } from "../lib/response.js";
-import { getProductPrice, mapToObject } from "../utils/cartUtils.js";
+import { sendSuccess, sendError, sendNotFound, sendForbidden, sendPaginated, sendCreated } from "../lib/response.js";
 import { handleOrderCreated, handleOrderStatusChanged } from "../services/notificationEventHandlers.js";
-import { getFxSnapshotForOrder, convertUSDToCurrency, applyPsychologicalPricing } from "../services/currency.service.js";
-import Currency from "../models/currency.model.js";
-import { enrichProductWithPricing } from "./products.controller.js";
+import orderService from "../services/order.service.js";
+import { ServiceError } from "../lib/errors.js";
 
-/**
- * Build a readable shipping address string snapshot.
- * Stored in Order.address (string).
- */
-function buildShippingAddressText(addr) {
-  const parts = [
-    addr?.name,
-    addr?.city,
-    addr?.area,
-    addr?.street,
-    addr?.building,
-    addr?.notes ? `ملاحظات: ${addr.notes}` : null,
-  ].filter(Boolean);
+// Shared display formatter used by getUserOrders, getOrders, and getOrderById.
+// Always reads from the price snapshot stored on the order item — never the current
+// product price — so completed orders are immutable from the customer's perspective.
+function formatOrderProduct(item) {
+  if (!item.product) return null;
 
-  return parts.join(" - ").trim();
+  const snapshotFinalPrice    = item.price || 0;
+  const snapshotMerchantPrice = item.merchantPrice || 0;
+  const snapshotMarkup        = item.nubianMarkup || 10;
+
+  const rawOriginal          = snapshotMerchantPrice > 0
+    ? snapshotMerchantPrice * (1 + snapshotMarkup / 100)
+    : 0;
+  const displayFinalPrice    = snapshotFinalPrice;
+  const displayOriginalPrice = rawOriginal > snapshotFinalPrice ? rawOriginal : snapshotFinalPrice;
+  const displayDiscountPercentage = displayOriginalPrice > snapshotFinalPrice
+    ? Math.round(((displayOriginalPrice - snapshotFinalPrice) / displayOriginalPrice) * 100)
+    : 0;
+
+  return {
+    productId:     item.product._id,
+    name:          item.product.name          || "",
+    price:         displayFinalPrice,
+    merchantPrice: snapshotMerchantPrice,
+    originalPrice: displayOriginalPrice,
+    discountPrice: item.discountPrice         || item.product.discountPrice || null,
+    nubianMarkup:  snapshotMarkup,
+    dynamicMarkup: item.dynamicMarkup         || item.product.dynamicMarkup || 0,
+    pricingBreakdown: {
+      merchantPrice: snapshotMerchantPrice,
+      nubianMarkup:  snapshotMarkup,
+      dynamicMarkup: item.dynamicMarkup || 0,
+      finalPrice:    displayFinalPrice,
+    },
+    images:      item.product.images      || [],
+    category:    item.product.category    || "",
+    description: item.product.description || "",
+    stock:       item.product.stock       || 0,
+    isAvailable: (item.product.stock      || 0) > 0,
+    quantity:    item.quantity,
+    totalPrice:  displayFinalPrice * item.quantity,
+    attributes:  item.attributes  || null,
+    size:        item.size        || null,
+    variantId:   item.variantId   || null,
+    displayFinalPrice,
+    displayOriginalPrice,
+    displayDiscountPercentage,
+  };
 }
 
-/**
- * Normalize payment method coming from mobile/dashboard.
- * Accepts: BANKAK | CASH | CARD and legacy cash/card.
- */
-function normalizePaymentMethod(value) {
-  const v = String(value || "").trim().toUpperCase();
-  if (v === "BANKAK") return "BANKAK";
-  if (v === "CASH") return "CASH";
-  if (v === "CARD") return "CARD";
-
-  // legacy
-  if (v === "CASH_ON_DELIVERY") return "CASH";
-  if (v === "CREDIT_CARD") return "CARD";
-
-  return v || null;
-}
 
 export const updateOrderStatus = async (req, res) => {
   try {
@@ -80,12 +89,13 @@ export const updateOrderStatus = async (req, res) => {
     }
 
     if (paymentStatus !== undefined) {
-      if (!allowedPaymentStatus.includes(paymentStatus)) {
+      const allowedPaymentStatuses = ["pending", "paid", "failed"];
+      if (!allowedPaymentStatuses.includes(paymentStatus)) {
         return sendError(res, {
           message: "Invalid payment status value",
           code: "INVALID_PAYMENT_STATUS",
           statusCode: 400,
-          details: { allowedPaymentStatus },
+          details: { allowedPaymentStatuses },
         });
       }
       updateData.paymentStatus = paymentStatus;
@@ -140,7 +150,8 @@ export const updateOrderStatus = async (req, res) => {
 
     return sendSuccess(res, { data: order, message: "Order status updated successfully" });
   } catch (error) {
-    throw error;
+    logger.error("Error updating order status", { orderId: req.params.id, error: error.message });
+    return sendError(res, { message: "Failed to update order status", statusCode: 500 });
   }
 };
 
@@ -151,585 +162,73 @@ export const getUserOrders = async (req, res) => {
     const user = await User.findOne({ clerkId: userId });
     if (!user) return sendNotFound(res, "User");
 
-    const orders = await Order.find({ user: user._id })
-      .populate({
-        path: "products.product",
-        select: "name price discountPrice images category description stock createdAt",
-      })
-      .populate("user", "fullName emailAddress phoneNumber")
-      .populate("coupon", "code type value")
-      .sort({ orderDate: -1 });
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
+    const skip  = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find({ user: user._id })
+        .populate({
+          path: "products.product",
+          select: "name price discountPrice images category description stock createdAt",
+        })
+        .populate("user", "fullName emailAddress phoneNumber")
+        .populate("coupon", "code type value")
+        .sort({ orderDate: -1 })
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments({ user: user._id }),
+    ]);
 
     const enhancedOrders = orders.map((order) => ({
       ...order.toObject(),
-      transferProof: order.transferProof || null,
-      productsCount: order.products.length,
-      productsDetails: order.products.map((item) => {
-        // Enriched Product Data
-        // Convert item.product to object if it's a mongoose doc, though lean() was not used effectively here.
-        // item.product is likely a document due to populate without lean(). 
-        const productObj = item.product && item.product.toObject ? item.product.toObject() : item.product;
-        const enriched = enrichProductWithPricing(productObj);
-
-        // Use definitive pricing
-        const finalPrice = enriched?.displayFinalPrice ?? (item.price || 0);
-        // If merchant price wasn't enriched or we want to keep what was in the order item snapshot?
-        // Actually, for COMPLETED orders, we should probably respect the snapshot price stored in the order item (`item.price`).
-        // BUT the user wants "Pricing Inconsistencies" fixed.
-        // If the order is "Pending", maybe we show current price?
-        // Usually, Orders should be immutable snapshots.
-        // However, the `productsDetails` mapping seems to mix `item.price` (snapshot) and `item.product.price` (current).
-        // The existing code: `const finalPrice = item.price || item.product?.finalPrice ...`
-        // tries to use `item.price` first.
-        
-        // Let's stick to the existing logic principle: Use `item.price` (snapshot) if available.
-        // BUT, if we are relying on `item.product` fields (dynamic), we must use the DEFNITIVE logic.
-        
-        // Actually, `item` in `order.products` contains the snapshot `price`, `merchantPrice`, `discountPrice`.
-        // So `enrichProductWithPricing` might be less relevant for *Order History* unless we are displaying *current* product info.
-        // The request is "apply to cart screen orderDetails orders screen".
-        // If the order is placed, the price is frozen. We shouldn't change it based on current product price.
-        
-        // However, the `displayOriginalPrice` concept (MSRP) might need to be calculated if not stored.
-        // Existing `originalPrice` logic: `const originalPrice = merchantPrice`.
-        
-        // If the user wants the "Display Logic" (e.g. Original > Final sanity check), we should apply it to the SNAPSHOT data too.
-        
-        // Let's create a mini-enricher for the order item itself?
-        // Or just trust the `enrichProductWithPricing` if we want to show *current* details?
-        
-        // Valid Point: `item.product` is populated.
-        
-        // Let's rely on `item.price` as the final transaction price `displayFinalPrice`.
-        // And calculate `displayOriginalPrice` based on `item.merchantPrice` and `item.nubianMarkup`.
-        
-        const snapshotFinalPrice = item.price || 0;
-        const snapshotMerchantPrice = item.merchantPrice || 0;
-        const snapshotMarkup = item.nubianMarkup || 10;
-        
-        // Calculate Display Original Price from Snapshot
-        const initialOriginalPrice = snapshotMerchantPrice > 0 ? (snapshotMerchantPrice * (1 + snapshotMarkup / 100)) : 0;
-        
-        let displayOriginalPrice = initialOriginalPrice;
-        let displayFinalPrice = snapshotFinalPrice;
-        let displayDiscountPercentage = 0;
-
-        if (displayOriginalPrice > displayFinalPrice) {
-             const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-             displayDiscountPercentage = Math.round(rawPct);
-        } else {
-             displayOriginalPrice = displayFinalPrice;
-             displayDiscountPercentage = 0;
-        }
-
-        return {
-          productId: item.product?._id || null,
-          name: item.product?.name || "",
-          price: displayFinalPrice,
-          merchantPrice: snapshotMerchantPrice,
-          discountPrice: item.discountPrice || item.product?.discountPrice,
-          originalPrice: displayOriginalPrice, // UPDATED
-          nubianMarkup: snapshotMarkup,
-          dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0,
-          images: item.product?.images || [],
-          category: item.product?.category || "",
-          description: item.product?.description || "",
-          stock: item.product?.stock || 0,
-          quantity: item.quantity,
-          totalPrice: finalPrice * item.quantity,
-          
-          // Add explicit fields
-          displayFinalPrice,
-          displayOriginalPrice,
-          displayDiscountPercentage
-        };
-      }),
+      transferProof:  order.transferProof || null,
+      productsCount:  order.products.length,
+      productsDetails: order.products.map(formatOrderProduct).filter(Boolean),
     }));
 
-    return res.status(200).json(enhancedOrders);
+    return sendPaginated(res, { data: enhancedOrders, page, limit, total });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return sendError(res, { message: "Failed to retrieve orders", statusCode: 500 });
   }
 };
 
 export const createOrder = async (req, res) => {
   const { userId } = getAuth(req);
 
-  // order number (computed early)
-  let lastOrder = await Order.findOne().sort({ createdAt: -1 });
-  if (!lastOrder) lastOrder = { orderNumber: "ORD-0001" };
-
-  let nextOrderNumber = 1;
-  if (lastOrder?.orderNumber) {
-    const lastNumber = parseInt(String(lastOrder.orderNumber).split("-")[1] || "0", 10);
-    nextOrderNumber = lastNumber + 1;
+  // HTTP-boundary check: transferProof URL domain must be validated before
+  // entering the service, as it depends on the IMAGEKIT_URL_ENDPOINT env var.
+  const rawPaymentMethod = String(req.body.paymentMethod || '').trim().toUpperCase();
+  if (rawPaymentMethod === 'BANKAK') {
+    const proof = req.body.transferProof || req.body.paymentProofUrl || null;
+    if (!isValidProofUrl(proof)) {
+      return sendError(res, {
+        message: 'transferProof must be a valid HTTPS URL from the approved image host',
+        code: 'VALIDATION_ERROR',
+        statusCode: 400,
+        details: [{ field: 'transferProof', message: 'Must be a valid HTTPS URL from the approved image host', value: proof || '' }],
+      });
+    }
   }
-  const formattedOrderNumber = `ORD-${String(nextOrderNumber).padStart(4, "0")}`;
 
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (!user) return sendNotFound(res, "User");
+    const { order, emailPayload } = await orderService.createOrder(userId, req.body, req.ip);
 
-    const cart = await Cart.findOne({ user: user._id }).populate({
-      path: "products.product",
-      populate: { path: "merchant" },
+    sendOrderEmail({ ...emailPayload, status: 'بانتظار التأكيد' }).catch((err) => {
+      logger.error('Failed to send order email', { requestId: req.requestId, error: err.message, orderNumber: order.orderNumber });
     });
 
-    if (!cart || cart.products.length === 0) {
-      return sendError(res, { message: "Cart is empty or not found" }, 400);
-    }
-
-    // ---------- Resolve shipping snapshot ----------
-    const addressId = req.body.addressId ? String(req.body.addressId) : null;
-
-    let addressText = "";
-    let phoneNumber = "";
-    let city = "";
-
-    if (addressId) {
-      const addr = await Address.findById(addressId);
-      if (!addr) {
-        return sendError(
-          res,
-          {
-            message: "Address not found",
-            code: "ADDRESS_NOT_FOUND",
-            statusCode: 400,
-            details: [{ field: "addressId", message: "Invalid addressId", value: addressId }],
-          },
-          400
-        );
-      }
-
-      // ownership check
-      if (String(addr.user) !== String(user._id)) {
-        return sendForbidden(res, "You do not own this address");
-      }
-
-      addressText = buildShippingAddressText(addr);
-      phoneNumber = String(addr.phone || addr.whatsapp || "").trim();
-      city = String(addr.city || "").trim();
-    } else {
-      // legacy fallback (if someone still sends shippingAddress/phoneNumber)
-      addressText = String(req.body.shippingAddress || "").trim();
-      phoneNumber = String(req.body.phoneNumber || "").trim();
-      city = String(req.body.city || "").trim();
-    }
-
-    // final guard (same as validator rules)
-    if (!addressText || addressText.length < 10 || addressText.length > 500) {
-      return sendError(
-        res,
-        {
-          message: "Validation error",
-          code: "VALIDATION_ERROR",
-          statusCode: 400,
-          details: [
-            {
-              field: "shippingAddress",
-              message: "shippingAddress must be between 10 and 500 characters",
-              value: addressText || "",
-            },
-          ],
-        },
-        400
-      );
-    }
-
-    if (!phoneNumber || phoneNumber.length < 5 || phoneNumber.length > 20) {
-      return sendError(
-        res,
-        {
-          message: "Validation error",
-          code: "VALIDATION_ERROR",
-          statusCode: 400,
-          details: [
-            {
-              field: "phoneNumber",
-              message: "phoneNumber must be between 5 and 20 characters",
-              value: phoneNumber || "",
-            },
-          ],
-        },
-        400
-      );
-    }
-
-    if (!city) city = "غير محدد";
-
-    // ---------- Build products & pricing snapshot ----------
-    const orderProducts = [];
-    let totalAmount = 0;
-
-    const merchantMap = new Map(); // merchantId -> { amount, products }
-    const merchantIds = new Set();
-    const unmerchantedProducts = [];
-    let merchantTotalAmount = 0;
-    let platformTotalAmount = 0;
-
-    for (const item of cart.products) {
-      let itemAttributes = {};
-      if (item.attributes && item.attributes instanceof Map) {
-        itemAttributes = mapToObject(item.attributes);
-      } else if (item.attributes && typeof item.attributes === 'object') {
-        // Handle attributes sent as plain object from frontend
-        itemAttributes = item.attributes;
-      } else if (item.size) {
-        itemAttributes = { size: item.size };
-      }
-
-      const itemPrice = getProductPrice(item.product, itemAttributes);
-
-      const itemVariant = item.variantId ? item.product.variants?.id(item.variantId) : null;
-
-      const itemMerchantPrice = itemVariant
-        ? itemVariant.merchantPrice || itemVariant.price || 0
-        : item.product.merchantPrice || item.product.price || 0;
-
-      const itemNubianMarkup = itemVariant
-        ? itemVariant.nubianMarkup || 10
-        : item.product.nubianMarkup || 10;
-
-      const itemDynamicMarkup = itemVariant
-        ? itemVariant.dynamicMarkup || 0
-        : item.product.dynamicMarkup || 0;
-
-      const itemTotal = itemPrice * item.quantity;
-      totalAmount += itemTotal;
-
-      orderProducts.push({
-        product: item.product._id,
-        variantId: itemVariant?._id || item.variantId || null,
-        quantity: item.quantity,
-        attributes: itemAttributes,
-        size: item.size || null,
-        price: itemPrice,
-        merchantPrice: itemMerchantPrice,
-        nubianMarkup: itemNubianMarkup,
-        dynamicMarkup: itemDynamicMarkup,
-        discountPrice: itemVariant ? itemVariant.discountPrice : item.product.discountPrice,
-        originalPrice: itemMerchantPrice,
-      });
-
-      const productMerchant = item.product.merchant;
-
-      if (productMerchant) {
-        const merchantId = productMerchant._id
-          ? productMerchant._id.toString()
-          : productMerchant.toString();
-
-        merchantIds.add(merchantId);
-        merchantTotalAmount += itemTotal;
-
-        if (!merchantMap.has(merchantId)) merchantMap.set(merchantId, { amount: 0, products: [] });
-
-        const merchantData = merchantMap.get(merchantId);
-        merchantData.amount += itemTotal;
-        merchantData.products.push({
-          product: item.product._id,
-          quantity: item.quantity,
-          price: itemPrice,
-          merchantPrice: itemMerchantPrice,
-          nubianMarkup: itemNubianMarkup,
-          dynamicMarkup: itemDynamicMarkup,
-        });
-      } else {
-        platformTotalAmount += itemTotal;
-        unmerchantedProducts.push({
-          product: item.product._id,
-          name: item.product.name,
-          quantity: item.quantity,
-          price: itemPrice,
-          merchantPrice: itemMerchantPrice,
-          total: itemTotal,
-        });
-      }
-    }
-
-    // trust cart.totalPrice if it matches
-    if (cart.totalPrice && Math.abs(cart.totalPrice - totalAmount) < 0.01) {
-      totalAmount = cart.totalPrice;
-    }
-
-    if (unmerchantedProducts.length > 0) {
-      logger.warn("Order contains products without merchants", {
-        requestId: req.requestId,
-        orderNumber: formattedOrderNumber,
-        unmerchantedCount: unmerchantedProducts.length,
-        platformTotalAmount,
-        products: unmerchantedProducts.map((p) => ({
-          productId: p.product.toString(),
-          name: p.name,
-          quantity: p.quantity,
-        })),
-      });
-    }
-
-    // ---------- Discounts (coupon / marketer) ----------
-    let discountAmount = 0;
-    let couponId = null;
-    let couponDetails = null;
-
-    if (req.body.couponCode) {
-      const couponCode = String(req.body.couponCode).toUpperCase().trim();
-      const coupon = await Coupon.findOne({ code: couponCode, isActive: true });
-
-      if (!coupon) return sendError(res, { message: "Invalid or inactive coupon code" }, 400);
-
-      const now = new Date();
-      const startDate = coupon.startDate || new Date(0);
-      const endDate = coupon.endDate || coupon.expiresAt;
-
-      if (startDate > now) return sendError(res, { message: "Coupon is not yet active" }, 400);
-      if (endDate < now) return sendError(res, { message: "Coupon has expired" }, 400);
-
-      const usageLimit = coupon.usageLimitGlobal || coupon.usageLimit;
-      if (usageLimit !== null && usageLimit > 0 && coupon.usageCount >= usageLimit) {
-        return sendError(res, { message: "Coupon usage limit reached" }, 400);
-      }
-
-      const userUsedCount = coupon.usedBy.filter((u) => u.toString() === user._id.toString()).length;
-      if (coupon.usageLimitPerUser > 0 && userUsedCount >= coupon.usageLimitPerUser) {
-        return sendError(
-          res,
-          { message: "You have already used this coupon the maximum allowed times" },
-          400
-        );
-      }
-
-      if (coupon.minOrderAmount > 0 && totalAmount < coupon.minOrderAmount) {
-        return sendError(res, { message: `Minimum order amount of ${coupon.minOrderAmount} required` }, 400);
-      }
-
-      discountAmount = coupon.calculateDiscount(totalAmount);
-
-      couponId = coupon._id;
-      couponDetails = {
-        code: coupon.code,
-        type: coupon.type || coupon.discountType,
-        value: coupon.value || coupon.discountValue,
-        discountAmount,
-      };
-
-      coupon.usedBy.push(user._id);
-      coupon.usageCount = (coupon.usageCount || 0) + 1;
-      coupon.totalDiscountGiven = (coupon.totalDiscountGiven || 0) + discountAmount;
-      coupon.totalOrders = (coupon.totalOrders || 0) + 1;
-      await coupon.save();
-    }
-
-    if (req.body.marketerCode) {
-      const marketer = await Marketer.findOne({ code: String(req.body.marketerCode).toUpperCase() });
-      if (marketer) {
-        const marketerDiscount = totalAmount * marketer.discountRate;
-        discountAmount += marketerDiscount;
-        if (discountAmount > totalAmount) discountAmount = totalAmount;
-      }
-    }
-
-    let finalAmount = totalAmount - discountAmount;
-    if (finalAmount < 0) finalAmount = 0;
-
-    const merchantRevenue = Array.from(merchantMap.entries()).map(([merchantId, data]) => {
-      const merchantDiscount =
-        merchantTotalAmount > 0 ? (data.amount / merchantTotalAmount) * discountAmount : 0;
-
-      const merchantFinalAmount = data.amount - merchantDiscount;
-
-      return { merchant: merchantId, amount: Math.max(0, merchantFinalAmount) };
+    handleOrderCreated(order._id).catch((err) => {
+      logger.error('Failed to send order created notification', { error: err.message, orderId: order._id.toString() });
     });
 
-    if (merchantTotalAmount + platformTotalAmount !== totalAmount) {
-      logger.error("Order amount mismatch detected", {
-        requestId: req.requestId,
-        orderNumber: formattedOrderNumber,
-        totalAmount,
-        merchantTotalAmount,
-        platformTotalAmount,
-        sum: merchantTotalAmount + platformTotalAmount,
-        difference: totalAmount - (merchantTotalAmount + platformTotalAmount),
-      });
-    }
-
-    // ---------- Payment ----------
-    const paymentMethod = normalizePaymentMethod(req.body.paymentMethod);
-
-    if (!paymentMethod || !["CASH", "BANKAK", "CARD"].includes(paymentMethod)) {
-      return sendError(
-        res,
-        {
-          message: "Invalid payment method",
-          code: "INVALID_PAYMENT_METHOD",
-          statusCode: 400,
-          details: [
-            { field: "paymentMethod", message: "Use CASH, BANKAK or CARD", value: req.body.paymentMethod },
-          ],
-        },
-        400
-      );
-    }
-
-    const transferProof = req.body.transferProof || req.body.paymentProofUrl || null;
-
-    if (paymentMethod === "BANKAK") {
-      if (!transferProof || !String(transferProof).startsWith("http")) {
-        return sendError(
-          res,
-          {
-            message: "Validation error",
-            code: "VALIDATION_ERROR",
-            statusCode: 400,
-            details: [
-              {
-                field: "transferProof",
-                message: "transferProof is required for BANKAK and must be a valid URL",
-                value: transferProof || "",
-              },
-            ],
-          },
-          400
-        );
-      }
-    }
-
-    // ---------- Create Order (Schema-compatible) ----------
-    const order = await Order.create({
-      user: user._id,
-      products: orderProducts,
-
-      totalAmount,
-      discountAmount,
-      finalAmount,
-
-      coupon: couponId,
-      couponDetails: couponDetails || null,
-
-      paymentMethod,
-      paymentStatus: "pending",
-      orderNumber: formattedOrderNumber,
-
-      // ✅ schema fields
-      address: addressText,
-      phoneNumber,
-      city,
-
-      transferProof,
-
-      marketer: null, // Will be set below
-      referralCodeUsed: null, // Will be set below
-      marketerCommission: 0,
-
-      merchants: Array.from(merchantIds),
-      merchantRevenue,
-
-      // ===== MULTI-CURRENCY SUPPORT =====
-      currencyCodeSelected: req.body.currencyCode || user.currencyCode || "USD",
-      fxSnapshot: await getFxSnapshotForOrder(req.body.currencyCode || user.currencyCode || "USD"),
-      totalAmountConverted: null, // Will be set below
-      discountAmountConverted: null,
-      finalAmountConverted: null,
-    });
-
-    // ---------- Referral & Marketer Linking ----------
-    const referralCode = req.body.referralCode || req.referralCode;
-    if (referralCode) {
-      const refCode = String(referralCode).toUpperCase().trim();
-      const marketer = await Marketer.findOne({ code: refCode, status: 'active' });
-      
-      if (marketer) {
-        // Prevent self-referral
-        if (marketer.clerkId === userId) {
-          logger.warn(`Self-referral blocked for user: ${userId}`);
-        } else {
-          order.marketer = marketer._id;
-          order.referralCodeUsed = refCode;
-          
-          // Mark the tracking log as converted if it exists
-          try {
-            await ReferralTrackingLog.findOneAndUpdate(
-              { referralCode: refCode, ip: req.ip || req.connection.remoteAddress, converted: false },
-              { $set: { converted: true, orderId: order._id } },
-              { sort: { createdAt: -1 } }
-            );
-          } catch (trackingErr) {
-            logger.error("Error linking tracking log to order:", trackingErr);
-          }
-        }
-      }
-    }
-    await order.save();
-
-    // Calculate converted amounts in user's selected currency
-    const selectedCurrency = req.body.currencyCode || user.currencyCode || "USD";
-    if (selectedCurrency.toUpperCase() !== "USD") {
-      try {
-        const currency = await Currency.findOne({ code: selectedCurrency.toUpperCase() }).lean();
-        const fxRate = order.fxSnapshot?.rate || 1;
-
-        const totalConverted = applyPsychologicalPricing(totalAmount * fxRate, currency);
-        const discountConverted = applyPsychologicalPricing(discountAmount * fxRate, currency);
-        const finalConverted = applyPsychologicalPricing(finalAmount * fxRate, currency);
-
-        order.totalAmountConverted = totalConverted;
-        order.discountAmountConverted = discountConverted;
-        order.finalAmountConverted = finalConverted;
-        await order.save();
-
-        logger.info("Order currency conversion applied", {
-          orderNumber: formattedOrderNumber,
-          currencyCode: selectedCurrency,
-          fxRate,
-          totalUSD: totalAmount,
-          totalConverted,
-          finalUSD: finalAmount,
-          finalConverted,
-        });
-      } catch (conversionError) {
-        logger.warn("Failed to calculate converted amounts for order", {
-          orderNumber: formattedOrderNumber,
-          error: conversionError.message,
-        });
-      }
-    }
-
-    await Cart.findOneAndDelete({ user: user._id });
-
-    // Email
-    try {
-      await sendOrderEmail({
-        to: user.emailAddress || user.email,
-        userName: user.fullName || user.name || "",
-        orderNumber: formattedOrderNumber,
-        status: "بانتظار التأكيد",
-        totalAmount: finalAmount,
-        products: cart.products.map((item) => {
-          let itemAttributes = {};
-          if (item.attributes && item.attributes instanceof Map) itemAttributes = mapToObject(item.attributes);
-          else if (item.size) itemAttributes = { size: item.size };
-
-          const itemPrice = getProductPrice(item.product, itemAttributes);
-          return { name: item.product.name, quantity: item.quantity, price: itemPrice };
-        }),
-      });
-    } catch (mailErr) {
-      logger.error("Failed to send order email", {
-        requestId: req.requestId,
-        error: mailErr.message,
-        stack: mailErr.stack,
-        orderNumber: formattedOrderNumber,
-      });
-    }
-
-    handleOrderCreated(order._id).catch((error) => {
-      logger.error("Failed to send order created notification", {
-        error: error.message,
-        orderId: order._id.toString(),
-      });
-    });
-
-    return res.status(201).json(order);
+    return sendCreated(res, order, 'Order created successfully');
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    if (error.name === 'ServiceError') {
+      return sendError(res, { message: error.message, code: error.code, statusCode: error.statusCode, details: error.details });
+    }
+    logger.error('Error creating order', { requestId: req.requestId, error: error.message });
+    return sendError(res, { message: 'Failed to create order', statusCode: 500 });
   }
 };
 
@@ -753,15 +252,24 @@ export const getOrders = async (req, res) => {
       filter.status = normalizedStatus;
     }
 
-    const orders = await Order.find(filter)
-      .populate({ path: "user", select: "fullName emailAddress phoneNumber" })
-      .populate({
-        path: "products.product",
-        select: "name price discountPrice images category description stock createdAt",
-      })
-      .populate("merchants", "businessName")
-      .populate("coupon", "code type value")
-      .sort({ orderDate: -1 });
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip  = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find(filter)
+        .populate({ path: "user", select: "fullName emailAddress phoneNumber" })
+        .populate({
+          path: "products.product",
+          select: "name price discountPrice images category description stock createdAt",
+        })
+        .populate("merchants", "businessName")
+        .populate("coupon", "code type value")
+        .sort({ orderDate: -1 })
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments(filter),
+    ]);
 
     const enhancedOrders = orders.map((order) => ({
       ...order.toObject(),
@@ -772,69 +280,17 @@ export const getOrders = async (req, res) => {
         email: order.user?.emailAddress || "غير محدد",
         phone: order.phoneNumber,
       },
-      productsDetails: order.products.map((item) => {
-        // SNAPSHOT-BASED DISPLAY LOGIC
-        // We use the prices stored in the order item (snapshot) as the source of truth.
-        const snapshotFinalPrice = item.price || 0;
-        const snapshotMerchantPrice = item.merchantPrice || 0;
-        const snapshotMarkup = item.nubianMarkup || 10;
-        
-        // Calculate Display Original Price from Snapshot
-        const initialOriginalPrice = snapshotMerchantPrice > 0 ? (snapshotMerchantPrice * (1 + snapshotMarkup / 100)) : 0;
-        
-        let displayOriginalPrice = initialOriginalPrice;
-        let displayFinalPrice = snapshotFinalPrice;
-        let displayDiscountPercentage = 0;
-
-        if (displayOriginalPrice > displayFinalPrice) {
-             const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-             displayDiscountPercentage = Math.round(rawPct);
-        } else {
-             displayOriginalPrice = displayFinalPrice;
-             displayDiscountPercentage = 0;
-        }
-
-        return {
-          productId: item.product?._id || null,
-          name: item.product?.name || "",
-          price: displayFinalPrice,
-          merchantPrice: snapshotMerchantPrice,
-          originalPrice: displayOriginalPrice, // UPDATED
-          discountPrice: item.discountPrice || item.product?.discountPrice || undefined,
-          nubianMarkup: snapshotMarkup,
-          dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0,
-          pricingBreakdown: {
-            merchantPrice: snapshotMerchantPrice,
-            nubianMarkup: snapshotMarkup,
-            dynamicMarkup: item.dynamicMarkup || 0,
-            finalPrice: displayFinalPrice,
-          },
-          images: item.product?.images || [],
-          category: item.product?.category || "",
-          description: item.product?.description || "",
-          stock: item.product?.stock || 0,
-          quantity: item.quantity,
-          totalPrice: displayFinalPrice * item.quantity,
-          attributes: item.attributes || null,
-          size: item.size || null,
-          variantId: item.variantId || null,
-          
-          // Add explicit fields
-          displayFinalPrice,
-          displayOriginalPrice,
-          displayDiscountPercentage
-        };
-      }),
+      productsDetails: order.products.map(formatOrderProduct).filter(Boolean),
       orderSummary: {
         subtotal: order.totalAmount,
         discount: order.discountAmount,
-        total: order.finalAmount,
+        total:    order.finalAmount,
       },
     }));
 
-    return res.status(200).json(enhancedOrders);
+    return sendPaginated(res, { data: enhancedOrders, page, limit, total });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return sendError(res, { message: "Failed to retrieve orders", statusCode: 500 });
   }
 };
 
@@ -845,7 +301,9 @@ export const getOrderById = async (req, res) => {
     const user = await User.findOne({ clerkId: userId });
     if (!user) return sendNotFound(res, "User");
 
-    const order = await Order.findById(req.params.id)
+    // Scope query to the authenticated user — prevents IDOR (order existence must not
+    // be revealed to non-owners via a 403 vs 404 distinction).
+    const order = await Order.findOne({ _id: req.params.id, user: user._id })
       .populate("user", "fullName emailAddress phoneNumber")
       .populate({
         path: "products.product",
@@ -855,99 +313,21 @@ export const getOrderById = async (req, res) => {
 
     if (!order) return sendNotFound(res, "Order");
 
-    if (String(order.user?._id) !== String(user._id)) {
-      return res.status(403).json({ message: "Access denied" });
-    }
-
     const enhancedOrder = {
       ...order.toObject(),
-      transferProof: order.transferProof || null,
-      productsCount: order.products.length,
-      productsDetails: order.products.map((item) => {
-        // SNAPSHOT-BASED DISPLAY LOGIC
-        const snapshotFinalPrice = item.price || 0;
-        const snapshotMerchantPrice = item.merchantPrice || 0;
-        const snapshotMarkup = item.nubianMarkup || 10;
-        
-        // Calculate Display Original Price from Snapshot
-        const initialOriginalPrice = snapshotMerchantPrice > 0 ? (snapshotMerchantPrice * (1 + snapshotMarkup / 100)) : 0;
-        
-        let displayOriginalPrice = initialOriginalPrice;
-        let displayFinalPrice = snapshotFinalPrice;
-        let displayDiscountPercentage = 0;
-
-        if (displayOriginalPrice > displayFinalPrice) {
-             const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-             displayDiscountPercentage = Math.round(rawPct);
-        } else {
-             displayOriginalPrice = displayFinalPrice;
-             displayDiscountPercentage = 0;
-        }
-
-        return {
-          productId: item.product?._id || null,
-          name: item.product?.name || "",
-          price: displayFinalPrice,
-          merchantPrice: snapshotMerchantPrice,
-          originalPrice: displayOriginalPrice, // UPDATED
-          discountPrice: item.discountPrice || item.product?.discountPrice || undefined,
-          nubianMarkup: snapshotMarkup,
-          dynamicMarkup: item.dynamicMarkup || item.product?.dynamicMarkup || 0,
-          pricingBreakdown: {
-            merchantPrice: snapshotMerchantPrice,
-            nubianMarkup: snapshotMarkup,
-            dynamicMarkup: item.dynamicMarkup || 0,
-            finalPrice: displayFinalPrice,
-          },
-          images: item.product?.images || [],
-          category: item.product?.category || "",
-          description: item.product?.description || "",
-          stock: item.product?.stock || 0,
-          quantity: item.quantity,
-          totalPrice: displayFinalPrice * item.quantity,
-          attributes: item.attributes || null,
-          size: item.size || null,
-          variantId: item.variantId || null,
-          
-          // Add explicit fields
-          displayFinalPrice,
-          displayOriginalPrice,
-          displayDiscountPercentage,
-          isAvailable: (item.product?.stock || 0) > 0,
-        };
-      }),
+      transferProof:   order.transferProof || null,
+      productsCount:   order.products.length,
+      productsDetails: order.products.map(formatOrderProduct).filter(Boolean),
       orderSummary: {
         subtotal: order.totalAmount,
         discount: order.discountAmount,
-        total: order.finalAmount,
+        total:    order.finalAmount,
       },
     };
 
-    return res.status(200).json(enhancedOrder);
+    return sendSuccess(res, { data: enhancedOrder });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
-  }
-};
-
-export const getOrderStats = async (req, res) => {
-  try {
-    const stats = await Order.aggregate([
-      { $group: { _id: "$status", count: { $sum: 1 }, totalAmount: { $sum: "$totalAmount" } } },
-    ]);
-
-    const totalOrders = await Order.countDocuments();
-    const totalRevenue = await Order.aggregate([
-      { $match: { status: { $ne: "cancelled" } } },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-    ]);
-
-    return res.status(200).json({
-      statusStats: stats,
-      totalOrders,
-      totalRevenue: totalRevenue[0]?.total || 0,
-    });
-  } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return sendError(res, { message: "Failed to retrieve order", statusCode: 500 });
   }
 };
 
@@ -955,28 +335,42 @@ export const getOrderStats = async (req, res) => {
 export const getMerchantOrders = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
 
     const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
-    if (!merchant) return res.status(403).json({ message: "Merchant not found or not approved" });
+    if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
 
     const { status } = req.query;
 
     const filter = { merchants: merchant._id };
     if (status) filter.status = status;
 
-    const orders = await Order.find(filter)
-      .populate({ path: "user", select: "fullName emailAddress phoneNumber" })
-      .populate({
-        path: "products.product",
-        select: "name price images category description stock merchant",
-        populate: { path: "merchant", select: "businessName" },
-      })
-      .sort({ orderDate: -1 });
+    const page  = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
+    const skip  = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find(filter)
+        .populate({ path: "user", select: "fullName emailAddress phoneNumber" })
+        .populate({
+          path: "products.product",
+          select: "name price images category description stock merchant",
+          populate: { path: "merchant", select: "businessName" },
+        })
+        .sort({ orderDate: -1 })
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments(filter),
+    ]);
 
     const enhancedOrders = orders.map((order) => {
-      // For merchants, show all products in their orders (they can see what customers ordered)
-      const orderProducts = order.products || [];
+      // Only expose this merchant's own products — not competitors' items in the same order.
+      const orderProducts = (order.products || []).filter((item) => {
+        if (!item.product) return false;
+        const m = item.product.merchant;
+        if (!m) return false;
+        return (m._id ? m._id.toString() : m.toString()) === String(merchant._id);
+      });
 
       const merchantRevenueEntry = order.merchantRevenue?.find(
         (mr) => String(mr.merchant) === String(merchant._id)
@@ -1012,16 +406,31 @@ export const getMerchantOrders = async (req, res) => {
       };
     });
 
-    return res.status(200).json(enhancedOrders);
+    return sendPaginated(res, { data: enhancedOrders, page, limit, total });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return sendError(res, { message: "Failed to retrieve merchant orders", statusCode: 500 });
   }
 };
 
 
-// controllers/order.controller.js
+// Transfer proof must come from the configured image CDN — rejects off-domain fakes.
+const ALLOWED_PROOF_ORIGINS = (process.env.IMAGEKIT_URL_ENDPOINT || 'https://ik.imagekit.io/nubian')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-const isHttpUrl = (v) => typeof v === "string" && /^https?:\/\//i.test(v);
+function isValidProofUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'https:' &&
+      ALLOWED_PROOF_ORIGINS.some((origin) => url.startsWith(origin))
+    );
+  } catch {
+    return false;
+  }
+}
 
 export const approveBankakPayment = async (req, res) => {
   const { id } = req.params;
@@ -1034,20 +443,19 @@ export const approveBankakPayment = async (req, res) => {
     if (order.paymentMethod !== "BANKAK") {
       return sendError(res, { message: "Not a BANKAK order", statusCode: 400 });
     }
-    if (!order.transferProof || !isHttpUrl(order.transferProof)) {
+    if (!isValidProofUrl(order.transferProof)) {
       return sendError(res, { message: "Missing transfer proof", statusCode: 400 });
     }
 
-    order.paymentStatus = "PAID";
+    order.paymentStatus = "paid";
     order.bankakApproval = {
-      status: "APPROVED",
+      status: "approved",
       approvedAt: new Date(),
-      approvedBy: req.user?._id || req.admin?._id || null, // حسب auth عندك
+      approvedBy: req.adminUser?.userId || null,
       reason: null,
     };
 
-    // غالبًا مع الدفع بنكك نؤكد الطلب
-    if (order.status === "PENDING") order.status = "CONFIRMED";
+    if (order.status === "pending") order.status = "confirmed";
 
     await order.save();
     return sendSuccess(res, { data: order, message: "BANKAK approved" });
@@ -1068,11 +476,11 @@ export const rejectBankakPayment = async (req, res) => {
       return sendError(res, { message: "Not a BANKAK order", statusCode: 400 });
     }
 
-    order.paymentStatus = "FAILED";
+    order.paymentStatus = "failed";
     order.bankakApproval = {
-      status: "REJECTED",
+      status: "rejected",
       rejectedAt: new Date(),
-      rejectedBy: req.user?._id || req.admin?._id || null,
+      rejectedBy: req.adminUser?.userId || null,
       reason: reason || "Rejected by admin",
     };
 
@@ -1088,7 +496,7 @@ export const updatePaymentStatus = async (req, res) => {
   const { id } = req.params;
   const { paymentStatus } = req.body || {};
 
-  const allowed = ["PENDING", "PAID", "FAILED"];
+  const allowed = ["pending", "paid", "failed"];
   if (!allowed.includes(paymentStatus)) {
     return sendError(res, { message: "Invalid paymentStatus", statusCode: 400 });
   }
@@ -1113,31 +521,30 @@ export const updatePaymentStatus = async (req, res) => {
 export const updateMerchantOrderStatus = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
 
     const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
-    if (!merchant) return res.status(403).json({ message: "Merchant not found or not approved" });
+    if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
 
     const { status } = req.body;
     const { id } = req.params;
 
-    const allowedStatuses = ["pending", "confirmed", "shipped", "delivered", "cancelled"];
+    // Merchants may only advance an order to confirmed or shipped.
+    // pending/delivered/cancelled are platform-only transitions — allowing merchants
+    // to set "delivered" enables commission fraud; "cancelled" enables unilateral refusals.
+    const MERCHANT_ALLOWED_STATUSES = ["confirmed", "shipped"];
 
     const updateData = {};
 
     if (status !== undefined) {
-      // Convert frontend statuses to backend compatible ones if needed
-      let normalizedStatus = status;
-      if (status === "PROCESSING") normalizedStatus = "confirmed";
-      if (status === "AWAITING_PAYMENT_CONFIRMATION") normalizedStatus = "pending";
-      if (status === "PAYMENT_FAILED") normalizedStatus = "cancelled";
+      const normalizedStatus = status === "PROCESSING" ? "confirmed" : status;
 
-      if (!allowedStatuses.includes(normalizedStatus)) {
+      if (!MERCHANT_ALLOWED_STATUSES.includes(normalizedStatus)) {
         return sendError(res, {
-          message: "Invalid status value",
+          message: `Merchants can only set status to: ${MERCHANT_ALLOWED_STATUSES.join(", ")}`,
           code: "INVALID_STATUS",
-          statusCode: 400,
-          details: { allowedStatuses },
+          statusCode: 403,
+          details: { allowedStatuses: MERCHANT_ALLOWED_STATUSES },
         });
       }
       updateData.status = normalizedStatus;
@@ -1185,48 +592,52 @@ export const updateMerchantOrderStatus = async (req, res) => {
     return sendSuccess(res, { data: updatedOrder, message: "Order status updated successfully" });
   } catch (error) {
     logger.error("Error updating merchant order status", {
-      error: error instanceof Error ? error.message : "Unknown error",
       orderId: req.params.id,
-      merchantId: req.userId,
+      error: error.message,
     });
-    throw error;
+    return sendError(res, { message: "Failed to update order status", statusCode: 500 });
   }
 };
 
 export const getMerchantOrderStats = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    if (!userId) return res.status(401).json({ message: "Unauthorized" });
+    if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
 
     const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
-    if (!merchant) return res.status(403).json({ message: "Merchant not found or not approved" });
+    if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
 
-    const orders = await Order.find({ merchants: merchant._id }).populate("products.product", "merchant price");
+    // Aggregation — all arithmetic runs inside MongoDB, zero documents loaded into Node.js memory.
+    const [statusAgg, revenueAgg] = await Promise.all([
+      Order.aggregate([
+        { $match: { merchants: merchant._id } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Order.aggregate([
+        { $match: { merchants: merchant._id } },
+        { $unwind: { path: "$merchantRevenue", preserveNullAndEmptyArrays: false } },
+        { $match: { "merchantRevenue.merchant": merchant._id } },
+        { $group: { _id: "$status", revenue: { $sum: "$merchantRevenue.amount" } } },
+      ]),
+    ]);
 
-    const stats = {
-      totalOrders: orders.length,
-      totalRevenue: 0,
-      statusStats: { pending: 0, confirmed: 0, shipped: 0, delivered: 0, cancelled: 0 },
-      revenueByStatus: { pending: 0, confirmed: 0, shipped: 0, delivered: 0, cancelled: 0 },
-    };
+    const statusStats    = { pending: 0, confirmed: 0, shipped: 0, delivered: 0, cancelled: 0 };
+    const revenueByStatus = { pending: 0, confirmed: 0, shipped: 0, delivered: 0, cancelled: 0 };
+    let totalOrders = 0;
+    let totalRevenue = 0;
 
-    orders.forEach((order) => {
-      const merchantRevenueEntry = order.merchantRevenue?.find(
-        (mr) => String(mr.merchant) === String(merchant._id)
-      );
-
-      const merchantRevenue = merchantRevenueEntry?.amount || 0;
-
-      stats.totalRevenue += merchantRevenue;
-
-      if (stats.statusStats[order.status] !== undefined) {
-        stats.statusStats[order.status] += 1;
-        stats.revenueByStatus[order.status] += merchantRevenue;
-      }
+    statusAgg.forEach(({ _id, count }) => {
+      if (_id in statusStats) { statusStats[_id] = count; totalOrders += count; }
+    });
+    revenueAgg.forEach(({ _id, revenue }) => {
+      if (_id in revenueByStatus) { revenueByStatus[_id] = revenue; totalRevenue += revenue; }
     });
 
-    return res.status(200).json(stats);
+    return sendSuccess(res, {
+      data: { totalOrders, totalRevenue, statusStats, revenueByStatus },
+      message: "Merchant order stats retrieved",
+    });
   } catch (error) {
-    return res.status(500).json({ message: error.message });
+    return sendError(res, { message: "Failed to retrieve order stats", statusCode: 500 });
   }
 };

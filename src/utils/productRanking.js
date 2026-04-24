@@ -189,23 +189,27 @@ export function rankAndSortProducts(products, options = {}) {
 }
 
 /**
- * Get user preferred categories from request/user data
- * This is a helper for extracting category preferences
- * 
- * @param {Object} req - Express request object
- * @returns {string[]} Array of preferred category IDs
+ * Get user preferred categories for personalisation.
+ * Derived from UserActivity purchase/view events — never from the User document
+ * (behavioural arrays were removed from User in the models audit).
+ *
+ * Currently returns [] until the UserActivity aggregation query is implemented.
+ *
+ * @param {string} _userId - MongoDB User _id (unused until implemented)
+ * @returns {Promise<string[]>} Array of preferred category IDs
  */
-export function getUserPreferredCategories(req) {
-  // TODO: Implement user preference tracking
-  // For now, return empty array (safe fallback)
-  // Future: Extract from user profile, order history, wishlist, etc.
-  
-  // Example future implementation:
-  // const userId = getAuth(req).userId;
-  // const user = await User.findOne({ clerkId: userId });
-  // const preferredCategories = user?.preferredCategories || [];
-  // return preferredCategories.map(cat => cat.toString());
-  
+export async function getUserPreferredCategories(_userId) {
+  // TODO: aggregate UserActivity for event='purchase' or 'product_view'
+  // grouped by categoryId, return top-N category IDs.
+  // Example:
+  //   const UserActivity = (await import('../models/userActivity.model.js')).default;
+  //   const result = await UserActivity.aggregate([
+  //     { $match: { userId: _userId, event: { $in: ['purchase', 'product_view'] } } },
+  //     { $group: { _id: '$categoryId', count: { $sum: 1 } } },
+  //     { $sort: { count: -1 } },
+  //     { $limit: 5 },
+  //   ]);
+  //   return result.map(r => r._id?.toString()).filter(Boolean);
   return [];
 }
 

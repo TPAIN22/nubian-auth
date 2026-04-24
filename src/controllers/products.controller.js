@@ -2,6 +2,7 @@ import mongoose from 'mongoose'
 import Product from '../models/product.model.js'
 import Merchant from '../models/merchant.model.js'
 import User from '../models/user.model.js'
+import UserActivity from '../models/userActivity.model.js'
 import Category from '../models/categories.model.js'
 import { getAuth } from '@clerk/express'
 import { clerkClient } from '@clerk/express'
@@ -1561,32 +1562,41 @@ export const exploreProducts = async (req, res) => {
 
     if (userId) {
       try {
-        const user = await User.findOne({ clerkId: userId })
-          .populate('viewedProducts.product', 'category')
-          .populate('clickedProducts.product', 'category')
+        const activityEvents = await UserActivity.find({
+          userId,
+          event: { $in: ['product_view', 'product_click'] },
+          productId: { $ne: null },
+        })
+          .sort({ timestamp: -1 })
+          .limit(50)
+          .select('productId categoryId event')
           .lean();
 
-        if (user) {
-          // Extract preferred categories
-          const categoryIds = new Set();
-          user.viewedProducts?.forEach(vp => {
-            if (vp.product?._id) {
-              viewedProductIds.push(vp.product._id.toString());
-            }
-            if (vp.product?.category) {
-              categoryIds.add(vp.product.category.toString());
-            }
+        const categoryIds = new Set();
+        const productIdsNeedingCategory = [];
+
+        activityEvents.forEach(ev => {
+          if (ev.event === 'product_view') viewedProductIds.push(ev.productId.toString());
+          else clickedProductIds.push(ev.productId.toString());
+
+          if (ev.categoryId) {
+            categoryIds.add(ev.categoryId.toString());
+          } else {
+            productIdsNeedingCategory.push(ev.productId);
+          }
+        });
+
+        if (productIdsNeedingCategory.length > 0) {
+          const activityProductDocs = await Product.find(
+            { _id: { $in: productIdsNeedingCategory } },
+            { category: 1 }
+          ).lean();
+          activityProductDocs.forEach(p => {
+            if (p.category) categoryIds.add(p.category.toString());
           });
-          user.clickedProducts?.forEach(cp => {
-            if (cp.product?._id) {
-              clickedProductIds.push(cp.product._id.toString());
-            }
-            if (cp.product?.category) {
-              categoryIds.add(cp.product.category.toString());
-            }
-          });
-          preferredCategories = Array.from(categoryIds);
         }
+
+        preferredCategories = Array.from(categoryIds);
       } catch (e) {
         logger.warn('Error loading user preferences for explore', { error: e.message });
       }

@@ -1,25 +1,16 @@
 import express from "express";
 import { body, param } from "express-validator";
 import { resolveDispute } from "../controllers/dispute.controller.js";
-import { validationResult } from "express-validator";
+import { handleValidationErrors } from "../middleware/validation.middleware.js";
+import { isAuthenticated, isAdmin } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
-const handleValidationErrors = (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      message: "Validation Error",
-      errors: errors.array(),
-    });
-  }
-  next();
-};
-
-// POST /disputes/:id/resolve
+// POST /disputes/:id/resolve — admin only: refunds and merchant balance mutations happen here
 router.post(
   "/:id/resolve",
+  isAuthenticated,
+  isAdmin,
   [
     param("id").isMongoId().withMessage("Invalid Dispute ID"),
     body("resolution")

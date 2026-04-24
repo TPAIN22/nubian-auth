@@ -1,5 +1,7 @@
 import Coupon from '../models/coupon.model.js';
+import CouponUsage from '../models/couponUsage.model.js';
 import Order from '../models/orders.model.js';
+import couponService from '../services/coupon.service.js';
 import Product from '../models/product.model.js';
 import { sendSuccess, sendError, sendCreated, sendNotFound } from '../lib/response.js';
 import logger from '../lib/logger.js';
@@ -164,9 +166,7 @@ export const getCouponByCode = async (req, res) => {
 
     // Check user usage limit
     if (userId && coupon.usageLimitPerUser > 0) {
-      const userUsageCount = coupon.usedBy.filter(
-        id => id.toString() === userId.toString()
-      ).length;
+      const userUsageCount = await CouponUsage.countDocuments({ coupon: coupon._id, user: userId });
       if (userUsageCount >= coupon.usageLimitPerUser) {
         validation.valid = false;
         validation.errors.push('You have already used this coupon the maximum allowed times');
@@ -477,107 +477,56 @@ export const deleteCoupon = async (req, res) => {
 export const validateCoupon = async (req, res) => {
   try {
     const { code, userId, orderAmount, productIds, cartItems } = req.body;
+    if (!code) return sendError(res, { message: 'Coupon code is required', statusCode: 400 });
 
-    if (!code) {
-      return sendError(res, { message: 'Coupon code is required' }, 400);
+    const orderAmountNum = orderAmount ? parseFloat(orderAmount) : 0;
+
+    // Core validation delegated to service (date, limits, min-order)
+    const result = await couponService.validateCoupon(code, userId, orderAmountNum);
+    if (!result.valid) {
+      return sendSuccess(res, { data: { valid: false, errors: result.errors } });
     }
 
-    const coupon = await Coupon.findOne({ 
-      code: code.toUpperCase().trim(),
-      isActive: true,
-    });
+    const coupon = result.coupon;
+    const eligibilityErrors = [];
 
-    if (!coupon) {
-      return sendError(res, { message: 'Invalid or inactive coupon code' }, 404);
-    }
-
-    // Validate dates
-    const now = new Date();
-    if (coupon.startDate > now) {
-      return sendError(res, { message: 'Coupon is not yet active' }, 400);
-    }
-    if (coupon.endDate < now) {
-      return sendError(res, { message: 'Coupon has expired' }, 400);
-    }
-
-    // Validate global usage limit
-    if (coupon.usageLimitGlobal !== null && coupon.usageCount >= coupon.usageLimitGlobal) {
-      return sendError(res, { message: 'Coupon usage limit reached' }, 400);
-    }
-
-    // Validate user usage limit
-    if (userId && coupon.usageLimitPerUser > 0) {
-      const userUsageCount = coupon.usedBy.filter(
-        id => id.toString() === userId.toString()
-      ).length;
-      if (userUsageCount >= coupon.usageLimitPerUser) {
-        return sendError(res, { 
-          message: 'You have already used this coupon the maximum allowed times' 
-        }, 400);
+    // Product eligibility (UI-specific check, not part of core reservation)
+    if (productIds && coupon.applicableProducts?.length > 0) {
+      const pids = Array.isArray(productIds) ? productIds : productIds.split(',');
+      const applicable = coupon.applicableProducts.map(p => p.toString());
+      if (!pids.some(pid => applicable.includes(pid.toString()))) {
+        eligibilityErrors.push('Coupon is not valid for selected products');
       }
     }
 
-    // Validate minimum order amount
-    if (orderAmount && coupon.minOrderAmount > 0) {
-      const orderAmountNum = parseFloat(orderAmount);
-      if (orderAmountNum < coupon.minOrderAmount) {
-        return sendError(res, { 
-          message: `Minimum order amount of ${coupon.minOrderAmount} required` 
-        }, 400);
+    // Category eligibility
+    if (cartItems && coupon.applicableCategories?.length > 0) {
+      const pids = cartItems.map(i => i.product?._id || i.productId).filter(Boolean);
+      const prods = await Product.find({ _id: { $in: pids } }).select('category');
+      const catIds = prods.map(p => p.category?.toString()).filter(Boolean);
+      const applicable = coupon.applicableCategories.map(c => c.toString());
+      if (!catIds.some(cid => applicable.includes(cid))) {
+        eligibilityErrors.push('Coupon is not valid for selected product categories');
       }
     }
 
-    // Validate product eligibility
-    if (productIds && coupon.applicableProducts.length > 0) {
-      const productIdsArray = Array.isArray(productIds) ? productIds : productIds.split(',');
-      const applicableProductIds = coupon.applicableProducts.map(p => p.toString());
-      const hasEligibleProduct = productIdsArray.some(pid => applicableProductIds.includes(pid.toString()));
-      
-      if (!hasEligibleProduct) {
-        return sendError(res, { message: 'Coupon is not valid for selected products' }, 400);
-      }
+    if (eligibilityErrors.length > 0) {
+      return sendSuccess(res, { data: { valid: false, errors: eligibilityErrors } });
     }
-
-    // Validate category eligibility
-    if (cartItems && coupon.applicableCategories.length > 0) {
-      const productIdsArray = cartItems.map(item => item.product?._id || item.productId).filter(Boolean);
-      const products = await Product.find({ _id: { $in: productIdsArray } }).select('category');
-      const productCategoryIds = products.map(p => p.category?.toString()).filter(Boolean);
-      const applicableCategoryIds = coupon.applicableCategories.map(c => c.toString());
-      const hasEligibleCategory = productCategoryIds.some(cid => applicableCategoryIds.includes(cid));
-      
-      if (!hasEligibleCategory) {
-        return sendError(res, { message: 'Coupon is not valid for selected product categories' }, 400);
-      }
-    }
-
-    // Calculate discount amount
-    const discountAmount = orderAmount ? coupon.calculateDiscount(parseFloat(orderAmount)) : 0;
 
     return sendSuccess(res, {
       data: {
         valid: true,
-        coupon: {
-          _id: coupon._id,
-          code: coupon.code,
-          type: coupon.type || coupon.discountType,
-          value: coupon.value || coupon.discountValue,
-        },
-        discountAmount,
-        originalAmount: orderAmount ? parseFloat(orderAmount) : 0,
-        finalAmount: orderAmount ? parseFloat(orderAmount) - discountAmount : 0,
+        coupon: { _id: coupon._id, code: coupon.code, type: coupon.type, value: coupon.value },
+        discountAmount:   result.discountAmount,
+        originalAmount:   orderAmountNum,
+        finalAmount:      orderAmountNum - result.discountAmount,
         message: 'Coupon is valid',
       },
     });
   } catch (error) {
-    logger.error('Error validating coupon', {
-      requestId: req.requestId,
-      error: error.message,
-    });
-    return sendError(res, {
-      message: 'Failed to validate coupon',
-      error: error.message,
-    }, 500);
+    logger.error('Error validating coupon', { requestId: req.requestId, error: error.message });
+    return sendError(res, { message: 'Failed to validate coupon', statusCode: 500 });
   }
 };
 
@@ -606,8 +555,8 @@ export const getCouponAnalytics = async (req, res) => {
         value: coupon.value || coupon.discountValue,
       },
       usage: {
-        totalUses: coupon.usageCount || coupon.usedBy.length,
-        uniqueUsers: coupon.usedBy.length,
+        totalUses: coupon.usageCount || 0,
+        uniqueUsers: await CouponUsage.distinct('user', { coupon: coupon._id }).then(r => r.length),
         totalDiscountGiven: coupon.totalDiscountGiven || 0,
         totalOrders: coupon.totalOrders || orders.length,
       },
@@ -695,26 +644,24 @@ export const getAvailableCoupons = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(10);
 
-    // Filter coupons that user can use
+    // Pre-fetch per-user usage counts in one batch query rather than per-coupon array scans
+    const couponIds = coupons.map(c => c._id);
+    const usageCounts = userId
+      ? await CouponUsage.aggregate([
+          { $match: { coupon: { $in: couponIds }, user: mongoose.Types.ObjectId.createFromHexString(userId.toString()) } },
+          { $group: { _id: '$coupon', count: { $sum: 1 } } },
+        ])
+      : [];
+    const usageMap = new Map(usageCounts.map(r => [r._id.toString(), r.count]));
+
     const availableCoupons = coupons.filter(coupon => {
-      // Check user usage limit
       if (userId && coupon.usageLimitPerUser > 0) {
-        const userUsageCount = coupon.usedBy.filter(
-          id => id.toString() === userId.toString()
-        ).length;
-        if (userUsageCount >= coupon.usageLimitPerUser) {
-          return false;
-        }
+        const userUsageCount = usageMap.get(coupon._id.toString()) || 0;
+        if (userUsageCount >= coupon.usageLimitPerUser) return false;
       }
-
-      // Check minimum order amount
       if (orderAmount && coupon.minOrderAmount > 0) {
-        const orderAmountNum = parseFloat(orderAmount);
-        if (orderAmountNum < coupon.minOrderAmount) {
-          return false;
-        }
+        if (parseFloat(orderAmount) < coupon.minOrderAmount) return false;
       }
-
       return true;
     });
 

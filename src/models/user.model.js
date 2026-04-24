@@ -1,205 +1,60 @@
-// models/user.model.js
-import mongoose from "mongoose";
+import mongoose from 'mongoose';
 
+// Behaviour-tracking arrays (viewedProducts, clickedProducts, etc.) were removed.
+// They caused unbounded document growth (16 MB limit risk at scale).
+// All behavioural signals are now captured in the UserActivity collection with a TTL.
+// Services that previously read from User.viewedProducts should be migrated to UserActivity.
 const userSchema = new mongoose.Schema({
-  clerkId: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  fullName: {
-    type: String,
-    required: false,
-  },
-  phone: {
-    type: String,
-    required: false,
-  },
-  
-  address: {
-    type: String,
-    required: false,
-  },
-  isAdmin: {
-    type: Boolean,
-    default: false,
-  },
+  clerkId: { type: String, required: true, unique: true },
+  fullName: { type: String },
+  phone:    { type: String },
+  emailAddress: { type: String },
+
   role: {
     type: String,
-    enum: ["user", "admin", "support", "marketer"],
-    default: "user",
+    enum: ['user', 'admin', 'support', 'marketer'],
+    default: 'user',
   },
-  // ===== AFFILIATE SYSTEM =====
+
+  // ===== AFFILIATE =====
   referralCode: {
     type: String,
     unique: true,
-    sparse: true, // allows null for non-marketers
+    sparse: true,
     uppercase: true,
     trim: true,
     default: null,
   },
   referredBy: {
-    type: String, // referral code of the marketer who referred this user
+    type: String,
     default: null,
     trim: true,
     uppercase: true,
   },
-  emailAddress: {
-    type: String,
-    required: false,
-  },
-  
+
   // ===== CURRENCY PREFERENCES =====
-  // Selected country code (references Country.code)
-  countryCode: {
-    type: String,
-    trim: true,
-    uppercase: true,
-    maxlength: 3,
-    default: null,
-  },
-  // Selected currency code (references Currency.code)
-  currencyCode: {
-    type: String,
-    trim: true,
-    uppercase: true,
-    maxlength: 3,
-    default: null,
-  },
-  
-  // ===== USER INTELLIGENCE LAYER =====
-  // Track viewed products with timestamps
-  viewedProducts: [{
-    product: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: true,
-    },
-    viewedAt: {
-      type: Date,
-      default: Date.now,
-    },
-    viewCount: {
-      type: Number,
-      default: 1,
-    },
-  }],
-  
-  // Track clicked products
-  clickedProducts: [{
-    product: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: true,
-    },
-    clickedAt: {
-      type: Date,
-      default: Date.now,
-    },
-    clickCount: {
-      type: Number,
-      default: 1,
-    },
-  }],
-  
-  // Track cart events (add to cart, remove from cart)
-  cartEvents: [{
-    product: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: true,
-    },
-    eventType: {
-      type: String,
-      enum: ['add', 'remove'],
-      required: true,
-    },
-    timestamp: {
-      type: Date,
-      default: Date.now,
-    },
-  }],
-  
-  // Track search keywords
-  searchKeywords: [{
-    keyword: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    searchedAt: {
-      type: Date,
-      default: Date.now,
-    },
-    searchCount: {
-      type: Number,
-      default: 1,
-    },
-  }],
-  
-  // Track purchased categories (derived from orders)
-  purchasedCategories: [{
-    category: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Category',
-      required: true,
-    },
-    purchaseCount: {
-      type: Number,
-      default: 1,
-    },
-    lastPurchasedAt: {
-      type: Date,
-      default: Date.now,
-    },
-  }],
-  
-  // Preferred price range (calculated from purchase history)
-  preferredPriceRange: {
-    min: {
-      type: Number,
-      default: null,
-    },
-    max: {
-      type: Number,
-      default: null,
-    },
-  },
-  
-  // Preferred sizes (from purchase history and cart)
-  preferredSizes: [{
-    type: String,
-    trim: true,
-  }],
-  
-  // Preferred brands (from purchase history)
-  preferredBrands: [{
-    type: String,
-    trim: true,
-  }],
-  
-  // Device type for personalization
-  deviceType: {
-    type: String,
-    enum: ['mobile', 'tablet', 'desktop'],
-    default: 'mobile',
-  },
-  
-  // Last active timestamp
-  lastActive: {
-    type: Date,
-    default: Date.now,
-  },
-} , {timestamps:true});
+  countryCode: { type: String, trim: true, uppercase: true, maxlength: 3, default: null },
+  currencyCode: { type: String, trim: true, uppercase: true, maxlength: 3, default: null },
 
-// Indexes for frequently queried fields
-// Note: clerkId index is automatically created by unique: true, so we don't need to add it again
-userSchema.index({ emailAddress: 1 }); // For email lookups
-userSchema.index({ lastActive: -1 }); // For sorting by activity
-userSchema.index({ 'viewedProducts.product': 1 }); // For product view queries
-userSchema.index({ 'clickedProducts.product': 1 }); // For product click queries
-userSchema.index({ 'purchasedCategories.category': 1 }); // For category preference queries
-userSchema.index({ referredBy: 1 }); // For tracking who referred whom
+  // ===== SOFT DELETE =====
+  isDeleted: { type: Boolean, default: false },
+  deletedAt: { type: Date, default: null },
+}, { timestamps: true });
 
-const User = mongoose.model("User", userSchema);
+// Automatically exclude soft-deleted users from all find queries
+// unless the caller explicitly includes isDeleted in the filter.
+userSchema.pre(/^find/, function () {
+  if (this.getFilter().isDeleted === undefined) {
+    this.where({ isDeleted: { $ne: true } });
+  }
+});
+
+userSchema.index({ emailAddress: 1 }, {
+  sparse: true,
+  partialFilterExpression: { isDeleted: { $ne: true } },
+});
+userSchema.index({ isDeleted: 1, createdAt: -1 });
+userSchema.index({ referredBy: 1 });
+
+const User = mongoose.model('User', userSchema);
 export default User;
