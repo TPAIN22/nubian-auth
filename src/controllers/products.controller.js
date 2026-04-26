@@ -1495,6 +1495,15 @@ export const exploreProducts = async (req, res) => {
       }
     }
 
+    // Verified store filter — pre-fetch approved IDs to avoid a $lookup join in the pipeline
+    if (verifiedStore === 'true' || verifiedStore === 'false') {
+      const approvedMerchants = await Merchant.find({ status: 'APPROVED' }, '_id').lean();
+      const approvedIds = approvedMerchants.map(m => m._id);
+      filter.merchant = verifiedStore === 'true'
+        ? { $in: approvedIds }
+        : { $nin: approvedIds };
+    }
+
     // Size filter - use $or for variants OR legacy sizes field
     if (size) {
       filter.$and = filter.$and || [];
@@ -1630,26 +1639,8 @@ export const exploreProducts = async (req, res) => {
 
     // Build aggregation pipeline
     const pipeline = [
-      // Match base filter
+      // Match base filter (merchant approval already baked in via pre-fetched IDs)
       { $match: filter },
-
-      // Lookup merchant for verified store filter
-      {
-        $lookup: {
-          from: 'merchants',
-          localField: 'merchant',
-          foreignField: '_id',
-          as: 'merchant',
-        },
-      },
-      {
-        $unwind: { path: '$merchant', preserveNullAndEmptyArrays: true },
-      },
-
-      // Filter by verified store
-      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] :
-        verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
-          []),
 
       // Calculate ranking and affinity scores
       {
@@ -1681,8 +1672,8 @@ export const exploreProducts = async (req, res) => {
             ],
           },
 
-          // Trending boost (visibilityScore)
-          trendingBoost: { $ifNull: ['$visibilityScore', 0] },
+          // Trending boost (precomputed by productScoring cron)
+          trendingBoost: { $ifNull: ['$ranking.visibilityScore', 0] },
 
           // Discount boost
           discountBoost: {
@@ -1832,28 +1823,11 @@ export const exploreProducts = async (req, res) => {
       },
     ];
 
-    // Execute aggregation
-    const products = await Product.aggregate(pipeline);
-
-    // Get total count (for pagination)
-    const countPipeline = [
-      { $match: filter },
-      {
-        $lookup: {
-          from: 'merchants',
-          localField: 'merchant',
-          foreignField: '_id',
-          as: 'merchant',
-        },
-      },
-      { $unwind: { path: '$merchant', preserveNullAndEmptyArrays: true } },
-      ...(verifiedStore === 'true' ? [{ $match: { 'merchant.status': 'APPROVED' } }] :
-        verifiedStore === 'false' ? [{ $match: { 'merchant.status': { $ne: 'APPROVED' } } }] :
-          []),
-      { $count: 'total' },
-    ];
-    const countResult = await Product.aggregate(countPipeline);
-    const total = countResult[0]?.total || 0;
+    // Run aggregation and count in parallel — count is now a simple countDocuments
+    const [products, total] = await Promise.all([
+      Product.aggregate(pipeline),
+      Product.countDocuments(filter),
+    ]);
 
     // Enrich products with pricing breakdown
     const enrichedProducts = enrichProductsWithPricing(products);

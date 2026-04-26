@@ -8,7 +8,7 @@ import Currency from "../models/currency.model.js";
  * and persisting them to the database.
  */
 
-const FRANKFURTER_BASE_URL = "https://api.frankfurter.dev/v1";
+const FRANKFURTER_BASE_URL = "https://api.frankfurter.app";
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000; // 2 seconds
 
@@ -29,12 +29,14 @@ async function fetchFromFrankfurter(symbols) {
     return { date: null, rates: {} };
   }
 
-  // Frankfurter supported symbols
+  // Currencies published by the European Central Bank (ECB) — the only ones
+  // Frankfurter supports. AED, SAR, EGP, QAR, KWD, SDG etc. are NOT in ECB
+  // data and will cause a 400 error if requested. Set manual rates for those.
   const SUPPORTED_SYMBOLS = [
-    "AUD", "BGN", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", 
-    "HKD", "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "MXN", 
-    "MYR", "NOK", "NZD", "PHP", "PLN", "RON", "SEK", "SGD", 
-    "THB", "TRY", "ZAR", "AED", "SAR", "EGP" // Note: EGP is sometimes supported, but Frankfurter dev often changes
+    "AUD", "BGN", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP",
+    "HKD", "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "MXN",
+    "MYR", "NOK", "NZD", "PHP", "PLN", "RON", "SEK", "SGD",
+    "THB", "TRY", "ZAR",
   ];
 
   // Filter out USD and currencies NOT in the supported list

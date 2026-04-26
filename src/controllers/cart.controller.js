@@ -16,7 +16,7 @@ import {
   getProductPrice,
 } from "../utils/cartUtils.js";
 import { enrichProductWithPricing } from "./products.controller.js";
-import { convertProductPrices, convertAndFormatPrice } from "../services/currency.service.js";
+import { convertProductPrices, convertAndFormatPriceSync } from "../services/currency.service.js";
 import Currency from "../models/currency.model.js";
 import { getLatestRate } from "../services/fx.service.js";
 

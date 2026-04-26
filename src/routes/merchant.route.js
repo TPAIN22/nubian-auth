@@ -6,6 +6,7 @@ import {
   getMerchantById,
   getStoreById,
   getStoreProducts,
+  getStoreReviews,
   approveMerchant,
   rejectMerchant,
   suspendMerchant,
@@ -30,6 +31,7 @@ router.get('/list', getPublicMerchants); // New Public Endpoint
 // Public store routes (authenticated users can view approved stores)
 router.get('/store/:id', getStoreById);
 router.get('/store/:id/products', getStoreProducts);
+router.get('/store/:id/reviews', getStoreReviews);
 
 // Merchant-only routes (approved merchants)
 router.get('/me', isAuthenticated, isApprovedMerchant, getMyMerchantProfile); // Alias for /my-profile

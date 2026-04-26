@@ -1,5 +1,6 @@
 import Merchant from "../models/merchant.model.js";
 import Product from "../models/product.model.js";
+import Review from "../models/reviews.model.js";
 import Notify from "../models/merchantNotify.model.js";
 import { clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
@@ -20,8 +21,8 @@ export const applyToBecomeMerchant = async (req, res) => {
     }
 
     // Check if user already has a merchant application
-    const existingMerchant = await Merchant.findOne({ clerkId: userId });
-    
+    const existingMerchant = await Merchant.findOne({ userId });
+
     if (existingMerchant) {
       return sendError(res, {
         message: "You already have a merchant application",
@@ -31,33 +32,36 @@ export const applyToBecomeMerchant = async (req, res) => {
       });
     }
 
-    const { businessName, businessDescription, businessEmail, businessPhone, businessAddress } = req.body;
+    const {
+      storeName, ownerName, phone, email, merchantType,
+      nationalId, crNumber, iban, logoUrl, description,
+      categories, city, productSamples,
+    } = req.body;
 
-    if (!businessName || !businessEmail) {
+    if (!storeName || !email || !ownerName || !phone || !nationalId || !iban || !description || !city || !merchantType) {
       return sendError(res, {
-        message: "Business name and email are required",
+        message: "Required fields: storeName, ownerName, phone, email, merchantType, nationalId, iban, description, city",
         code: 'VALIDATION_ERROR',
         statusCode: 400,
       });
     }
 
     const merchant = new Merchant({
-      clerkId: userId,
-      businessName,
-      businessDescription,
-      businessEmail,
-      businessPhone,
-      businessAddress,
-      status: "PENDING",
-      appliedAt: new Date(),
+      userId,
+      storeName, ownerName, phone, email, merchantType,
+      nationalId, crNumber, iban, logoUrl, description,
+      categories: categories || [],
+      city,
+      productSamples: productSamples || [],
+      status: 'pending',
     });
 
     await merchant.save();
 
     logger.info('Merchant application submitted', {
       requestId: req.requestId,
-      clerkId: userId,
-      businessName,
+      userId,
+      storeName,
     });
 
     return sendCreated(res, merchant, "Merchant application submitted successfully");
@@ -83,7 +87,7 @@ export const getMyMerchantStatus = async (req, res) => {
       return sendUnauthorized(res, "Authentication required");
     }
 
-    const merchant = await Merchant.findOne({ clerkId: userId });
+    const merchant = await Merchant.findOne({ userId });
 
     if (!merchant) {
       return sendSuccess(res, { data: { hasApplication: false }, message: "No merchant application found" });
@@ -107,7 +111,7 @@ export const getAllMerchants = async (req, res) => {
     const { status } = req.query;
     
     const query = {};
-    if (status && ['PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED'].includes(status)) {
+    if (status && ['pending', 'approved', 'rejected', 'needs_revision', 'suspended'].includes(status)) {
       query.status = status;
     }
 
@@ -155,7 +159,7 @@ export const getStoreById = async (req, res) => {
     const { id } = req.params;
     
     const merchant = await Merchant.findById(id).select(
-      'businessName businessDescription businessEmail businessPhone businessAddress status averageRating'
+      'storeName description email phone city status averageRating logoUrl banner categories merchantType'
     ).lean();
 
     if (!merchant) {
@@ -163,21 +167,29 @@ export const getStoreById = async (req, res) => {
     }
 
     // Only return approved merchants as stores
-    if (merchant.status !== 'APPROVED') {
+    if (merchant.status !== 'approved') {
       return sendNotFound(res, "Store");
     }
 
-    // Format response to match store interface
+    // Compute total reviews across all merchant products
+    const productIds = await Product.find({ merchant: id, isActive: true, deletedAt: null }).distinct('_id');
+    const totalReviews = await Review.countDocuments({ product: { $in: productIds }, isVisible: true });
+
     const storeData = {
       _id: merchant._id,
-      businessName: merchant.businessName,
-      businessDescription: merchant.businessDescription,
-      businessEmail: merchant.businessEmail,
-      businessPhone: merchant.businessPhone,
-      businessAddress: merchant.businessAddress,
+      storeName: merchant.storeName,
+      description: merchant.description,
+      email: merchant.email,
+      phone: merchant.phone,
+      city: merchant.city,
       status: merchant.status,
       rating: merchant.averageRating || 4.5,
-      verified: merchant.status === 'APPROVED',
+      verified: merchant.status === 'approved',
+      logoUrl: merchant.logoUrl || null,
+      banner: merchant.banner || null,
+      categories: merchant.categories || [],
+      merchantType: merchant.merchantType,
+      totalReviews,
     };
 
     return sendSuccess(res, { data: storeData, message: "Store retrieved successfully" });
@@ -208,7 +220,7 @@ export const getStoreProducts = async (req, res) => {
       return sendNotFound(res, "Store not found");
     }
 
-    if (merchant.status !== 'APPROVED') {
+    if (merchant.status !== 'approved') {
       return sendNotFound(res, "Store not found");
     }
 
@@ -268,7 +280,7 @@ export const approveMerchant = async (req, res) => {
       return sendNotFound(res, "Merchant");
     }
 
-    if (merchant.status === "APPROVED") {
+    if (merchant.status === 'approved') {
       return sendError(res, {
         message: "Merchant is already approved",
         code: 'ALREADY_APPROVED',
@@ -277,7 +289,7 @@ export const approveMerchant = async (req, res) => {
     }
 
     // Update merchant status
-    merchant.status = "APPROVED";
+    merchant.status = 'approved';
     merchant.approvedAt = new Date();
     merchant.approvedBy = adminId;
     await merchant.save();
@@ -337,7 +349,7 @@ export const rejectMerchant = async (req, res) => {
       return sendNotFound(res, "Merchant");
     }
 
-    if (merchant.status === "REJECTED") {
+    if (merchant.status === 'rejected') {
       return sendError(res, {
         message: "Merchant is already rejected",
         code: 'ALREADY_REJECTED',
@@ -346,7 +358,7 @@ export const rejectMerchant = async (req, res) => {
     }
 
     // Update merchant status
-    merchant.status = "REJECTED";
+    merchant.status = 'rejected';
     merchant.rejectionReason = rejectionReason || "Application rejected by admin";
     // Note: approvedBy is NOT set here - it should only be set when approving, not rejecting
     // Rejection and approval are separate audit events and should not mix
@@ -413,7 +425,7 @@ export const getMyMerchantProfile = async (req, res) => {
       return sendUnauthorized(res, "Authentication required");
     }
 
-    const merchant = await Merchant.findOne({ clerkId: userId });
+    const merchant = await Merchant.findOne({ userId });
 
     if (!merchant) {
       return sendNotFound(res, "Merchant profile");
@@ -452,7 +464,7 @@ export const suspendMerchant = async (req, res) => {
       return sendNotFound(res, "Merchant not found");
     }
 
-    if (merchant.status === "SUSPENDED") {
+    if (merchant.status === 'suspended') {
       return sendError(res, {
         message: "Merchant is already suspended",
         code: 'ALREADY_SUSPENDED',
@@ -460,7 +472,7 @@ export const suspendMerchant = async (req, res) => {
       });
     }
 
-    if (merchant.status !== "APPROVED") {
+    if (merchant.status !== 'approved') {
       return sendError(res, {
         message: "Only approved merchants can be suspended",
         code: 'INVALID_STATUS',
@@ -469,7 +481,7 @@ export const suspendMerchant = async (req, res) => {
     }
 
     // Update merchant status
-    merchant.status = "SUSPENDED";
+    merchant.status = 'suspended';
     merchant.suspensionReason = suspensionReason.trim();
     merchant.suspendedAt = new Date();
     await merchant.save();
@@ -580,7 +592,7 @@ export const unsuspendMerchant = async (req, res) => {
       return sendNotFound(res, "Merchant not found");
     }
 
-    if (merchant.status !== "SUSPENDED") {
+    if (merchant.status !== 'suspended') {
       return sendError(res, {
         message: "Merchant is not suspended",
         code: 'NOT_SUSPENDED',
@@ -589,7 +601,7 @@ export const unsuspendMerchant = async (req, res) => {
     }
 
     // Restore merchant to approved status
-    merchant.status = "APPROVED";
+    merchant.status = 'approved';
     merchant.suspensionReason = undefined;
     merchant.suspendedAt = undefined;
     await merchant.save();
@@ -737,20 +749,21 @@ export const updateMerchantProfile = async (req, res) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const merchant = await Merchant.findOne({ clerkId: userId });
+    const merchant = await Merchant.findOne({ userId });
 
     if (!merchant) {
       return res.status(404).json({ message: "Merchant profile not found" });
     }
 
-    const { businessName, businessDescription, businessEmail, businessPhone, businessAddress } = req.body;
+    const { storeName, description, email, phone, city, logoUrl, banner } = req.body;
 
-    // Update allowed fields
-    if (businessName) merchant.businessName = businessName;
-    if (businessDescription !== undefined) merchant.businessDescription = businessDescription;
-    if (businessEmail) merchant.businessEmail = businessEmail;
-    if (businessPhone !== undefined) merchant.businessPhone = businessPhone;
-    if (businessAddress !== undefined) merchant.businessAddress = businessAddress;
+    if (storeName)              merchant.storeName   = storeName;
+    if (description !== undefined) merchant.description = description;
+    if (email)                  merchant.email       = email;
+    if (phone !== undefined)    merchant.phone       = phone;
+    if (city !== undefined)     merchant.city        = city;
+    if (logoUrl !== undefined)  merchant.logoUrl     = logoUrl;
+    if (banner !== undefined)   merchant.banner      = banner;
 
     await merchant.save();
 
@@ -770,6 +783,57 @@ export const updateMerchantProfile = async (req, res) => {
 };
 
 /**
+ * Get reviews for all products belonging to a store (public endpoint)
+ */
+export const getStoreReviews = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 20, 50));
+    const skip = (page - 1) * limit;
+
+    const merchant = await Merchant.findById(id).select('status').lean();
+    if (!merchant || merchant.status !== 'approved') {
+      return sendNotFound(res, "Store");
+    }
+
+    const productIds = await Product.find({ merchant: id, isActive: true, deletedAt: null }).distinct('_id');
+
+    const [reviews, total] = await Promise.all([
+      Review.find({ product: { $in: productIds }, isVisible: true })
+        .populate('user', 'name')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Review.countDocuments({ product: { $in: productIds }, isVisible: true }),
+    ]);
+
+    const formatted = reviews.map((r) => ({
+      _id: r._id,
+      userName: r.user?.name || 'Anonymous',
+      rating: r.rating,
+      comment: r.comment,
+      createdAt: r.createdAt,
+    }));
+
+    return sendPaginated(res, {
+      data: formatted,
+      page,
+      limit,
+      total,
+      message: "Store reviews retrieved successfully",
+    });
+  } catch (error) {
+    logger.error('Error getting store reviews', {
+      requestId: req.requestId,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
  * Get all public merchants (Active & Approved)
  * Public endpoint for listing stores
  */
@@ -779,13 +843,10 @@ export const getPublicMerchants = async (req, res) => {
     const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 20, 50));
     const skip = (page - 1) * limit;
 
-    const filter = {
-      status: 'APPROVED',
-      // Add logic here if we have an 'isActive' flag for merchants, currently relying on status
-    };
+    const filter = { status: 'approved' };
 
     const merchants = await Merchant.find(filter)
-      .select('businessName businessDescription businessEmail businessPhone businessAddress status averageRating clerkId')
+      .select('storeName description email phone city status averageRating logoUrl banner categories userId')
       .sort({ averageRating: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit)

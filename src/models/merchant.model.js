@@ -1,90 +1,57 @@
 import mongoose from "mongoose";
 
-const merchantSchema = new mongoose.Schema({
-  clerkId: {
-    type: String,
-    required: true,
-    unique: true,
-  },
-  businessName: {
-    type: String,
-    required: true,
-  },
-  businessDescription: {
-    type: String,
-    required: false,
-  },
-  businessEmail: {
-    type: String,
-    required: true,
-  },
-  businessPhone: {
-    type: String,
-    required: false,
-  },
-  businessAddress: {
-    type: String,
-    required: false,
-  },
-  isFlagged: {
-    type: Boolean,
-    default: false,
-    index: true,
-  },
-  flaggedAt: {
-    type: Date,
-  },
-  flagReason: {
-      type: String,
-  },
-  status: {
-    type: String,
-    enum: ["PENDING", "APPROVED", "REJECTED", "SUSPENDED"],
-    default: "PENDING",
-    index: true,
-  },
-  rejectionReason: {
-    type: String,
-    required: false,
-  },
-  suspensionReason: {
-    type: String,
-    required: false,
-  },
-  suspendedAt: {
-    type: Date,
-    required: false,
-  },
-  approvedAt: {
-    type: Date,
-    required: false,
-  },
-  approvedBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null,
-  },
-  // appliedAt removed — use createdAt from timestamps instead
-  // Wallet / Balance
-  balance: {
-      type: Number,
-      default: 0,
-      min: 0
-  },
-  frozenBalance: {
-      type: Number,
-      default: 0,
-      min: 0
-  }
-}, { timestamps: true });
+const merchantSchema = new mongoose.Schema(
+  {
+    // ── Identity (matches merchantapplications collection) ─────────────────
+    userId:       { type: String, required: true, unique: true, index: true }, // Clerk userId
+    storeName:    { type: String, required: true },
+    ownerName:    { type: String, required: true },
+    phone:        { type: String, required: true },
+    email:        { type: String, required: true },
+    merchantType: { type: String, enum: ['individual', 'business'], required: true },
+    nationalId:   { type: String, required: true },
+    crNumber:     { type: String },
+    iban:         { type: String, required: true },
+    logoUrl:      { type: String },
+    banner:       { type: String },
+    description:  { type: String, required: true },
+    categories:   [{ type: String }],
+    city:         { type: String, required: true },
+    productSamples: [{ type: String }],
 
-// Indexes for frequently queried fields
-// Note: clerkId index is automatically created by unique: true, so we don't need to add it again
-// Note: status index is automatically created by index: true in schema, so we don't need to add it again
-merchantSchema.index({ businessEmail: 1 });
+    // ── Status ─────────────────────────────────────────────────────────────
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'needs_revision', 'suspended'],
+      default: 'pending',
+      index: true,
+    },
+    rejectionReason:  { type: String },
+    revisionNotes:    { type: String },
+    suspensionReason: { type: String },
+    suspendedAt:      { type: Date },
+    approvedAt:       { type: Date },
+    approvedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    // ── Auth-backend extras (not in dashboard schema, safe to add) ─────────
+    averageRating: { type: Number, default: 0, min: 0, max: 5 },
+    balance:       { type: Number, default: 0, min: 0 },
+    frozenBalance: { type: Number, default: 0, min: 0 },
+    isFlagged:     { type: Boolean, default: false },
+    flaggedAt:     { type: Date },
+    flagReason:    { type: String },
+  },
+  { timestamps: true }
+);
+
+merchantSchema.index({ email: 1 });
 merchantSchema.index({ status: 1, createdAt: -1 });
 merchantSchema.index({ status: 1, approvedAt: -1 });
 
-const Merchant = mongoose.model("Merchant", merchantSchema);
+// Third arg locks the collection name — data lives in merchantapplications
+const Merchant = mongoose.model("Merchant", merchantSchema, "merchantapplications");
 export default Merchant;
-

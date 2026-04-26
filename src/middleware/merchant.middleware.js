@@ -62,7 +62,7 @@ export const isApprovedMerchant = async (req, res, next) => {
     }
 
     // Check DB status
-    const merchant = await Merchant.findOne({ clerkId: userId });
+    const merchant = await Merchant.findOne({ userId });
 
     if (!merchant) {
       logger.warn('Merchant not found in database', {
@@ -73,7 +73,7 @@ export const isApprovedMerchant = async (req, res, next) => {
       return res.status(403).json({ message: 'Merchant profile not found' });
     }
 
-    if (merchant.status !== 'APPROVED') {
+    if (merchant.status !== 'approved') {
       logger.warn('Merchant access denied - not approved', {
         requestId: req.requestId,
         userId: userId,
@@ -129,7 +129,7 @@ export const isAdminOrApprovedMerchant = async (req, res, next) => {
 
     // For merchants, check if they are approved
     if (userRole === 'merchant') {
-      const merchant = await Merchant.findOne({ clerkId: userId });
+      const merchant = await Merchant.findOne({ userId });
 
       if (!merchant) {
         logger.warn('Merchant not found in database', {
@@ -137,13 +137,13 @@ export const isAdminOrApprovedMerchant = async (req, res, next) => {
           userId: userId,
           url: req.url,
         });
-        return res.status(403).json({ 
+        return res.status(403).json({
           message: 'Merchant profile not found. Please complete your merchant application.',
           code: 'MERCHANT_NOT_FOUND'
         });
       }
 
-      if (merchant.status !== 'APPROVED') {
+      if (merchant.status !== 'approved') {
         logger.warn('Merchant access denied - not approved', {
           requestId: req.requestId,
           userId: userId,

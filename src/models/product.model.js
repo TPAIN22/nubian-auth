@@ -71,8 +71,9 @@ const productSchema = new mongoose.Schema(
     // === Internal ranking metrics (computed by productScoring cron) ===
     ranking: {
       visibilityScore: { type: Number, default: 0, min: 0 },
-      conversionRate: { type: Number, default: 0, min: 0, max: 100 },
-      storeRating: { type: Number, default: 0, min: 0, max: 5 },
+      trendingScore:   { type: Number, default: 0, min: 0 },
+      conversionRate:  { type: Number, default: 0, min: 0, max: 100 },
+      storeRating:     { type: Number, default: 0, min: 0, max: 5 },
     },
 
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', required: true },
@@ -128,6 +129,7 @@ productSchema.virtual('totalStock').get(function () {
 productSchema.index({ status: 1, deletedAt: 1, createdAt: -1 });
 productSchema.index({ merchant: 1, deletedAt: 1 });
 productSchema.index({ 'ranking.visibilityScore': -1 });
+productSchema.index({ 'ranking.trendingScore': -1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });
 
