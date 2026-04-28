@@ -351,7 +351,7 @@ export const saveMerchantPushToken = async (req, res) => {
       });
     }
 
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
     if (!merchant) {
       return sendError(res, {
         message: 'Merchant not found or not approved',
@@ -431,7 +431,7 @@ export const getNotifications = async (req, res) => {
 
     // Determine recipient type (user or merchant)
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -493,7 +493,7 @@ export const getUnreadCount = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -548,7 +548,7 @@ export const markAsRead = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -615,7 +615,7 @@ export const markMultipleAsRead = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -671,7 +671,7 @@ export const getPreferences = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -728,7 +728,7 @@ export const updatePreferences = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -851,7 +851,7 @@ export const sendBroadcast = async (req, res) => {
     }
 
     if (target === 'merchants' || target === 'all') {
-      merchantCount = await Merchant.countDocuments({ status: 'APPROVED' });
+      merchantCount = await Merchant.countDocuments({ status: 'approved' });
     }
 
     const totalRecipients = userCount + merchantCount;
@@ -990,7 +990,7 @@ export const sendTestNotification = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
 
     let recipientType = 'user';
     let recipientId = user?._id;

@@ -3,6 +3,8 @@
  * Provides reusable functions for cart operations, attribute handling, and validation
  */
 
+import { calculateFinalPrice } from '../lib/pricing.engine.js';
+
 /**
  * Normalizes attribute values to ensure consistency
  * Handles null, undefined, empty strings, and string "null"/"undefined"
@@ -220,40 +222,33 @@ function findMatchingVariant(product, attributes) {
 }
 
 /**
- * Gets the final selling price for a product
- * SMART PRICING SYSTEM: Uses finalPrice > discountPrice > price
- * 
- * @param {Object} product - Product document
- * @param {Object} attributes - Selected attributes (optional)
- * @returns {number} - Final price to use (finalPrice if available, else discountPrice, else price)
+ * Gets the authoritative selling price for an item being added to cart / placed.
+ *
+ * Always recomputes via the pricing engine — never trusts a stored `finalPrice`
+ * field that may pre-date a new product-level discount (or has been stripped on
+ * the way through currency conversion). This is the price the customer pays.
+ *
+ * @param {Object} product    - Product document (lean or doc) with variants
+ * @param {Object} attributes - Selected variant attributes (optional)
+ * @returns {number}          - Final price in product's base currency
  */
 function getProductPrice(product, attributes = null) {
-  if (!product) {
-    return 0;
-  }
-  
-  const hasVariants = product.variants && product.variants.length > 0;
+  if (!product) return 0;
 
-  // If product has variants, we MUST find a matching variant for an accurate price
+  const hasVariants = Array.isArray(product.variants) && product.variants.length > 0;
   if (hasVariants) {
     const variant = findMatchingVariant(product, attributes);
     if (variant) {
-      // Use finalPrice (system-computed with all markups applied).
-      // discountPrice is intentionally excluded — it is a display-only field that
-      // may be lower than finalPrice, which would create underpriced orders.
-      return (variant.finalPrice > 0 ? variant.finalPrice : null)
-        ?? variant.merchantPrice
-        ?? 0;
+      return calculateFinalPrice({ product, variant }).finalPrice;
     }
+    // No matching variant — fall back to the lowest active variant. This avoids
+    // returning the stale root finalPrice when the cart key drifts from the
+    // selected variant (e.g. attribute renamed).
     return product.finalPrice || 0;
   }
 
-  // Simple product: prefer finalPrice, then merchantPrice.
-  // discountPrice excluded for the same reason as above.
-  return (product.finalPrice > 0 ? product.finalPrice : null)
-    ?? product.merchantPrice
-    ?? product.price
-    ?? 0;
+  // Schema requires variants; this branch is only hit by orphan/legacy data.
+  return calculateFinalPrice({ product, variant: null }).finalPrice;
 }
 
 export {

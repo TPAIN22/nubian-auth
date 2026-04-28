@@ -32,23 +32,27 @@
 
 import Product from '../models/product.model.js';
 import logger from '../lib/logger.js';
+import { calculateFinalPrice } from '../lib/pricing.engine.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Compute the final sale price from its components.
- * Matches the pre-save middleware formula exactly so they stay in sync.
+ * Compute the final sale price from raw components.
+ * Thin wrapper around the pricing engine so external callers keep the same API.
  */
-export function computeFinalPrice({ merchantPrice, nubianMarkup = 30, dynamicMarkup = 0, merchantDiscount = 0 }) {
-  const mp = Number(merchantPrice) || 0;
-  if (mp <= 0) return 0;
-
-  const nm = Math.max(0, Number(nubianMarkup) || 0);
-  const dm = Number(dynamicMarkup) || 0;
-  const disc = Math.max(0, Number(merchantDiscount) || 0);
-
-  const raw = mp + (mp * nm / 100) + (mp * dm / 100) - disc;
-  return Math.max(1, Math.round(raw * 100) / 100);
+export function computeFinalPrice({
+  merchantPrice,
+  nubianMarkup = 30,
+  dynamicMarkup = 0,
+  merchantDiscount = 0,
+  product = null,
+}) {
+  if (!(Number(merchantPrice) > 0)) return 0;
+  const { finalPrice } = calculateFinalPrice({
+    product,
+    variant: { merchantPrice, nubianMarkup, dynamicMarkup, merchantDiscount },
+  });
+  return finalPrice;
 }
 
 /**
@@ -101,7 +105,7 @@ export async function runDynamicPricingCron() {
 
   // Use a cursor to stream products — avoids loading all into RAM
   const cursor = Product.find({ isActive: { $ne: false }, deletedAt: null })
-    .select('variants trackingFields dynamicPricingEnabled finalPrice')
+    .select('variants trackingFields dynamicPricingEnabled finalPrice discount')
     .cursor();
 
   for await (const product of cursor) {
@@ -127,11 +131,15 @@ export async function runDynamicPricingCron() {
           ? computeDynamicMarkup({ stock: variant.stock, ...signals })
           : 0;
 
-        const nextFinal = computeFinalPrice({
-          merchantPrice:   variant.merchantPrice,
-          nubianMarkup:    variant.nubianMarkup ?? 30,
-          dynamicMarkup:   nextDynamic,
-          merchantDiscount: variant.merchantDiscount ?? 0,
+        // Run through the engine so the product-level discount is honored.
+        const { finalPrice: nextFinal } = calculateFinalPrice({
+          product,
+          variant: {
+            merchantPrice:    variant.merchantPrice,
+            nubianMarkup:     variant.nubianMarkup ?? 30,
+            dynamicMarkup:    nextDynamic,
+            merchantDiscount: variant.merchantDiscount ?? 0,
+          },
         });
 
         // Only record changes (skip if identical — avoids spurious writes)

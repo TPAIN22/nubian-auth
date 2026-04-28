@@ -190,7 +190,7 @@ export const getCart = async (req, res) => {
       select: "name",
     }).populate({
       path: "products.product.merchant",
-      select: "businessName businessEmail",
+      select: "storeName email logoUrl city status",
     });
 
     if (!cart) {
@@ -461,7 +461,7 @@ export const addToCart = async (req, res) => {
         select: "name",
       }).populate({
         path: "products.product.merchant",
-        select: "businessName businessEmail",
+        select: "storeName email logoUrl city status",
       });
       return sendSuccess(res, {
         data: populatedCart,
@@ -546,7 +546,7 @@ export const addToCart = async (req, res) => {
       select: "name",
     }).populate({
       path: "products.product.merchant",
-      select: "businessName businessEmail",
+      select: "storeName email logoUrl city status",
     });
 
     // Enriched Response
@@ -680,7 +680,7 @@ export const updateCart = async (req, res) => {
       select: "name",
     }).populate({
       path: "products.product.merchant",
-      select: "businessName businessEmail",
+      select: "storeName email logoUrl city status",
     });
 
     // Enriched Response
@@ -802,7 +802,7 @@ export const removeFromCart = async (req, res) => {
       select: "name",
     }).populate({
       path: "products.product.merchant",
-      select: "businessName businessEmail",
+      select: "storeName email logoUrl city status",
     });
 
     // Enriched Response

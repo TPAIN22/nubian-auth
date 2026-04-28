@@ -31,11 +31,7 @@ const merchantSchema = new mongoose.Schema(
     suspensionReason: { type: String },
     suspendedAt:      { type: Date },
     approvedAt:       { type: Date },
-    approvedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null,
-    },
+    approvedBy: { type: String, default: null }, // Clerk userId of the admin who approved
 
     // ── Auth-backend extras (not in dashboard schema, safe to add) ─────────
     averageRating: { type: Number, default: 0, min: 0, max: 5 },

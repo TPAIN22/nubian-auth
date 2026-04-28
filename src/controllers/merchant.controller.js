@@ -233,7 +233,7 @@ export const getStoreProducts = async (req, res) => {
 
     const products = await Product.find(filter)
       .populate('category', 'name slug')
-      .populate('merchant', 'businessName status')
+      .populate('merchant', 'storeName logoUrl status')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -297,28 +297,28 @@ export const approveMerchant = async (req, res) => {
     // Update Clerk user's publicMetadata to set role to "merchant" and merchantStatus
     try {
       // Get existing metadata to preserve other fields
-      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const clerkUser = await clerkClient.users.getUser(merchant.userId);
       const existingMetadata = clerkUser.publicMetadata || {};
-      
-      await clerkClient.users.updateUser(merchant.clerkId, {
+
+      await clerkClient.users.updateUser(merchant.userId, {
         publicMetadata: {
           ...existingMetadata,
           role: "merchant",
-          merchantStatus: "APPROVED",
+          merchantStatus: "approved",
         },
       });
 
       logger.info('Merchant approved and role updated in Clerk', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
         approvedBy: adminId,
       });
     } catch (clerkError) {
       logger.error('Error updating Clerk role', {
         requestId: req.requestId,
         error: clerkError.message,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
       });
       // Continue even if Clerk update fails - merchant is still approved in DB
     }
@@ -329,6 +329,78 @@ export const approveMerchant = async (req, res) => {
       requestId: req.requestId,
       error: error.message,
       stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Request revisions to a merchant application (Admin only)
+ * Sets status to 'needs_revision' so the merchant can edit & resubmit.
+ */
+export const requestMerchantRevision = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+    const { revisionNotes } = req.body;
+
+    if (!revisionNotes || !revisionNotes.trim()) {
+      return sendError(res, {
+        message: 'revisionNotes is required',
+        code: 'VALIDATION_ERROR',
+        statusCode: 400,
+      });
+    }
+
+    const merchant = await Merchant.findById(id);
+    if (!merchant) return sendNotFound(res, 'Merchant');
+
+    if (!['pending', 'rejected'].includes(merchant.status)) {
+      return sendError(res, {
+        message: `Cannot request revision from merchant in status "${merchant.status}"`,
+        code: 'INVALID_STATUS',
+        statusCode: 400,
+      });
+    }
+
+    merchant.status = 'needs_revision';
+    merchant.revisionNotes = revisionNotes.trim();
+    merchant.rejectionReason = undefined;
+    await merchant.save();
+
+    logger.info('Merchant revision requested', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      userId: merchant.userId,
+      adminId,
+    });
+
+    // Sync to Clerk metadata so middleware can route the user to the apply page
+    try {
+      const clerkUser = await clerkClient.users.getUser(merchant.userId);
+      const existingMetadata = clerkUser.publicMetadata || {};
+      await clerkClient.users.updateUser(merchant.userId, {
+        publicMetadata: {
+          ...existingMetadata,
+          merchantStatus: 'needs_revision',
+        },
+      });
+    } catch (clerkError) {
+      logger.error('Failed to sync needs_revision to Clerk', {
+        requestId: req.requestId,
+        userId: merchant.userId,
+        error: clerkError.message,
+      });
+    }
+
+    return sendSuccess(res, {
+      data: merchant,
+      message: 'Revision requested successfully',
+    });
+  } catch (error) {
+    logger.error('Error requesting merchant revision', {
+      requestId: req.requestId,
+      error: error.message,
     });
     throw error;
   }
@@ -367,38 +439,34 @@ export const rejectMerchant = async (req, res) => {
     logger.info('Merchant rejected', {
       requestId: req.requestId,
       merchantId: merchant._id,
-      clerkId: merchant.clerkId,
+      userId: merchant.userId,
       rejectedBy: adminId,
       reason: rejectionReason,
     });
 
-    // Update Clerk user's publicMetadata to set merchantStatus to REJECTED
-    // Note: We don't remove the role field here as Clerk merges metadata.
-    // The middleware should check merchantStatus along with role for access control.
+    // Update Clerk user's publicMetadata to set merchantStatus to rejected
     try {
-      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const clerkUser = await clerkClient.users.getUser(merchant.userId);
       const existingMetadata = clerkUser.publicMetadata || {};
-      
-      await clerkClient.users.updateUser(merchant.clerkId, {
+
+      await clerkClient.users.updateUser(merchant.userId, {
         publicMetadata: {
           ...existingMetadata,
-          merchantStatus: "REJECTED",
-          // Keep role as-is since Clerk merges metadata (can't easily remove fields)
-          // Middleware should check merchantStatus for access control
+          merchantStatus: "rejected",
         },
       });
 
       logger.info('Merchant rejected and Clerk metadata updated', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
         rejectedBy: adminId,
       });
     } catch (clerkError) {
       logger.error('Error updating Clerk metadata on rejection', {
         requestId: req.requestId,
         error: clerkError.message,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
       });
       // Continue even if Clerk update fails - merchant is still rejected in DB
     }
@@ -486,10 +554,31 @@ export const suspendMerchant = async (req, res) => {
     merchant.suspendedAt = new Date();
     await merchant.save();
 
+    // Cascade: deactivate this merchant's products so they stop appearing in shop.
+    // Soft-update — we don't soft-delete, we just hide. Unsuspend re-enables them.
+    try {
+      const cascadeResult = await Product.updateMany(
+        { merchant: merchant._id, deletedAt: null },
+        { $set: { isActive: false } },
+      );
+      logger.info('Suspended merchant: products deactivated', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        modifiedCount: cascadeResult.modifiedCount,
+      });
+    } catch (cascadeErr) {
+      logger.error('Failed to deactivate merchant products on suspension', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: cascadeErr.message,
+      });
+      // Don't fail the suspension if cascade fails — the merchant is still suspended
+    }
+
     logger.info('Merchant suspended', {
       requestId: req.requestId,
       merchantId: merchant._id,
-      clerkId: merchant.clerkId,
+      userId: merchant.userId,
       suspendedBy: adminId,
       reason: suspensionReason,
     });
@@ -497,15 +586,15 @@ export const suspendMerchant = async (req, res) => {
     // Send email notification to merchant
     try {
       await sendMerchantSuspensionEmail({
-        to: merchant.businessEmail,
-        businessName: merchant.businessName,
+        to: merchant.email,
+        businessName: merchant.storeName,
         suspensionReason: merchant.suspensionReason,
         suspendedAt: merchant.suspendedAt,
       });
       logger.info('Suspension email sent to merchant', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        email: merchant.businessEmail,
+        email: merchant.email,
       });
     } catch (emailError) {
       logger.error('Failed to send suspension email', {
@@ -520,14 +609,14 @@ export const suspendMerchant = async (req, res) => {
     try {
       await Notify.create({
         title: 'تم تعليق حسابك التجاري',
-        body: `تم تعليق حسابك التجاري "${merchant.businessName}". السبب: ${merchant.suspensionReason}`,
-        userId: merchant.clerkId,
+        body: `تم تعليق حسابك التجاري "${merchant.storeName}". السبب: ${merchant.suspensionReason}`,
+        userId: merchant.userId,
         read: false,
       });
       logger.info('Suspension notification created', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
       });
     } catch (notifyError) {
       logger.error('Failed to create suspension notification', {
@@ -538,31 +627,29 @@ export const suspendMerchant = async (req, res) => {
       // Don't fail the request if notification fails
     }
 
-    // Update Clerk user's publicMetadata to set merchantStatus to SUSPENDED
+    // Update Clerk user's publicMetadata to set merchantStatus to suspended
     try {
-      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const clerkUser = await clerkClient.users.getUser(merchant.userId);
       const existingMetadata = clerkUser.publicMetadata || {};
-      
-      await clerkClient.users.updateUser(merchant.clerkId, {
+
+      await clerkClient.users.updateUser(merchant.userId, {
         publicMetadata: {
           ...existingMetadata,
-          merchantStatus: "SUSPENDED",
-          // Keep the merchant role but mark as suspended
-          role: existingMetadata.role || undefined,
+          merchantStatus: "suspended",
         },
       });
 
       logger.info('Merchant suspended and Clerk metadata updated', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
         suspendedBy: adminId,
       });
     } catch (clerkError) {
       logger.error('Error updating Clerk metadata on suspension', {
         requestId: req.requestId,
         error: clerkError.message,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
       });
       // Continue even if Clerk update fails - merchant is still suspended in DB
     }
@@ -609,20 +696,20 @@ export const unsuspendMerchant = async (req, res) => {
     logger.info('Merchant unsuspended', {
       requestId: req.requestId,
       merchantId: merchant._id,
-      clerkId: merchant.clerkId,
+      userId: merchant.userId,
       unsuspendedBy: adminId,
     });
 
     // Send email notification to merchant
     try {
       await sendMerchantUnsuspensionEmail({
-        to: merchant.businessEmail,
-        businessName: merchant.businessName,
+        to: merchant.email,
+        businessName: merchant.storeName,
       });
       logger.info('Unsuspension email sent to merchant', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        email: merchant.businessEmail,
+        email: merchant.email,
       });
     } catch (emailError) {
       logger.error('Failed to send unsuspension email', {
@@ -637,14 +724,14 @@ export const unsuspendMerchant = async (req, res) => {
     try {
       await Notify.create({
         title: 'تم إلغاء تعليق حسابك التجاري',
-        body: `تم إلغاء تعليق حسابك التجاري "${merchant.businessName}". يمكنك الآن متابعة نشاطك التجاري بشكل طبيعي.`,
-        userId: merchant.clerkId,
+        body: `تم إلغاء تعليق حسابك التجاري "${merchant.storeName}". يمكنك الآن متابعة نشاطك التجاري بشكل طبيعي.`,
+        userId: merchant.userId,
         read: false,
       });
       logger.info('Unsuspension notification created', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
       });
     } catch (notifyError) {
       logger.error('Failed to create unsuspension notification', {
@@ -655,30 +742,30 @@ export const unsuspendMerchant = async (req, res) => {
       // Don't fail the request if notification fails
     }
 
-    // Update Clerk user's publicMetadata to restore merchantStatus to APPROVED
+    // Update Clerk user's publicMetadata to restore merchantStatus to approved
     try {
-      const clerkUser = await clerkClient.users.getUser(merchant.clerkId);
+      const clerkUser = await clerkClient.users.getUser(merchant.userId);
       const existingMetadata = clerkUser.publicMetadata || {};
-      
-      await clerkClient.users.updateUser(merchant.clerkId, {
+
+      await clerkClient.users.updateUser(merchant.userId, {
         publicMetadata: {
           ...existingMetadata,
           role: "merchant",
-          merchantStatus: "APPROVED",
+          merchantStatus: "approved",
         },
       });
 
       logger.info('Merchant unsuspended and Clerk metadata updated', {
         requestId: req.requestId,
         merchantId: merchant._id,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
         unsuspendedBy: adminId,
       });
     } catch (clerkError) {
       logger.error('Error updating Clerk metadata on unsuspension', {
         requestId: req.requestId,
         error: clerkError.message,
-        clerkId: merchant.clerkId,
+        userId: merchant.userId,
       });
       // Continue even if Clerk update fails - merchant is still unsuspended in DB
     }
@@ -712,8 +799,8 @@ export const deleteMerchant = async (req, res) => {
     logger.info('Merchant deletion initiated', {
       requestId: req.requestId,
       merchantId: merchant._id,
-      clerkId: merchant.clerkId,
-      businessName: merchant.businessName,
+      userId: merchant.userId,
+      storeName: merchant.storeName,
       status: merchant.status,
       deletedBy: adminId,
     });
@@ -721,7 +808,7 @@ export const deleteMerchant = async (req, res) => {
     // Delete the merchant
     await Merchant.findByIdAndDelete(id);
 
-    logger.info('Merchant deleted successfully', {
+    logger.info('Merchant deleted', {
       requestId: req.requestId,
       merchantId: id,
       deletedBy: adminId,

@@ -15,6 +15,7 @@ import {
   updateProductRanking,
   toggleDynamicPricing,
   exploreProducts,
+  bulkImportProducts,
 } from '../controllers/products.controller.js'
 import { validateProductCreate, validateProductUpdate } from '../middleware/validators/product.validator.js'
 import { validatePagination } from '../middleware/validators/pagination.validator.js'
@@ -33,6 +34,9 @@ router.get('/:id', ...validateObjectId('id'), handleValidationErrors, getProduct
 router.post('/', isAuthenticated, isAdminOrApprovedMerchant, validateProductCreate, createProduct)
 router.put('/:id',    isAuthenticated, isAdminOrApprovedMerchant, ...validateObjectId('id'), handleValidationErrors, validateProductUpdate, updateProduct)
 router.delete('/:id', isAuthenticated, isAdminOrApprovedMerchant, ...validateObjectId('id'), handleValidationErrors, deleteProduct)
+
+// Bulk import (admin OR approved merchant — controller enforces ownership)
+router.post('/admin/bulk-import', isAuthenticated, isAdminOrApprovedMerchant, bulkImportProducts)
 
 // Admin-only routes for managing all products
 router.get('/admin/all', isAuthenticated, isAdmin, validatePagination, validateCategoryFilter, validateMerchantFilter, getAllProductsAdmin)

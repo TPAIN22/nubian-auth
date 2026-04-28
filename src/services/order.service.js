@@ -10,6 +10,7 @@ import User from '../models/user.model.js';
 import couponService from './coupon.service.js';
 import { getFxSnapshotForOrder, applyPsychologicalPricing } from './currency.service.js';
 import { getProductPrice, mapToObject } from '../utils/cartUtils.js';
+import { calculateFinalPrice } from '../lib/pricing.engine.js';
 import { ServiceError } from '../lib/errors.js';
 import logger from '../lib/logger.js';
 
@@ -109,12 +110,13 @@ class OrderService {
         itemAttributes = { size: item.size };
       }
 
-      const itemVariant     = item.variantId ? item.product.variants?.id(item.variantId) : null;
-      const itemPrice        = getProductPrice(item.product, itemAttributes);
-      const itemMerchantPrice = itemVariant?.merchantPrice ?? item.product.merchantPrice ?? 0;
-      const itemNubianMarkup  = itemVariant?.nubianMarkup  ?? item.product.nubianMarkup  ?? 10;
-      const itemDynamicMarkup = itemVariant?.dynamicMarkup ?? item.product.dynamicMarkup ?? 0;
-      const itemTotal         = itemPrice * item.quantity;
+      const itemVariant = item.variantId ? item.product.variants?.id(item.variantId) : null;
+
+      // Authoritative price snapshot — every order line records what the engine
+      // returned at checkout time, so completed orders never re-price.
+      const pricing = calculateFinalPrice({ product: item.product, variant: itemVariant });
+      const itemPrice = pricing.finalPrice || getProductPrice(item.product, itemAttributes);
+      const itemTotal = itemPrice * item.quantity;
 
       totalAmount += itemTotal;
 
@@ -125,11 +127,12 @@ class OrderService {
         attributes:   itemAttributes,
         size:         item.size || null,
         price:        itemPrice,
-        merchantPrice: itemMerchantPrice,
-        nubianMarkup:  itemNubianMarkup,
-        dynamicMarkup: itemDynamicMarkup,
-        discountPrice: itemVariant ? itemVariant.discountPrice : item.product.discountPrice,
-        originalPrice: itemMerchantPrice,
+        merchantPrice: pricing.basePrice,
+        nubianMarkup:  pricing.breakdown.nubianMarkup,
+        dynamicMarkup: pricing.breakdown.dynamicMarkup,
+        originalPrice: pricing.originalPrice,
+        discountAmount:     pricing.discountAmount,
+        discountPercentage: pricing.discountPercentage,
       });
 
       const productMerchant = item.product.merchant;

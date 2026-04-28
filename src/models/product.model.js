@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { calculateFinalPrice } from '../lib/pricing.engine.js';
 
 const variantSchema = new mongoose.Schema(
   {
@@ -43,6 +44,22 @@ const productSchema = new mongoose.Schema(
 
     // Minimum variant finalPrice — kept in sync by cron and pre-save
     finalPrice: { type: Number, default: 0, min: 0 },
+
+    // Product-level discount that applies to EVERY variant.
+    // Variant-level merchantDiscount stacks on top of this.
+    // Activation gating (isActive + date window) lets future flash-sales/coupons reuse the same shape.
+    discount: {
+      type: {
+        type: String,
+        enum: ['percentage', 'fixed', null],
+        default: null,
+      },
+      value:       { type: Number, default: 0, min: 0 },
+      maxDiscount: { type: Number, default: null, min: 0 }, // cap for percentage discounts
+      startsAt:    { type: Date, default: null },
+      endsAt:      { type: Date, default: null },
+      isActive:    { type: Boolean, default: false },
+    },
 
     appliedOfferId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -101,6 +118,10 @@ const productSchema = new mongoose.Schema(
 
     deletedAt: { type: Date, default: null, index: true },
 
+    // Stable identifier used by the bulk-import flow to upsert rows.
+    // Sparse + unique per merchant — products created outside import don't set it.
+    importSku: { type: String, trim: true, default: null },
+
     // === Tracking Signals (updated by cron every hour) ===
     // Used by dynamic pricing & scoring to compute adjustments
     trackingFields: {
@@ -131,6 +152,8 @@ productSchema.index({ merchant: 1, deletedAt: 1 });
 productSchema.index({ 'ranking.visibilityScore': -1 });
 productSchema.index({ 'ranking.trendingScore': -1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
+// Bulk-import upsert key — one importSku per merchant.
+productSchema.index({ merchant: 1, importSku: 1 }, { unique: true, sparse: true });
 productSchema.index({ isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });
 
 // Home screen & category listing queries
@@ -142,35 +165,20 @@ productSchema.index({ status: 1, isActive: 1, deletedAt: 1, priorityScore: -1, f
 // and were removed to avoid wasted index write overhead.
 
 // ===== Pre-save Middleware: Smart Pricing Calculation =====
-// Recomputes variant.finalPrice from merchantPrice + nubianMarkup + dynamicMarkup - merchantDiscount.
-// If dynamicPricingEnabled is false, dynamicMarkup contribution is forced to 0.
+// Delegates to the pricing engine so the formula is identical wherever it runs
+// (controller manual recalc, dynamicPricing cron, cart/order snapshot).
 productSchema.pre('save', function (next) {
   if (!this.variants || this.variants.length === 0) return next();
 
   let minFinal = Infinity;
 
   this.variants.forEach((variant) => {
-    const base = variant.merchantPrice || 0;
-    const markupAmt = base * ((variant.nubianMarkup ?? 30) / 100);
-
-    // Respect per-product dynamic pricing toggle
-    const effectiveDynamic = this.dynamicPricingEnabled ? (variant.dynamicMarkup ?? 0) : 0;
-    const dynamicAmt = base * (effectiveDynamic / 100);
-
     variant.sku = variant.sku.trim().toUpperCase();
-    const merchDiscount = variant.merchantDiscount || 0;
+    const { finalPrice } = calculateFinalPrice({ product: this, variant });
+    variant.finalPrice = finalPrice;
 
-    let final = base + markupAmt + dynamicAmt - merchDiscount;
-
-    // Never sell below cost price even with merchant discount
-    if (final < base && merchDiscount === 0) {
-      final = base;
-    }
-
-    variant.finalPrice = Math.max(1, Math.round(final * 100) / 100);
-
-    if (variant.isActive && variant.finalPrice > 0 && variant.finalPrice < minFinal) {
-      minFinal = variant.finalPrice;
+    if (variant.isActive && finalPrice > 0 && finalPrice < minFinal) {
+      minFinal = finalPrice;
     }
   });
 

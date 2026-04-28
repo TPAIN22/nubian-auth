@@ -57,7 +57,7 @@ export const getCoupons = async (req, res) => {
     const coupons = await Coupon.find(query)
       .populate('applicableProducts', 'name price finalPrice')
       .populate('applicableCategories', 'name')
-      .populate('applicableMerchants', 'businessName')
+      .populate('applicableMerchants', 'storeName logoUrl')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -95,7 +95,7 @@ export const getCouponById = async (req, res) => {
     const coupon = await Coupon.findById(req.params.id)
       .populate('applicableProducts', 'name price finalPrice merchantPrice')
       .populate('applicableCategories', 'name')
-      .populate('applicableMerchants', 'businessName');
+      .populate('applicableMerchants', 'storeName logoUrl');
 
     if (!coupon) {
       return sendNotFound(res, { message: 'Coupon not found' });
@@ -134,7 +134,7 @@ export const getCouponByCode = async (req, res) => {
     })
       .populate('applicableProducts', 'name price finalPrice merchantPrice')
       .populate('applicableCategories', 'name')
-      .populate('applicableMerchants', 'businessName');
+      .populate('applicableMerchants', 'storeName logoUrl');
 
     if (!coupon) {
       return sendNotFound(res, { message: 'Invalid or inactive coupon code' });
@@ -374,7 +374,7 @@ export const updateCoupon = async (req, res) => {
     )
       .populate('applicableProducts', 'name price finalPrice')
       .populate('applicableCategories', 'name')
-      .populate('applicableMerchants', 'businessName');
+      .populate('applicableMerchants', 'storeName logoUrl');
 
     logger.info('Coupon updated', {
       requestId: req.requestId,
@@ -640,7 +640,7 @@ export const getAvailableCoupons = async (req, res) => {
     const coupons = await Coupon.find(query)
       .populate('applicableProducts', 'name price finalPrice')
       .populate('applicableCategories', 'name')
-      .populate('applicableMerchants', 'businessName')
+      .populate('applicableMerchants', 'storeName logoUrl')
       .sort({ createdAt: -1 })
       .limit(10);
 

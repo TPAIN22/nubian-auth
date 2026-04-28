@@ -55,7 +55,7 @@ export async function handleOrderCreated(orderId) {
           await notificationService.createNotification({
             type: 'NEW_ORDER',
             recipientType: 'merchant',
-            recipientId: merchant.clerkId || merchant._id,
+            recipientId: merchant.userId || merchant._id,
             title: 'New Order Received',
             body: `You have a new order #${order.orderNumber} with ${merchantProducts.length} product(s)`,
             deepLink: `/merchant/orders/${order._id}`,
@@ -206,7 +206,7 @@ export async function handleProductStatusChanged(productId, status) {
       await notificationService.createNotification({
         type: 'PRODUCT_APPROVED',
         recipientType: 'merchant',
-        recipientId: product.merchant.clerkId || product.merchant._id,
+        recipientId: product.merchant.userId || product.merchant._id,
         title: 'Product Approved',
         body: `Your product "${product.name}" has been approved and is now live`,
         deepLink: `/merchant/products/${product._id}`,
@@ -223,7 +223,7 @@ export async function handleProductStatusChanged(productId, status) {
       await notificationService.createNotification({
         type: 'PRODUCT_REJECTED',
         recipientType: 'merchant',
-        recipientId: product.merchant.clerkId || product.merchant._id,
+        recipientId: product.merchant.userId || product.merchant._id,
         title: 'Product Rejected',
         body: `Your product "${product.name}" has been rejected. Please check and update`,
         deepLink: `/merchant/products/${product._id}`,
@@ -344,7 +344,7 @@ export async function handleLowStock(productId, currentStock, threshold = 10) {
       await notificationService.createNotification({
         type: 'LOW_STOCK',
         recipientType: 'merchant',
-        recipientId: product.merchant.clerkId || product.merchant._id,
+        recipientId: product.merchant.userId || product.merchant._id,
         title: 'Low Stock Alert',
         body: `Your product "${product.name}" is running low. Only ${currentStock} left in stock`,
         deepLink: `/merchant/products/${product._id}`,

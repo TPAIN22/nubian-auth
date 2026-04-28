@@ -10,152 +10,112 @@ import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendF
 import logger from '../lib/logger.js'
 import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productRanking.js'
 import { convertProductPrices } from '../services/currency.service.js'
+import {
+  calculateFinalPrice,
+  calculateProductPricing,
+  isProductDiscountActive,
+} from '../lib/pricing.engine.js'
 
 /**
- * Enrich product with pricing breakdown for API responses
- * Adds finalPrice, merchantPrice, and pricingBreakdown to product objects
+ * Enrich product with pricing breakdown for API responses.
+ *
+ * Routes everything through the pricing engine (lib/pricing.engine.js) so the
+ * formula is identical to the model pre-save hook and the dynamic-pricing cron.
+ *
+ * Output shape (per product):
+ *   {
+ *     ...productFields,
+ *     // root "From" price — lowest active variant
+ *     merchantPrice, price, finalPrice, originalPrice, discountAmount,
+ *     discountPercentage, hasDiscount,
+ *     // legacy aliases (kept for back-compat with existing dashboards)
+ *     displayOriginalPrice, displayFinalPrice, displayDiscountPercentage,
+ *     pricing: { listPrice, originalPrice, finalPrice, discount: { amount, percentage, source } },
+ *     // every variant gets the SAME pricing block
+ *     variants: [{ ...variantFields, basePrice, originalPrice, finalPrice, discountAmount,
+ *                  discountPercentage, hasDiscount, pricing: { ... } }]
+ *   }
  */
 export function enrichProductWithPricing(product) {
   if (!product) return product;
-
   const p = product.toObject ? product.toObject() : product;
+
+  const productOfferActive = isProductDiscountActive(p.discount);
+  const offerSummary = productOfferActive
+    ? {
+        active: true,
+        type:        p.discount.type,
+        value:       p.discount.value,
+        maxDiscount: p.discount.maxDiscount ?? null,
+        startsAt:    p.discount.startsAt ?? null,
+        endsAt:      p.discount.endsAt ?? null,
+      }
+    : { active: false };
+
+  const buildBlock = (pricing, source) => ({
+    basePrice:           pricing.basePrice,
+    listPrice:           pricing.listPrice,
+    originalPrice:       pricing.originalPrice,
+    finalPrice:          pricing.finalPrice,
+    discountAmount:      pricing.discountAmount,
+    discountPercentage:  pricing.discountPercentage,
+    hasDiscount:         pricing.hasDiscount,
+    pricing: {
+      ...pricing,
+      offer: offerSummary,
+      source,
+    },
+    // legacy aliases — keep frontends that read displayX working
+    displayOriginalPrice:       pricing.originalPrice,
+    displayFinalPrice:          pricing.finalPrice,
+    displayDiscountPercentage:  pricing.discountPercentage,
+  });
+
   const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;
 
-  // helper
-  const num = (v, fb = 0) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : fb;
-  };
-
-  // normalize + fallback without recalculating dynamic pricing
-  const normalizePriceBlock = (obj) => {
-    const merchantPrice = num(obj.merchantPrice ?? obj.price ?? 0);
-    const discountPrice = num(obj.discountPrice ?? 0);
-    const finalPriceRaw = num(obj.finalPrice ?? 0);
-
-    const finalPrice =
-      finalPriceRaw > 0
-        ? finalPriceRaw
-        : discountPrice > 0
-          ? discountPrice
-          : merchantPrice;
-
-    return { merchantPrice, price: num(obj.price ?? merchantPrice), discountPrice, finalPrice };
-  };
-
   if (hasVariants) {
-    const variants = p.variants.map((v) => {
-      const prices = normalizePriceBlock(v);
-      return { ...v, ...prices };
+    const enrichedVariants = p.variants.map((v) => {
+      const pricing = calculateFinalPrice({ product: p, variant: v });
+      return { ...v, ...buildBlock(pricing, 'variant') };
     });
 
-    // root finalPrice fallback = lowest active variant finalPrice (for UI "From" price)
-    const activeVariants = variants.filter((v) => v.isActive !== false);
+    const active = enrichedVariants.filter((v) => v.isActive !== false);
+    const pool   = active.length > 0 ? active : enrichedVariants;
+    const cheapest = pool.reduce(
+      (best, cur) => (!best || cur.finalPrice < best.finalPrice ? cur : best),
+      null
+    );
 
-    // Find the "representative" variant (the one with the lowest final price)
-    // We use this variant's properties for the "From" display to ensuring consistency
-    let bestVariant = null;
-    let minFinal = Infinity;
-
-    // specific logic to find best variant
-    if (activeVariants.length > 0) {
-      activeVariants.forEach(v => {
-        const fp = num(v.finalPrice, 0);
-        if (fp > 0 && fp < minFinal) {
-          minFinal = fp;
-          bestVariant = v;
+    const rootPricing = cheapest
+      ? {
+          basePrice:          cheapest.basePrice,
+          listPrice:          cheapest.listPrice,
+          originalPrice:      cheapest.originalPrice,
+          finalPrice:         cheapest.finalPrice,
+          discountAmount:     cheapest.discountAmount,
+          discountPercentage: cheapest.discountPercentage,
+          hasDiscount:        cheapest.hasDiscount,
+          breakdown:          cheapest.pricing?.breakdown,
         }
-      });
-    }
-
-    // Default to first variant if no best found (rare)
-    if (!bestVariant && variants.length > 0) {
-      bestVariant = variants[0];
-    }
-
-    const rootPrices = normalizePriceBlock(p);
-
-    // For variant products, root prices represent "From" price of the BEST variant
-    const rootFinal = bestVariant ? num(bestVariant.finalPrice, 0) : rootPrices.finalPrice;
-    const rootMerchant = bestVariant ? num(bestVariant.merchantPrice, 0) : rootPrices.merchantPrice;
-    // Use the markup of the representative variant, or fallback to product default
-    const rootMarkup = bestVariant ? num(bestVariant.nubianMarkup ?? p.nubianMarkup ?? 30) : num(p.nubianMarkup ?? 30);
-
-    // Calculate discount for display using CONSISTENT values from the same variant
-    // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount
-    const initialOriginalPrice = rootMerchant > 0 ? (rootMerchant * (1 + rootMarkup / 100)) : 0;
-
-    // DEFINITIVE DISPLAY LOGIC:
-    // 1. Establish Source of Truth
-    let displayOriginalPrice = initialOriginalPrice;
-    let displayFinalPrice = rootFinal;
-    let displayDiscountPercentage = 0;
-
-    // 2. Strict Sanity Check (Backend Side)
-    // Only allow details if Original > Final
-    if (displayOriginalPrice > displayFinalPrice) {
-      // Calculate percentage
-      const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-      displayDiscountPercentage = Math.round(rawPct);
-    } else {
-      // No valid discount -> Hide Original (set to Final) and Clear Discount
-      displayOriginalPrice = displayFinalPrice;
-      displayDiscountPercentage = 0;
-    }
+      : calculateFinalPrice({ product: p, variant: null });
 
     return {
       ...p,
-      merchantPrice: rootMerchant,
-      price: rootMerchant,
-      // Pass the specific markup used so frontend can replicate calculation if needed
-      nubianMarkup: rootMarkup,
-      discountPrice: rootPrices.discountPrice,
-      finalPrice: displayFinalPrice,
-
-      // Explicitly return originalPrice (MSRP) so it persists through currency conversion
-      originalPrice: displayOriginalPrice, // Consolidated to displayOriginalPrice
-      discountPercentage: displayDiscountPercentage,
-
-      // New Explicit Fields for Frontend Simplicity
-      displayOriginalPrice,
-      displayFinalPrice,
-      displayDiscountPercentage,
-
-      variants,
+      merchantPrice: rootPricing.basePrice,
+      price:         rootPricing.basePrice,
+      nubianMarkup:  cheapest?.nubianMarkup ?? p.nubianMarkup ?? 30,
+      ...buildBlock(rootPricing, 'product'),
+      variants: enrichedVariants,
     };
   }
 
-  // simple product
-  const rootPrices = normalizePriceBlock(p);
-
-  // FIX: Use merchantPrice + nubianMarkup (MSRP) as the basis for discount, not just merchantPrice
-  const markup = num(p.nubianMarkup ?? 30);
-  const initialOriginalPrice = rootPrices.merchantPrice > 0 ? (rootPrices.merchantPrice * (1 + markup / 100)) : 0;
-
-  // DEFINITIVE DISPLAY LOGIC (Simple Product):
-  let displayOriginalPrice = initialOriginalPrice;
-  let displayFinalPrice = rootPrices.finalPrice;
-  let displayDiscountPercentage = 0;
-
-  if (displayOriginalPrice > displayFinalPrice) {
-    const rawPct = ((displayOriginalPrice - displayFinalPrice) / displayOriginalPrice) * 100;
-    displayDiscountPercentage = Math.round(rawPct);
-  } else {
-    displayOriginalPrice = displayFinalPrice;
-    displayDiscountPercentage = 0;
-  }
-
+  // No variants (orphan): defensive — schema doesn't allow this, but keep it safe.
+  const pricing = calculateFinalPrice({ product: p, variant: null });
   return {
     ...p,
-    ...rootPrices,
-    finalPrice: displayFinalPrice,
-    originalPrice: displayOriginalPrice,
-    discountPercentage: displayDiscountPercentage,
-
-    // New Explicit Fields
-    displayOriginalPrice,
-    displayFinalPrice,
-    displayDiscountPercentage
+    merchantPrice: pricing.basePrice,
+    price:         pricing.basePrice,
+    ...buildBlock(pricing, 'product'),
   };
 }
 
@@ -433,9 +393,10 @@ export const getProducts = async (req, res) => {
     });
 
     // Add $lookup stages to populate merchant and category
+    // NOTE: Merchant model is mapped to the `merchantapplications` collection — see merchant.model.js
     pipeline.push({
       $lookup: {
-        from: 'merchants',
+        from: 'merchantapplications',
         localField: 'merchant',
         foreignField: '_id',
         as: 'merchantData'
@@ -458,8 +419,10 @@ export const getProducts = async (req, res) => {
             if: { $gt: [{ $size: '$merchantData' }, 0] },
             then: {
               _id: { $arrayElemAt: ['$merchantData._id', 0] },
-              businessName: { $arrayElemAt: ['$merchantData.businessName', 0] },
-              businessEmail: { $arrayElemAt: ['$merchantData.businessEmail', 0] }
+              storeName: { $arrayElemAt: ['$merchantData.storeName', 0] },
+              email: { $arrayElemAt: ['$merchantData.email', 0] },
+              logoUrl: { $arrayElemAt: ['$merchantData.logoUrl', 0] },
+              status: { $arrayElemAt: ['$merchantData.status', 0] }
             },
             else: null
           }
@@ -578,7 +541,7 @@ export const getProductById = async (req, res) => {
       _id: req.params.id,
       deletedAt: null, // Exclude soft-deleted products
     })
-      .populate('merchant', 'businessName businessEmail')
+      .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name');
 
     if (!product) {
@@ -615,6 +578,36 @@ export const getProductById = async (req, res) => {
     throw error;
   }
 }
+
+// ===== Helper: Sanitize product-level discount input =====
+// Coerces dashboard input into the schema shape and rejects garbage.
+// Returns null when the block is empty or invalid (treat as "no discount").
+const sanitizeDiscountInput = (input) => {
+  if (!input || typeof input !== 'object') return null;
+
+  const type = input.type === 'percentage' || input.type === 'fixed' ? input.type : null;
+  const value = Number(input.value);
+  if (!type || !(value > 0)) return null;
+
+  const out = {
+    type,
+    value: type === 'percentage' ? Math.min(value, 100) : value,
+    isActive: input.isActive !== false,
+  };
+  if (input.maxDiscount !== undefined && Number(input.maxDiscount) > 0) {
+    out.maxDiscount = Number(input.maxDiscount);
+  }
+  if (input.startsAt) {
+    const d = new Date(input.startsAt);
+    if (!isNaN(d.getTime())) out.startsAt = d;
+  }
+  if (input.endsAt) {
+    const d = new Date(input.endsAt);
+    if (!isNaN(d.getTime())) out.endsAt = d;
+  }
+  if (out.startsAt && out.endsAt && out.startsAt > out.endsAt) return null;
+  return out;
+};
 
 // ===== Helper: Validate Variants =====
 const validateVariants = (variants) => {
@@ -685,10 +678,14 @@ export const createProduct = async (req, res) => {
     // Validate Variants
     validateVariants(req.body.variants);
 
-    // Remove product-level pricing
+    // Remove legacy product-level price fields. Note: req.body.discount (the
+    // product-wide discount block) is INTENTIONALLY preserved here — it is the
+    // single knob that propagates a discount to every variant via the engine.
     delete req.body.price;
     delete req.body.merchantPrice;
     delete req.body.discountPrice;
+
+    if (req.body.discount) req.body.discount = sanitizeDiscountInput(req.body.discount);
 
     // Validate Category & Merchant ObjectIds
     req.body.category = validateObjectId(req.body.category, 'category');
@@ -699,7 +696,7 @@ export const createProduct = async (req, res) => {
     // Populate and enrich pricing
     const populatedProduct = await Product.findById(product._id)
       .populate([
-        { path: 'merchant', select: 'businessName businessEmail' },
+        { path: 'merchant', select: 'storeName email logoUrl city status' },
         { path: 'category', select: 'name' }
       ]);
 
@@ -727,7 +724,7 @@ export const updateProduct = async (req, res) => {
       try {
         const user = await clerkClient.users.getUser(userId);
         if (user.publicMetadata?.role === 'merchant') {
-          const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+          const merchant = await Merchant.findOne({ userId, status: 'approved' });
           if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
             return sendForbidden(res, 'You can only update your own products');
           }
@@ -744,10 +741,14 @@ export const updateProduct = async (req, res) => {
     // Validate Variants if provided
     if (req.body.variants) validateVariants(req.body.variants);
 
-    // Remove product-level pricing
+    // Strip legacy root price fields, keep req.body.discount (product-wide discount).
     delete req.body.price;
     delete req.body.merchantPrice;
     delete req.body.discountPrice;
+
+    if (req.body.discount !== undefined) {
+      req.body.discount = sanitizeDiscountInput(req.body.discount);
+    }
 
     product.set(req.body);
     if (req.body.variants) product.markModified('variants');
@@ -755,7 +756,7 @@ export const updateProduct = async (req, res) => {
     const updatedProduct = await product.save();
 
     await updatedProduct.populate([
-      { path: 'merchant', select: 'businessName businessEmail' },
+      { path: 'merchant', select: 'storeName email logoUrl city status' },
       { path: 'category', select: 'name' }
     ]);
 
@@ -801,13 +802,13 @@ export const deleteProduct = async (req, res) => {
       try {
         const user = await clerkClient.users.getUser(userId);
         if (user.publicMetadata?.role === 'merchant') {
-          const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+          const merchant = await Merchant.findOne({ userId, status: 'approved' });
           if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
             return sendForbidden(res, 'You can only delete your own products');
           }
         }
       } catch (error) {
-        // لو فشل التحقق من Clerk ما نوقف (زي سلوكك الحالي)
+        // Ignore Clerk errors — best-effort ownership check
       }
     }
 
@@ -854,7 +855,7 @@ export const getMerchantProducts = async (req, res) => {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
     if (!merchant) {
       return res.status(403).json({ message: 'Merchant not found or not approved' });
     }
@@ -988,7 +989,7 @@ export const getAllProductsAdmin = async (req, res) => {
     }
 
     const products = await Product.find(filter)
-      .populate('merchant', 'businessName businessEmail status')
+      .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name')
       .sort(sort)
       .skip(skip)
@@ -1073,7 +1074,7 @@ export const toggleProductActive = async (req, res) => {
 
     // Populate for response
     const populatedProduct = await Product.findById(product._id)
-      .populate('merchant', 'businessName businessEmail')
+      .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name');
 
     return sendSuccess(res, {
@@ -1121,7 +1122,7 @@ export const restoreProduct = async (req, res) => {
     });
 
     const populatedProduct = await Product.findById(product._id)
-      .populate('merchant', 'businessName businessEmail')
+      .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name');
 
     return sendSuccess(res, {
@@ -1235,7 +1236,7 @@ export const updateProductRanking = async (req, res) => {
     });
 
     const populatedProduct = await Product.findById(product._id)
-      .populate('merchant', 'businessName businessEmail')
+      .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name');
 
     return sendSuccess(res, {
@@ -1305,20 +1306,26 @@ export const toggleDynamicPricing = async (req, res) => {
       });
     }
 
-    // Compute updated finalPrices immediately (so UI is instant, no wait for cron)
-    const effectiveDynamic = enabled ? null : 0; // null means "keep existing", 0 means force clear
+    // Compute updated finalPrices immediately (so UI is instant, no wait for cron).
+    // Engine respects product.discount + product.dynamicPricingEnabled, so we
+    // mirror this temporary toggle into a synthetic product context.
     if (!enabled || nubianMarkup !== undefined) {
+      const ctx = {
+        ...product.toObject(),
+        dynamicPricingEnabled: enabled,
+      };
       product.variants.forEach((v, idx) => {
         const nm = nubianMarkup !== undefined ? Number(nubianMarkup) : (v.nubianMarkup ?? 30);
         const dm = enabled ? (v.dynamicMarkup ?? 0) : 0;
-        const base = v.merchantPrice || 0;
-        const newFinal = Math.max(1, Math.round((base + base * nm / 100 + base * dm / 100 - (v.merchantDiscount || 0)) * 100) / 100);
+        const { finalPrice: newFinal } = calculateFinalPrice({
+          product: ctx,
+          variant: { ...v.toObject?.() ?? v, nubianMarkup: nm, dynamicMarkup: dm },
+        });
         variantUpdates[`variants.${idx}.finalPrice`] = newFinal;
       });
-      // Also recalc root finalPrice
-      const finals = product.variants.map((v, idx) =>
-        variantUpdates[`variants.${idx}.finalPrice`] || v.finalPrice || 0
-      ).filter(n => n > 0);
+      const finals = product.variants
+        .map((v, idx) => variantUpdates[`variants.${idx}.finalPrice`] || v.finalPrice || 0)
+        .filter((n) => n > 0);
       if (finals.length) update.finalPrice = Math.min(...finals);
     }
 
@@ -1337,7 +1344,7 @@ export const toggleDynamicPricing = async (req, res) => {
     });
 
     const populatedProduct = await Product.findById(id)
-      .populate('merchant', 'businessName businessEmail')
+      .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name');
 
     return sendSuccess(res, {
@@ -1352,6 +1359,194 @@ export const toggleDynamicPricing = async (req, res) => {
     });
     throw error;
   }
+};
+
+/**
+ * Admin / Merchant: bulk import products via upsert by (merchant, importSku).
+ *
+ * The dashboard handles file parsing, validation, and image upload to ImageKit;
+ * it sends a normalized array of rows here. We do schema-level validation and
+ * a single Mongo bulkWrite for performance — large imports stay fast.
+ *
+ * Body shape:
+ *   {
+ *     merchantId: string (ObjectId),
+ *     rows: Array<{
+ *       importSku: string,
+ *       name: string,
+ *       description: string,
+ *       category: string (ObjectId),
+ *       images: string[],
+ *       variants: Array<{ sku, attributes, merchantPrice, stock, images?, isActive? }>,
+ *       priorityScore?: number,
+ *       featured?: boolean,
+ *     }>
+ *   }
+ *
+ * Response:
+ *   { success, totalRows, insertedCount, updatedCount, failedCount, failures: [{ index, importSku, reason }] }
+ */
+export const bulkImportProducts = async (req, res) => {
+  const { merchantId, rows } = req.body || {};
+
+  if (!merchantId || !mongoose.Types.ObjectId.isValid(merchantId)) {
+    return sendError(res, {
+      message: 'merchantId is required and must be a valid ObjectId',
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return sendError(res, {
+      message: 'rows must be a non-empty array',
+      code: 'VALIDATION_ERROR',
+      statusCode: 400,
+    });
+  }
+
+  // Verify the merchant exists. Admins can import for any approved merchant;
+  // approved merchants can only import for themselves.
+  const merchant = await Merchant.findById(merchantId).lean();
+  if (!merchant) {
+    return sendNotFound(res, 'Merchant');
+  }
+
+  const callerRole = req.adminUser?.role; // set by isAdmin
+  if (callerRole !== 'admin' && callerRole !== 'support') {
+    // Approved merchant path — must own the merchantId
+    if (!req.merchant || req.merchant._id.toString() !== merchantId) {
+      return sendForbidden(res, 'You can only import to your own merchant account');
+    }
+  }
+
+  const merchantObjectId = new mongoose.Types.ObjectId(merchantId);
+  const failures = [];
+  const ops = [];
+
+  rows.forEach((row, idx) => {
+    try {
+      if (!row.importSku || typeof row.importSku !== 'string') {
+        throw new Error('importSku is required');
+      }
+      if (!row.name || typeof row.name !== 'string') {
+        throw new Error('name is required');
+      }
+      if (!row.category || !mongoose.Types.ObjectId.isValid(row.category)) {
+        throw new Error('category must be a valid ObjectId');
+      }
+      if (!Array.isArray(row.images) || row.images.length === 0) {
+        throw new Error('At least one image is required');
+      }
+
+      // Variants are required by the Product schema.
+      if (!Array.isArray(row.variants) || row.variants.length === 0) {
+        throw new Error('At least one variant is required');
+      }
+      const seenSkus = new Set();
+      for (const v of row.variants) {
+        if (!v.sku) throw new Error('Each variant must have a SKU');
+        const sku = String(v.sku).trim().toUpperCase();
+        if (seenSkus.has(sku)) throw new Error(`Duplicate variant SKU within row: ${sku}`);
+        seenSkus.add(sku);
+        if (!v.attributes || typeof v.attributes !== 'object' || Object.keys(v.attributes).length === 0) {
+          throw new Error('Each variant must have at least one attribute');
+        }
+        if (!(v.merchantPrice > 0)) {
+          throw new Error('Each variant must have merchantPrice > 0');
+        }
+        if (!(v.stock >= 0)) {
+          throw new Error('Each variant must have stock >= 0');
+        }
+      }
+
+      const update = {
+        name: row.name.trim(),
+        description: row.description?.trim() || row.name.trim(),
+        category: new mongoose.Types.ObjectId(row.category),
+        images: row.images,
+        merchant: merchantObjectId,
+        variants: row.variants.map((v) => ({
+          sku: String(v.sku).trim().toUpperCase(),
+          attributes: v.attributes,
+          merchantPrice: Number(v.merchantPrice),
+          nubianMarkup: v.nubianMarkup ?? 30,
+          dynamicMarkup: v.dynamicMarkup ?? 0,
+          merchantDiscount: v.merchantDiscount ?? 0,
+          stock: Number(v.stock),
+          images: Array.isArray(v.images) ? v.images : [],
+          isActive: v.isActive !== false,
+        })),
+        isActive: true,
+        deletedAt: null,
+        ...(row.priorityScore !== undefined ? { priorityScore: Number(row.priorityScore) } : {}),
+        ...(row.featured !== undefined ? { featured: Boolean(row.featured) } : {}),
+      };
+
+      ops.push({
+        updateOne: {
+          filter: { merchant: merchantObjectId, importSku: row.importSku },
+          update: {
+            $set: update,
+            $setOnInsert: { importSku: row.importSku, createdAt: new Date() },
+          },
+          upsert: true,
+        },
+      });
+    } catch (e) {
+      failures.push({ index: idx, importSku: row.importSku ?? null, reason: e.message });
+    }
+  });
+
+  let insertedCount = 0;
+  let updatedCount = 0;
+
+  if (ops.length > 0) {
+    try {
+      // ordered:false so a row failing in the middle doesn't abort the rest
+      const result = await Product.bulkWrite(ops, { ordered: false });
+      insertedCount = result.upsertedCount || 0;
+      updatedCount = result.modifiedCount || 0;
+    } catch (err) {
+      // Partial-failure path: extract per-write errors
+      const writeErrors = err?.writeErrors || [];
+      writeErrors.forEach((we) => {
+        const opIdx = we.index ?? -1;
+        const failedRowIdx =
+          opIdx >= 0 && opIdx < rows.length
+            ? rows.findIndex((r, i) => i === opIdx) // best-effort mapping
+            : -1;
+        failures.push({
+          index: failedRowIdx,
+          importSku: rows[failedRowIdx]?.importSku ?? null,
+          reason: we.errmsg || 'Database write error',
+        });
+      });
+      insertedCount = err?.result?.upsertedCount ?? 0;
+      updatedCount = err?.result?.modifiedCount ?? 0;
+    }
+  }
+
+  logger.info('Bulk product import completed', {
+    requestId: req.requestId,
+    merchantId,
+    totalRows: rows.length,
+    insertedCount,
+    updatedCount,
+    failedCount: failures.length,
+  });
+
+  return sendSuccess(res, {
+    message: 'Bulk import completed',
+    data: {
+      success: failures.length === 0,
+      totalRows: rows.length,
+      insertedCount,
+      updatedCount,
+      failedCount: failures.length,
+      failures,
+    },
+  });
 };
 
 /**
@@ -1497,7 +1692,7 @@ export const exploreProducts = async (req, res) => {
 
     // Verified store filter — pre-fetch approved IDs to avoid a $lookup join in the pipeline
     if (verifiedStore === 'true' || verifiedStore === 'false') {
-      const approvedMerchants = await Merchant.find({ status: 'APPROVED' }, '_id').lean();
+      const approvedMerchants = await Merchant.find({ status: 'approved' }, '_id').lean();
       const approvedIds = approvedMerchants.map(m => m._id);
       filter.merchant = verifiedStore === 'true'
         ? { $in: approvedIds }

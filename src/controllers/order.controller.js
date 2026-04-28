@@ -11,38 +11,54 @@ import orderService from "../services/order.service.js";
 import { ServiceError } from "../lib/errors.js";
 
 // Shared display formatter used by getUserOrders, getOrders, and getOrderById.
-// Always reads from the price snapshot stored on the order item — never the current
-// product price — so completed orders are immutable from the customer's perspective.
+// Always reads from the price snapshot stored on the order item — never the
+// current product price — so completed orders are immutable from the customer's
+// perspective even after pricing or discounts change.
 function formatOrderProduct(item) {
   if (!item.product) return null;
 
   const snapshotFinalPrice    = item.price || 0;
   const snapshotMerchantPrice = item.merchantPrice || 0;
   const snapshotMarkup        = item.nubianMarkup || 10;
+  const snapshotDynamic       = item.dynamicMarkup || 0;
 
-  const rawOriginal          = snapshotMerchantPrice > 0
+  // Prefer the stored snapshot fields. Fall back for orders placed before the
+  // snapshot was extended (so old orders still render with sane numbers).
+  const fallbackOriginal = snapshotMerchantPrice > 0
     ? snapshotMerchantPrice * (1 + snapshotMarkup / 100)
-    : 0;
-  const displayFinalPrice    = snapshotFinalPrice;
-  const displayOriginalPrice = rawOriginal > snapshotFinalPrice ? rawOriginal : snapshotFinalPrice;
-  const displayDiscountPercentage = displayOriginalPrice > snapshotFinalPrice
-    ? Math.round(((displayOriginalPrice - snapshotFinalPrice) / displayOriginalPrice) * 100)
-    : 0;
+    : snapshotFinalPrice;
+
+  const displayOriginalPrice = item.originalPrice > 0
+    ? item.originalPrice
+    : (fallbackOriginal > snapshotFinalPrice ? fallbackOriginal : snapshotFinalPrice);
+
+  const displayDiscountPercentage = item.discountPercentage > 0
+    ? item.discountPercentage
+    : (displayOriginalPrice > snapshotFinalPrice
+        ? Math.round(((displayOriginalPrice - snapshotFinalPrice) / displayOriginalPrice) * 100)
+        : 0);
+
+  const displayDiscountAmount = item.discountAmount > 0
+    ? item.discountAmount
+    : Math.max(0, displayOriginalPrice - snapshotFinalPrice);
 
   return {
     productId:     item.product._id,
-    name:          item.product.name          || "",
-    price:         displayFinalPrice,
+    name:          item.product.name || "",
+    price:         snapshotFinalPrice,
     merchantPrice: snapshotMerchantPrice,
     originalPrice: displayOriginalPrice,
-    discountPrice: item.discountPrice         || item.product.discountPrice || null,
+    finalPrice:    snapshotFinalPrice,
     nubianMarkup:  snapshotMarkup,
-    dynamicMarkup: item.dynamicMarkup         || item.product.dynamicMarkup || 0,
+    dynamicMarkup: snapshotDynamic,
+    discountAmount:     displayDiscountAmount,
+    discountPercentage: displayDiscountPercentage,
+    hasDiscount:        displayDiscountAmount > 0,
     pricingBreakdown: {
       merchantPrice: snapshotMerchantPrice,
       nubianMarkup:  snapshotMarkup,
-      dynamicMarkup: item.dynamicMarkup || 0,
-      finalPrice:    displayFinalPrice,
+      dynamicMarkup: snapshotDynamic,
+      finalPrice:    snapshotFinalPrice,
     },
     images:      item.product.images      || [],
     category:    item.product.category    || "",
@@ -50,11 +66,12 @@ function formatOrderProduct(item) {
     stock:       item.product.stock       || 0,
     isAvailable: (item.product.stock      || 0) > 0,
     quantity:    item.quantity,
-    totalPrice:  displayFinalPrice * item.quantity,
+    totalPrice:  snapshotFinalPrice * item.quantity,
     attributes:  item.attributes  || null,
     size:        item.size        || null,
     variantId:   item.variantId   || null,
-    displayFinalPrice,
+    // legacy aliases — kept for existing dashboards
+    displayFinalPrice:          snapshotFinalPrice,
     displayOriginalPrice,
     displayDiscountPercentage,
   };
@@ -263,7 +280,7 @@ export const getOrders = async (req, res) => {
           path: "products.product",
           select: "name price discountPrice images category description stock createdAt",
         })
-        .populate("merchants", "businessName")
+        .populate("merchants", "storeName logoUrl email")
         .populate("coupon", "code type value")
         .sort({ orderDate: -1 })
         .skip(skip)
@@ -337,7 +354,7 @@ export const getMerchantOrders = async (req, res) => {
     const { userId } = getAuth(req);
     if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
 
-    const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
+    const merchant = await Merchant.findOne({ userId, status: "approved" });
     if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
 
     const { status } = req.query;
@@ -355,7 +372,7 @@ export const getMerchantOrders = async (req, res) => {
         .populate({
           path: "products.product",
           select: "name price images category description stock merchant",
-          populate: { path: "merchant", select: "businessName" },
+          populate: { path: "merchant", select: "storeName logoUrl" },
         })
         .sort({ orderDate: -1 })
         .skip(skip)
@@ -523,7 +540,7 @@ export const updateMerchantOrderStatus = async (req, res) => {
     const { userId } = getAuth(req);
     if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
 
-    const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
+    const merchant = await Merchant.findOne({ userId, status: "approved" });
     if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
 
     const { status } = req.body;
@@ -604,7 +621,7 @@ export const getMerchantOrderStats = async (req, res) => {
     const { userId } = getAuth(req);
     if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
 
-    const merchant = await Merchant.findOne({ clerkId: userId, status: "APPROVED" });
+    const merchant = await Merchant.findOne({ userId, status: "approved" });
     if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
 
     // Aggregation — all arithmetic runs inside MongoDB, zero documents loaded into Node.js memory.

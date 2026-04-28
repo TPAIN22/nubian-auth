@@ -170,7 +170,7 @@ export const getMerchantPricingAnalytics = async (req, res) => {
 
     // Get merchant
     const Merchant = (await import('../models/merchant.model.js')).default;
-    const merchant = await Merchant.findOne({ clerkId: userId, status: 'APPROVED' });
+    const merchant = await Merchant.findOne({ userId, status: 'approved' });
     
     if (!merchant) {
       return sendForbidden(res, 'Merchant not found or not approved');

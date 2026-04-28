@@ -18,7 +18,7 @@ async function getApprovedMerchantIds() {
   if (Date.now() - merchantCache.fetchedAt < MERCHANT_CACHE_TTL) {
     return merchantCache.ids;
   }
-  const merchants = await Merchant.find({ status: 'APPROVED' }, '_id').lean();
+  const merchants = await Merchant.find({ status: 'approved' }, '_id').lean();
   merchantCache.ids       = merchants.map(m => m._id);
   merchantCache.fetchedAt = Date.now();
   return merchantCache.ids;

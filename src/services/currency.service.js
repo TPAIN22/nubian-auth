@@ -257,7 +257,8 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
     result.discountPriceDisplay = c.priceDisplay;
   }
 
-  // VARIANTS
+  // VARIANTS — convert every per-variant price field set by the pricing engine
+  // so the strikethrough/savings shown to the customer match the converted final price.
   if (Array.isArray(product.variants)) {
     result.variants = product.variants.map((v) => {
       const vr = { ...v };
@@ -265,6 +266,15 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
         const c = convert(v.finalPrice);
         vr.finalPrice = c.priceConverted;
         vr.priceDisplay = c.priceDisplay;
+      }
+      if (v.originalPrice !== undefined) {
+        vr.originalPrice = convert(v.originalPrice).priceConverted;
+      }
+      if (v.listPrice !== undefined) {
+        vr.listPrice = convert(v.listPrice).priceConverted;
+      }
+      if (v.discountAmount !== undefined) {
+        vr.discountAmount = convert(v.discountAmount).priceConverted;
       }
       return vr;
     });

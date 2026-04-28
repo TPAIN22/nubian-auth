@@ -26,6 +26,8 @@ const orderProductSchema = new mongoose.Schema(
     dynamicMarkup: { type: Number, default: 0 },
     discountPrice: { type: Number, default: 0 }, // legacy display
     originalPrice: { type: Number, default: 0 },
+    discountAmount:     { type: Number, default: 0, min: 0 },
+    discountPercentage: { type: Number, default: 0, min: 0, max: 100 },
   },
   { _id: false }
 );

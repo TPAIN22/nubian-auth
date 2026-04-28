@@ -9,6 +9,7 @@ import {
   getStoreReviews,
   approveMerchant,
   rejectMerchant,
+  requestMerchantRevision,
   suspendMerchant,
   unsuspendMerchant,
   deleteMerchant,
@@ -43,6 +44,7 @@ router.get('/', isAuthenticated, isAdmin, getAllMerchants);
 router.get('/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), getMerchantById);
 router.patch('/:id/approve', isAuthenticated, isAdmin, ...validateObjectId('id'), approveMerchant);
 router.patch('/:id/reject', isAuthenticated, isAdmin, ...validateObjectId('id'), validateMerchantStatusUpdate, rejectMerchant);
+router.patch('/:id/request-revision', isAuthenticated, isAdmin, ...validateObjectId('id'), requestMerchantRevision);
 router.patch('/:id/suspend', isAuthenticated, isAdmin, ...validateObjectId('id'), validateMerchantSuspension, suspendMerchant);
 router.patch('/:id/unsuspend', isAuthenticated, isAdmin, ...validateObjectId('id'), unsuspendMerchant);
 router.delete('/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), deleteMerchant);

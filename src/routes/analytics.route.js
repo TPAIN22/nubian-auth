@@ -6,8 +6,12 @@ import {
   getMerchantPricingAnalytics,
   getCurrencyAnalytics,
 } from '../controllers/pricingAnalytics.controller.js';
+import { getAdminOverview } from '../controllers/adminAnalytics.controller.js';
 
 const router = express.Router();
+
+// Admin-only: platform-wide overview cards (merchants, products, orders, revenue)
+router.get('/overview',           isAuthenticated, isAdmin,            getAdminOverview);
 
 // Admin-only: full platform pricing overview (reveals markups, margins)
 router.get('/pricing',            isAuthenticated, isAdmin,            getPricingAnalytics);

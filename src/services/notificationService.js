@@ -951,7 +951,7 @@ class NotificationService {
    * Broadcast to all merchants
    */
   async broadcastToMerchants(notificationData) {
-    const merchants = await Merchant.find({ status: 'APPROVED' }).select('_id');
+    const merchants = await Merchant.find({ status: 'approved' }).select('_id');
     const merchantIds = merchants.map((m) => m._id);
     return this.batchCreateNotifications(notificationData, merchantIds, 'merchant');
   }
