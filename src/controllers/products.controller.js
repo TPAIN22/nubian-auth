@@ -52,6 +52,23 @@ export function enrichProductWithPricing(product) {
       }
     : { active: false };
 
+  // USD Money envelope helper. Mirrors the shape produced by
+  // currency.service.js:buildPriceEnvelope so consumers can read `price.final`
+  // regardless of whether currency conversion ran.
+  const usdMoney = (amount) =>
+    amount === undefined || amount === null
+      ? undefined
+      : {
+          amount,
+          currency: 'USD',
+          formatted: `$${Number(amount).toFixed(2)}`,
+          decimals: 2,
+          rate: 1,
+          rateProvider: 'system',
+          rateDate: null,
+          rateUnavailable: false,
+        };
+
   const buildBlock = (pricing, source) => ({
     basePrice:           pricing.basePrice,
     listPrice:           pricing.listPrice,
@@ -69,6 +86,16 @@ export function enrichProductWithPricing(product) {
     displayOriginalPrice:       pricing.originalPrice,
     displayFinalPrice:          pricing.finalPrice,
     displayDiscountPercentage:  pricing.discountPercentage,
+    // Typed Money envelope (USD). Replaced by convertProductPrices when a
+    // non-USD currency is requested.
+    price: {
+      final:              usdMoney(pricing.finalPrice),
+      original:           usdMoney(pricing.originalPrice),
+      list:               usdMoney(pricing.listPrice),
+      discountAmount:     usdMoney(pricing.discountAmount),
+      discountPercentage: pricing.discountPercentage || 0,
+      hasDiscount:        !!pricing.hasDiscount,
+    },
   });
 
   const hasVariants = Array.isArray(p.variants) && p.variants.length > 0;

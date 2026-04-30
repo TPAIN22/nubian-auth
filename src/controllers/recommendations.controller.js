@@ -189,8 +189,8 @@ export const getHomeRecommendationsController = async (req, res) => {
     };
 
     // Apply currency conversion
-    const currencyCode = req.query.currencyCode || req.query.currency;
-    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
+    if (currencyCode !== 'USD') {
       try {
         const keys = ['forYou', 'trending', 'flashDeals', 'newArrivals', 'brandsYouLove'];
         await Promise.all(
@@ -248,8 +248,8 @@ export const getProductRecommendationsController = async (req, res) => {
     };
 
     // Apply currency conversion
-    const currencyCode = req.query.currencyCode || req.query.currency;
-    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
+    if (currencyCode !== 'USD') {
       try {
         const keys = ['similarItems', 'frequentlyBoughtTogether', 'youMayAlsoLike', 'cheaperAlternatives', 'fromSameStore'];
         await Promise.all(
@@ -305,8 +305,8 @@ export const getCartRecommendationsController = async (req, res) => {
     let enrichedRecommendations = enrichProducts(recommendations);
 
     // Apply currency conversion
-    const currencyCode = req.query.currencyCode || req.query.currency;
-    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
+    if (currencyCode !== 'USD') {
       try {
         enrichedRecommendations = await Promise.all(
           enrichedRecommendations.map(p => convertProductPrices(p, currencyCode))
@@ -352,8 +352,8 @@ export const getUserRecommendationsController = async (req, res) => {
     let enrichedRecommendations = enrichProducts(recommendations);
 
     // Apply currency conversion
-    const currencyCode = req.query.currencyCode || req.query.currency;
-    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
+    if (currencyCode !== 'USD') {
       try {
         enrichedRecommendations = await Promise.all(
           enrichedRecommendations.map(p => convertProductPrices(p, currencyCode))

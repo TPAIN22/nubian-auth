@@ -257,6 +257,16 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
     result.discountPriceDisplay = c.priceDisplay;
   }
 
+  // displayFinalPrice / displayOriginalPrice are aliases written by
+  // enrichProductWithPricing — keep them in lockstep with the converted values
+  // so any consumer that reads the alias still sees the user's currency.
+  if (product.displayFinalPrice !== undefined) {
+    result.displayFinalPrice = convert(product.displayFinalPrice).priceConverted;
+  }
+  if (product.displayOriginalPrice !== undefined) {
+    result.displayOriginalPrice = convert(product.displayOriginalPrice).priceConverted;
+  }
+
   // VARIANTS — convert every per-variant price field set by the pricing engine
   // so the strikethrough/savings shown to the customer match the converted final price.
   if (Array.isArray(product.variants)) {
@@ -276,11 +286,64 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
       if (v.discountAmount !== undefined) {
         vr.discountAmount = convert(v.discountAmount).priceConverted;
       }
+      if (v.displayFinalPrice !== undefined) {
+        vr.displayFinalPrice = convert(v.displayFinalPrice).priceConverted;
+      }
+      if (v.displayOriginalPrice !== undefined) {
+        vr.displayOriginalPrice = convert(v.displayOriginalPrice).priceConverted;
+      }
+      vr.price = buildPriceEnvelope(v, convert, config);
       return vr;
     });
   }
 
+  // Typed Money envelope — the new canonical price surface.
+  // Existing aliases (finalPrice/originalPrice/displayFinalPrice/...) stay
+  // in place so legacy consumers keep working during migration.
+  result.price = buildPriceEnvelope(product, convert, config);
+  result.currency = {
+    code: upperCode,
+    symbol: config.symbol,
+    decimals: config.decimals ?? 2,
+    symbolPosition: config.symbolPosition || "before",
+  };
+
   return result;
+}
+
+/**
+ * Build the canonical { final, original, list, discount } Money envelope
+ * for a product or variant. `convert(usdAmount)` returns the memoized
+ * convertAndFormatPriceSync result; pass undefined for fields that don't
+ * exist on the source object.
+ */
+function buildPriceEnvelope(source, convert, config) {
+  const decimals = config?.decimals ?? 2;
+
+  const toMoney = (usd) => {
+    if (usd === undefined || usd === null) return undefined;
+    const c = convert(usd);
+    if (!c) return undefined;
+    return {
+      amount: c.priceConverted,
+      currency: c.currencyCode,
+      formatted: c.priceDisplay,
+      decimals,
+      rate: c.rate,
+      rateProvider: c.rateProvider,
+      rateDate: c.rateDate,
+      rateUnavailable: c.rateUnavailable,
+    };
+  };
+
+  return {
+    final:    toMoney(source.finalPrice),
+    original: toMoney(source.originalPrice),
+    list:     toMoney(source.listPrice),
+    discountPercentage: Number(source.discountPercentage) || 0,
+    discountAmount: source.discountAmount !== undefined ? toMoney(source.discountAmount) : undefined,
+    hasDiscount: !!source.hasDiscount,
+  };
 }
 
 /**
