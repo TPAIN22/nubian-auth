@@ -2,16 +2,18 @@ import Cart from "../models/carts.model.js";
 import { getAuth, clerkClient } from "@clerk/express";
 import User from "../models/user.model.js";
 import Product from "../models/product.model.js";
+import Coupon from "../models/coupon.model.js";
+import CouponUsage from "../models/couponUsage.model.js";
 import logger from "../lib/logger.js";
 import { sendError, sendSuccess, sendNotFound, sendUnauthorized } from "../lib/response.js";
 import {
   normalizeAttributes,
   mergeSizeAndAttributes,
   generateCartItemKey,
-  areAttributesEqual,
   validateRequiredAttributes,
   objectToMap,
-  mapToObject,
+  getItemAttributes,
+  findCartItemIndex,
   findMatchingVariant,
   getProductPrice,
 } from "../utils/cartUtils.js";
@@ -92,15 +94,24 @@ async function convertCart(cartObj, currencyCode) {
       rate: rateInfo
     };
 
+    const convertScalar = (v) =>
+      convertAndFormatPriceSync(v, upperCode, rateInfo, currencyConfig).priceConverted;
+
     // Convert total price
     if (cartObj.totalPrice !== undefined) {
-      const convertedTotal = await convertAndFormatPrice(cartObj.totalPrice, upperCode, {
-         preloadedConfig: currencyConfig,
-         preloadedRate: rateInfo
-      });
+      const convertedTotal = convertAndFormatPriceSync(cartObj.totalPrice, upperCode, rateInfo, currencyConfig);
       cartObj.totalPrice = convertedTotal.priceConverted;
       cartObj.priceDisplay = convertedTotal.priceDisplay;
       cartObj.currencyCode = convertedTotal.currencyCode;
+    }
+
+    // Convert breakdown fields so the client can render line items in the
+    // active currency without re-deriving them from totalPrice.
+    if (cartObj.subtotal !== undefined) cartObj.subtotal = convertScalar(cartObj.subtotal);
+    if (cartObj.discount !== undefined) cartObj.discount = convertScalar(cartObj.discount);
+    if (cartObj.shipping !== undefined) cartObj.shipping = convertScalar(cartObj.shipping);
+    if (cartObj.appliedCoupon && cartObj.appliedCoupon.discountAmount !== undefined) {
+      cartObj.appliedCoupon.discountAmount = convertScalar(cartObj.appliedCoupon.discountAmount);
     }
 
     // Convert products
@@ -110,20 +121,14 @@ async function convertCart(cartObj, currencyCode) {
           if (item.product) {
              item.product = await convertProductPrices(item.product, upperCode, currencyContext);
           }
-          
+
           // Convert unit prices if they exist on item level
           if (item.unitFinalPrice !== undefined) {
-             const converted = await convertAndFormatPrice(item.unitFinalPrice, upperCode, {
-                preloadedConfig: currencyConfig,
-                preloadedRate: rateInfo
-             });
+             const converted = convertAndFormatPriceSync(item.unitFinalPrice, upperCode, rateInfo, currencyConfig);
              item.unitFinalPrice = converted.priceConverted;
           }
           if (item.unitMerchantPrice !== undefined) {
-             const converted = await convertAndFormatPrice(item.unitMerchantPrice, upperCode, {
-                preloadedConfig: currencyConfig,
-                preloadedRate: rateInfo
-             });
+             const converted = convertAndFormatPriceSync(item.unitMerchantPrice, upperCode, rateInfo, currencyConfig);
              item.unitMerchantPrice = converted.priceConverted;
           }
 
@@ -199,7 +204,11 @@ export const getCart = async (req, res) => {
         data: {
           products: [],
           totalQuantity: 0,
+          subtotal: 0,
+          discount: 0,
+          shipping: 0,
           totalPrice: 0,
+          appliedCoupon: null,
         },
         message: "Cart is empty",
       });
@@ -443,9 +452,12 @@ export const addToCart = async (req, res) => {
         user: user._id,
         products: [{
           product: productId,
+          variantId,
           quantity,
           size: mergedAttributes.size || '', // Keep legacy size for backward compatibility
           attributes: attributesMap,
+          unitFinalPrice: itemPrice,
+          unitMerchantPrice: itemMerchantPrice,
         }],
         totalQuantity: quantity,
         totalPrice: itemPrice * quantity,
@@ -471,22 +483,7 @@ export const addToCart = async (req, res) => {
     }
 
     // If cart exists, check if the product with the same attributes is already in it
-    const productIndex = cart.products.findIndex((item) => {
-      const isProductIdMatch = item.product.toString() === productId.toString();
-      if (!isProductIdMatch) return false;
-
-      // Get attributes from item (support both new Map format and legacy size)
-      let itemAttributes = {};
-      if (item.attributes && item.attributes instanceof Map) {
-        itemAttributes = mapToObject(item.attributes);
-      } else if (item.size) {
-        // Legacy: convert size to attributes format
-        itemAttributes = { size: item.size };
-      }
-
-      // Compare attributes
-      return areAttributesEqual(itemAttributes, mergedAttributes);
-    });
+    const productIndex = findCartItemIndex(cart.products, productId, mergedAttributes);
 
     if (productIndex > -1) {
       // Product with the same ID and attributes exists, update its quantity
@@ -514,24 +511,16 @@ export const addToCart = async (req, res) => {
       0
     );
 
-    let recalculatedTotalPrice = 0;
     for (const item of cart.products) {
       // Fetch product to get its current price (important if prices change)
       const p = await Product.findById(item.product);
       if (p) {
-        // Get attributes from item to find variant price if applicable
-        let itemAttributes = {};
-        if (item.attributes && item.attributes instanceof Map) {
-          itemAttributes = mapToObject(item.attributes);
-        } else if (item.size) {
-          itemAttributes = { size: item.size };
-        }
-        // Get correct price (variant or product price)
-        const itemPrice = getProductPrice(p, itemAttributes);
-        recalculatedTotalPrice += itemPrice * item.quantity;
+        const itemAttributes = getItemAttributes(item);
+        item.unitFinalPrice = getProductPrice(p, itemAttributes);
       }
     }
-    cart.totalPrice = recalculatedTotalPrice;
+    // pre('save') derives subtotal/discount/totalPrice from the (now-fresh)
+    // unitFinalPrice values and the appliedCoupon snapshot.
 
     // Save the updated cart
     await cart.save();
@@ -617,29 +606,25 @@ export const updateCart = async (req, res) => {
       return res.status(404).json({ message: "Cart not found for this user." });
     }
 
-    const productIndex = cart.products.findIndex((item) => {
-      const isProductIdMatch = item.product.toString() === productId.toString();
-      if (!isProductIdMatch) return false;
+    const productIndex = findCartItemIndex(cart.products, productId, mergedAttributes);
 
-      // Get attributes from item (support both new Map format and legacy size)
-      let itemAttributes = {};
-      if (item.attributes && item.attributes instanceof Map) {
-        itemAttributes = mapToObject(item.attributes);
-      } else if (item.size) {
-        // Legacy: convert size to attributes format
-        itemAttributes = { size: item.size };
-      }
-
-      // Compare attributes
-      return areAttributesEqual(itemAttributes, mergedAttributes);
-    });
-    
-    
-    
     if (productIndex === -1) {
-      return res
-        .status(404)
-        .json({ message: "Product not found in the cart." });
+      logger.warn('Cart update: product not found in cart', {
+        requestId: req.requestId,
+        userId: user._id.toString(),
+        productId: String(productId),
+        requestedAttributes: mergedAttributes,
+        cartContents: cart.products.map((p) => ({
+          product: (p.product && p.product._id ? p.product._id : p.product)?.toString(),
+          attributes: getItemAttributes(p),
+          quantity: p.quantity,
+        })),
+      });
+      return sendError(res, {
+        message: "Product not found in the cart.",
+        code: "CART_ITEM_NOT_FOUND",
+        statusCode: 404,
+      });
     }
     const currentItem = cart.products[productIndex];
     const newQuantity = currentItem.quantity + quantity;
@@ -654,23 +639,14 @@ export const updateCart = async (req, res) => {
       (acc, item) => acc + item.quantity,
       0
     );
-    let recalculatedTotalPrice = 0;
     for (const item of cart.products) {
       const p = await Product.findById(item.product);
       if (p) {
-        // Get attributes from item to find variant price if applicable
-        let itemAttributes = {};
-        if (item.attributes && item.attributes instanceof Map) {
-          itemAttributes = mapToObject(item.attributes);
-        } else if (item.size) {
-          itemAttributes = { size: item.size };
-        }
-        // Get correct price (variant or product price)
-        const itemPrice = getProductPrice(p, itemAttributes);
-        recalculatedTotalPrice += itemPrice * item.quantity;
+        const itemAttributes = getItemAttributes(item);
+        item.unitFinalPrice = getProductPrice(p, itemAttributes);
       }
     }
-    cart.totalPrice = recalculatedTotalPrice;
+    // pre('save') derives subtotal/discount/totalPrice.
     await cart.save();
     const populatedCart = await Cart.findOne({ user: user._id }).populate({
       path: "products.product",
@@ -744,22 +720,10 @@ export const removeFromCart = async (req, res) => {
     }
 
     const initialLength = cart.products.length;
-    cart.products = cart.products.filter((item) => {
-      const isProductIdMatch = item.product.toString() === productId.toString();
-      if (!isProductIdMatch) return true; // Keep items with different product IDs
-
-      // Get attributes from item (support both new Map format and legacy size)
-      let itemAttributes = {};
-      if (item.attributes && item.attributes instanceof Map) {
-        itemAttributes = mapToObject(item.attributes);
-      } else if (item.size) {
-        // Legacy: convert size to attributes format
-        itemAttributes = { size: item.size };
-      }
-
-      // Remove item if product ID and attributes match
-      return !areAttributesEqual(itemAttributes, mergedAttributes);
-    });
+    const removeIndex = findCartItemIndex(cart.products, productId, mergedAttributes);
+    if (removeIndex > -1) {
+      cart.products.splice(removeIndex, 1);
+    }
 
     if (cart.products.length === initialLength) {
       return res
@@ -774,23 +738,14 @@ export const removeFromCart = async (req, res) => {
       0
     );
 
-    let recalculatedTotalPrice = 0;
     for (const item of cart.products) {
       const p = await Product.findById(item.product);
       if (p) {
-        // Get attributes from item to find variant price if applicable
-        let itemAttributes = {};
-        if (item.attributes && item.attributes instanceof Map) {
-          itemAttributes = mapToObject(item.attributes);
-        } else if (item.size) {
-          itemAttributes = { size: item.size };
-        }
-        // Get correct price (variant or product price)
-        const itemPrice = getProductPrice(p, itemAttributes);
-        recalculatedTotalPrice += itemPrice * item.quantity;
+        const itemAttributes = getItemAttributes(item);
+        item.unitFinalPrice = getProductPrice(p, itemAttributes);
       }
     }
-    cart.totalPrice = recalculatedTotalPrice;
+    // pre('save') derives subtotal/discount/totalPrice.
 
     await cart.save();
 
@@ -834,6 +789,177 @@ export const removeFromCart = async (req, res) => {
     });
     return sendError(res, {
       message: "Server error while removing item from cart.",
+      code: "INTERNAL_ERROR",
+      statusCode: 500,
+    });
+  }
+};
+
+/**
+ * Populate + enrich + currency-convert a cart, returning the response shape
+ * the mobile/dashboard clients expect. Used by every cart-mutating endpoint.
+ */
+async function buildCartResponse(userObjectId, req) {
+  const populatedCart = await Cart.findOne({ user: userObjectId }).populate({
+    path: "products.product",
+  }).populate({
+    path: "products.product.category",
+    select: "name",
+  }).populate({
+    path: "products.product.merchant",
+    select: "storeName email logoUrl city status",
+  });
+  if (!populatedCart) return null;
+
+  const cartObj = populatedCart.toObject();
+  if (cartObj.products) {
+    cartObj.products = cartObj.products.map((item) => {
+      if (item.product) item.product = enrichProductWithPricing(item.product);
+      return item;
+    });
+  }
+
+  const currencyCode = req.currencyCode;
+  if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+    await convertCart(cartObj, currencyCode);
+  }
+  return cartObj;
+}
+
+// APPLY COUPON
+// Validates the coupon (date/limit/per-user/min-order) without reserving it,
+// then snapshots type/value/maxDiscount/minOrderAmount onto the cart so the
+// pre('save') hook can recompute the discount as items change. Reservation
+// (incrementing usageCount, writing CouponUsage) happens at checkout, not here.
+export const applyCoupon = async (req, res) => {
+  const authData = getAuth(req);
+  const userId = authData?.userId || req.auth?.userId;
+  if (!userId) return sendUnauthorized(res, "Authentication required.");
+
+  const { code } = req.body || {};
+  if (!code || typeof code !== 'string') {
+    return sendError(res, {
+      message: "Coupon code is required.",
+      code: "VALIDATION_ERROR",
+      statusCode: 400,
+    });
+  }
+
+  try {
+    const user = await getOrCreateUser(userId, req.requestId);
+    const cart = await Cart.findOne({ user: user._id });
+    if (!cart) {
+      return sendNotFound(res, "Cart");
+    }
+
+    const upperCode = code.toUpperCase().trim();
+    const coupon = await Coupon.findOne({ code: upperCode, isActive: true });
+    if (!coupon) {
+      return sendError(res, {
+        message: "Invalid or inactive coupon code.",
+        code: "INVALID_COUPON",
+        statusCode: 400,
+      });
+    }
+
+    const now = new Date();
+    if ((coupon.startDate || new Date(0)) > now) {
+      return sendError(res, {
+        message: "Coupon is not yet active.",
+        code: "COUPON_NOT_ACTIVE",
+        statusCode: 400,
+      });
+    }
+    if (coupon.endDate && coupon.endDate < now) {
+      return sendError(res, {
+        message: "Coupon has expired.",
+        code: "COUPON_EXPIRED",
+        statusCode: 400,
+      });
+    }
+    if (coupon.usageLimitGlobal !== null && coupon.usageCount >= coupon.usageLimitGlobal) {
+      return sendError(res, {
+        message: "Coupon usage limit reached.",
+        code: "COUPON_EXHAUSTED",
+        statusCode: 400,
+      });
+    }
+    if (coupon.usageLimitPerUser > 0) {
+      const used = await CouponUsage.countDocuments({ coupon: coupon._id, user: user._id });
+      if (used >= coupon.usageLimitPerUser) {
+        return sendError(res, {
+          message: "You have already used this coupon the maximum allowed times.",
+          code: "COUPON_USER_LIMIT",
+          statusCode: 400,
+        });
+      }
+    }
+    if (coupon.minOrderAmount > 0 && cart.subtotal < coupon.minOrderAmount) {
+      return sendError(res, {
+        message: `Minimum order amount of ${coupon.minOrderAmount} required.`,
+        code: "COUPON_MIN_ORDER",
+        statusCode: 400,
+        details: { minOrderAmount: coupon.minOrderAmount, subtotal: cart.subtotal },
+      });
+    }
+
+    cart.appliedCoupon = {
+      couponId:       coupon._id,
+      code:           coupon.code,
+      type:           coupon.type,
+      value:          coupon.value,
+      maxDiscount:    coupon.maxDiscount,
+      minOrderAmount: coupon.minOrderAmount,
+      discountAmount: 0, // pre('save') will compute against current subtotal
+    };
+    await cart.save();
+
+    const cartObj = await buildCartResponse(user._id, req);
+    return sendSuccess(res, {
+      data: cartObj,
+      message: "Coupon applied successfully.",
+    });
+  } catch (error) {
+    logger.error('Error applying coupon', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return sendError(res, {
+      message: "Server error while applying coupon.",
+      code: "INTERNAL_ERROR",
+      statusCode: 500,
+    });
+  }
+};
+
+// REMOVE COUPON
+export const removeCoupon = async (req, res) => {
+  const authData = getAuth(req);
+  const userId = authData?.userId || req.auth?.userId;
+  if (!userId) return sendUnauthorized(res, "Authentication required.");
+
+  try {
+    const user = await getOrCreateUser(userId, req.requestId);
+    const cart = await Cart.findOne({ user: user._id });
+    if (!cart) return sendNotFound(res, "Cart");
+
+    cart.appliedCoupon = null;
+    await cart.save();
+
+    const cartObj = await buildCartResponse(user._id, req);
+    return sendSuccess(res, {
+      data: cartObj,
+      message: "Coupon removed.",
+    });
+  } catch (error) {
+    logger.error('Error removing coupon', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return sendError(res, {
+      message: "Server error while removing coupon.",
       code: "INTERNAL_ERROR",
       statusCode: 500,
     });

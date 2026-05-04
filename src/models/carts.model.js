@@ -1,5 +1,17 @@
 import mongoose from "mongoose";
 
+const appliedCouponSchema = new mongoose.Schema({
+  couponId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Coupon' },
+  code:           { type: String },
+  type:           { type: String, enum: ['percentage', 'fixed'] },
+  value:          { type: Number },
+  // Snapshot at apply-time so the cart can recompute discount as items change
+  // without re-reading the Coupon document.
+  maxDiscount:    { type: Number, default: null },
+  minOrderAmount: { type: Number, default: 0 },
+  discountAmount: { type: Number, default: 0 },
+}, { _id: false });
+
 const cartSchema = new mongoose.Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   products: [
@@ -14,13 +26,44 @@ const cartSchema = new mongoose.Schema({
     },
   ],
   totalQuantity: { type: Number, default: 0 },
+  // Sum of unitFinalPrice * quantity, before discount/shipping.
+  subtotal:      { type: Number, default: 0 },
+  discount:      { type: Number, default: 0 },
+  shipping:      { type: Number, default: 0 },
+  // Final amount the user pays: subtotal - discount + shipping (clamped at 0).
   totalPrice:    { type: Number, default: 0 },
-}, { timestamps: true }); // updatedAt maintained automatically — required for TTL correctness
+  appliedCoupon: { type: appliedCouponSchema, default: null },
+}, { timestamps: true });
 
-// Keep denormalized totals in sync on every save
+// Keep denormalized totals + breakdown in sync on every save.
 cartSchema.pre('save', function (next) {
   this.totalQuantity = this.products.reduce((s, p) => s + (p.quantity || 0), 0);
-  this.totalPrice    = this.products.reduce((s, p) => s + ((p.unitFinalPrice || 0) * (p.quantity || 0)), 0);
+  this.subtotal      = this.products.reduce(
+    (s, p) => s + ((p.unitFinalPrice || 0) * (p.quantity || 0)),
+    0
+  );
+
+  if (this.appliedCoupon && this.appliedCoupon.code) {
+    const c = this.appliedCoupon;
+    // Min-order not met → keep the coupon attached but zero the discount,
+    // so it auto-reapplies when the user adds enough.
+    if ((c.minOrderAmount || 0) > 0 && this.subtotal < c.minOrderAmount) {
+      c.discountAmount = 0;
+    } else {
+      let d = c.type === 'percentage'
+        ? (this.subtotal * (c.value || 0)) / 100
+        : (c.value || 0);
+      if (c.type === 'percentage' && c.maxDiscount != null) {
+        d = Math.min(d, c.maxDiscount);
+      }
+      c.discountAmount = Math.max(0, Math.min(d, this.subtotal));
+    }
+    this.discount = c.discountAmount;
+  } else {
+    this.discount = 0;
+  }
+
+  this.totalPrice = Math.max(0, this.subtotal - this.discount + (this.shipping || 0));
   next();
 });
 

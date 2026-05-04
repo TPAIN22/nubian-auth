@@ -196,6 +196,66 @@ function objectToMap(obj) {
  * @param {Object} attributes - Selected attributes to match
  * @returns {Object|null} - Matching variant or null
  */
+/**
+ * Extracts a normalized attributes object from a stored cart item.
+ *
+ * Handles every shape the cart line can take across schema migrations:
+ *   - Mongoose Map (default for non-lean docs)
+ *   - Plain object (after `.lean()` / `.toObject()`)
+ *   - Legacy `size` string field (rows added before the attributes Map existed)
+ *
+ * Legacy `size` is only used as a fallback when the attributes blob doesn't
+ * already carry a `size` key — never overrides it.
+ *
+ * @param {Object} item - Cart line item (Mongoose subdoc or plain object)
+ * @returns {Object} - Normalized attributes (empty object if none)
+ */
+function getItemAttributes(item) {
+  if (!item || typeof item !== 'object') return {};
+
+  let raw = {};
+  if (item.attributes) {
+    if (item.attributes instanceof Map) {
+      raw = mapToObject(item.attributes);
+    } else if (typeof item.attributes === 'object') {
+      raw = { ...item.attributes };
+    }
+  }
+
+  if (!raw.size && item.size) {
+    raw.size = item.size;
+  }
+
+  return normalizeAttributes(raw);
+}
+
+/**
+ * Finds the index of a cart line matching productId + attributes.
+ *
+ * Single source of truth for cart row lookup — keeps add/update/remove from
+ * drifting apart on matching semantics.
+ *
+ * @param {Array} cartProducts - cart.products array
+ * @param {string|Object} productId - Product id (ObjectId, string, or populated doc)
+ * @param {Object} attributes - Already-merged attributes (size + attrs)
+ * @returns {number} - Index of the matching item, or -1 if none
+ */
+function findCartItemIndex(cartProducts, productId, attributes) {
+  if (!Array.isArray(cartProducts) || cartProducts.length === 0 || !productId) {
+    return -1;
+  }
+
+  const targetProductId = ((productId && productId._id) || productId).toString();
+  const targetAttributes = normalizeAttributes(attributes || {});
+
+  return cartProducts.findIndex((item) => {
+    const rawItemId = (item.product && item.product._id) || item.product;
+    const itemProductId = rawItemId ? rawItemId.toString() : null;
+    if (itemProductId !== targetProductId) return false;
+    return areAttributesEqual(getItemAttributes(item), targetAttributes);
+  });
+}
+
 function findMatchingVariant(product, attributes) {
   if (!product || !product.variants || !Array.isArray(product.variants) || product.variants.length === 0) {
     return null;
@@ -261,6 +321,8 @@ export {
   validateRequiredAttributes,
   mapToObject,
   objectToMap,
+  getItemAttributes,
+  findCartItemIndex,
   findMatchingVariant,
   getProductPrice,
 };
