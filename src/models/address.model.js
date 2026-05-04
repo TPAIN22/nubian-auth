@@ -1,39 +1,46 @@
-import mongoose from "mongoose";
+import mongoose from 'mongoose';
 
 const addressSchema = new mongoose.Schema(
   {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
 
-    name: { type: String, trim: true, default: "" },
+    name: { type: String, trim: true, default: '', maxlength: 100 },
 
-    // Location fields (new hierarchical structure)
-    countryId: { type: mongoose.Schema.Types.ObjectId, ref: "Country" },
-    cityId: { type: mongoose.Schema.Types.ObjectId, ref: "City" },
-    subCityId: { type: mongoose.Schema.Types.ObjectId, ref: "SubCity" },
+    countryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Country' },
+    cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City' },
+    subCityId: { type: mongoose.Schema.Types.ObjectId, ref: 'SubCity' },
 
-    // Denormalized names for display (cached from location entities)
-    countryName: { type: String, trim: true, default: "" },
-    cityName: { type: String, trim: true, default: "" },
-    subCityName: { type: String, trim: true, default: "" },
+    countryName: { type: String, trim: true, default: '', maxlength: 100 },
+    cityName: { type: String, trim: true, default: '', maxlength: 100 },
+    subCityName: { type: String, trim: true, default: '', maxlength: 100 },
 
-    // Legacy fields for backward compatibility
-    city: { type: String, trim: true, default: "" },
-    area: { type: String, trim: true, default: "" },
+    city: { type: String, trim: true, default: '', maxlength: 100 },
+    area: { type: String, trim: true, default: '', maxlength: 100 },
+    street: { type: String, trim: true, default: '', maxlength: 200 },
+    building: { type: String, trim: true, default: '', maxlength: 100 },
 
-    street: { type: String, trim: true, default: "" },
-    building: { type: String, trim: true, default: "" },
+    phone: { type: String, trim: true, default: '', maxlength: 30 },
+    whatsapp: { type: String, trim: true, default: '', maxlength: 30 },
 
-    phone: { type: String, trim: true, default: "" },
+    notes: { type: String, trim: true, default: '', maxlength: 500 },
 
-    // ✅ ADD THIS (fix checkout + store whatsapp)
-    whatsapp: { type: String, trim: true, default: "" },
-
-    notes: { type: String, trim: true, default: "" },
     isDefault: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-addressSchema.index({ user: 1 });
+addressSchema.index({ user: 1, isDefault: -1, updatedAt: -1 });
 
-export default mongoose.model("Address", addressSchema);
+addressSchema.index(
+  { user: 1, isDefault: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { isDefault: true },
+  }
+);
+
+export default mongoose.model('Address', addressSchema);

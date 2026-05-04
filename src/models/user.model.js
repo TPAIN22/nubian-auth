@@ -19,11 +19,8 @@ const userSchema = new mongoose.Schema({
   // ===== AFFILIATE =====
   referralCode: {
     type: String,
-    unique: true,
-    sparse: true,
     uppercase: true,
     trim: true,
-    default: null,
   },
   referredBy: {
     type: String,
@@ -50,9 +47,15 @@ userSchema.pre(/^find/, function () {
 });
 
 userSchema.index({ emailAddress: 1 }, {
-  sparse: true,
-  partialFilterExpression: { isDeleted: { $ne: true } },
+  partialFilterExpression: { isDeleted: false, emailAddress: { $type: 'string' } },
 });
+userSchema.index(
+  { referralCode: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { referralCode: { $type: 'string' } },
+  }
+);
 userSchema.index({ isDeleted: 1, createdAt: -1 });
 userSchema.index({ referredBy: 1 });
 

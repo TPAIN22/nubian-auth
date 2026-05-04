@@ -2,126 +2,261 @@ import Address from '../models/address.model.js';
 import Country from '../models/country.model.js';
 import City from '../models/city.model.js';
 import SubCity from '../models/subcity.model.js';
-import { getAuth } from '@clerk/express';
-import User from '../models/user.model.js';
+import logger from '../lib/logger.js';
 
-// Helper function to denormalize location names for display
-const denormalizeLocationNames = async (addressData) => {
-  try {
-    if (addressData.countryId) {
-      const country = await Country.findById(addressData.countryId).select('nameAr nameEn');
-      if (country) {
-        addressData.countryName = country.nameEn; // Default to English, can be localized later
-      }
-    }
+const ALLOWED_FIELDS = [
+  'name',
+  'phone',
+  'whatsapp',
+  'countryId',
+  'cityId',
+  'subCityId',
+  'area',
+  'street',
+  'building',
+  'notes',
+  'isDefault',
+];
 
-    if (addressData.cityId) {
-      const city = await City.findById(addressData.cityId).select('nameAr nameEn');
-      if (city) {
-        addressData.cityName = city.nameEn;
-      }
-    }
+const GENERIC_ERROR = 'Something went wrong';
 
-    if (addressData.subCityId) {
-      const subCity = await SubCity.findById(addressData.subCityId).select('nameAr nameEn');
-      if (subCity) {
-        addressData.subCityName = subCity.nameEn;
-      }
-    }
-  } catch (error) {
-    // Log error but don't fail the address creation/update
-    console.warn('Failed to denormalize location names:', error.message);
+const pickAllowed = (body = {}) =>
+  ALLOWED_FIELDS.reduce((acc, key) => {
+    if (body[key] !== undefined) acc[key] = body[key];
+    return acc;
+  }, {});
+
+const resolveLocation = async ({ countryId, cityId, subCityId }) => {
+  const [country, city, subCity] = await Promise.all([
+    countryId ? Country.findById(countryId).select('nameEn').lean() : null,
+    cityId ? City.findById(cityId).select('nameEn countryId').lean() : null,
+    subCityId ? SubCity.findById(subCityId).select('nameEn cityId').lean() : null,
+  ]);
+
+  if (countryId && !country) {
+    return { error: 'Invalid countryId' };
   }
+  if (cityId && !city) {
+    return { error: 'Invalid cityId' };
+  }
+  if (subCityId && !subCity) {
+    return { error: 'Invalid subCityId' };
+  }
+
+  if (city && countryId && String(city.countryId) !== String(countryId)) {
+    return { error: 'City does not belong to the specified country' };
+  }
+  if (subCity && cityId && String(subCity.cityId) !== String(cityId)) {
+    return { error: 'SubCity does not belong to the specified city' };
+  }
+
+  return {
+    names: {
+      countryName: country?.nameEn || '',
+      cityName: city?.nameEn || '',
+      subCityName: subCity?.nameEn || '',
+    },
+  };
 };
 
+const clearDefaultFor = (userId) =>
+  Address.updateMany({ user: userId, isDefault: true }, { $set: { isDefault: false } });
+
+const isDuplicateKeyError = (err) => err && err.code === 11000;
+
 export const getAddresses = async (req, res) => {
-  const { userId } = getAuth(req);
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (!user) {
-      return res.status(404).json({ message: "User not found." });
-    }
-    const addresses = await Address.find({ user: user._id });
-    res.status(200).json(addresses);
+    const addresses = await Address.find({ user: req.appUser._id })
+      .sort({ isDefault: -1, updatedAt: -1 })
+      .lean();
+
+    return res.status(200).json(addresses);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    logger.error('getAddresses failed', {
+      requestId: req.requestId,
+      userId: req.appUser?._id,
+      error: error.message,
+    });
+    return res.status(500).json({ message: GENERIC_ERROR });
   }
 };
 
 export const addAddress = async (req, res) => {
-  const { userId } = getAuth(req);
+  const userId = req.appUser._id;
+
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (req.body.isDefault) {
-      await Address.updateMany({ user: user._id }, { isDefault: false });
+    const data = pickAllowed(req.body);
+
+    if (data.countryId || data.cityId || data.subCityId) {
+      const result = await resolveLocation(data);
+      if (result.error) {
+        return res.status(400).json({ message: result.error });
+      }
+      Object.assign(data, result.names);
     }
 
-    // Handle new location fields and denormalize names if needed
-    const addressData = { ...req.body, user: user._id };
-
-    // If location IDs are provided, denormalize the names for display
-    if (addressData.countryId || addressData.cityId || addressData.subCityId) {
-      await denormalizeLocationNames(addressData);
+    if (data.isDefault) {
+      await clearDefaultFor(userId);
     }
 
-    const address = await Address.create(addressData);
-    res.status(201).json(address);
+    const address = await Address.create({ ...data, user: userId });
+    return res.status(201).json(address);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    if (isDuplicateKeyError(error)) {
+      try {
+        await clearDefaultFor(userId);
+        const data = pickAllowed(req.body);
+        const address = await Address.create({ ...data, user: userId });
+        return res.status(201).json(address);
+      } catch (retryError) {
+        logger.error('addAddress retry failed', {
+          requestId: req.requestId,
+          userId,
+          error: retryError.message,
+        });
+        return res.status(500).json({ message: GENERIC_ERROR });
+      }
+    }
+
+    logger.error('addAddress failed', {
+      requestId: req.requestId,
+      userId,
+      error: error.message,
+    });
+    return res.status(500).json({ message: GENERIC_ERROR });
   }
 };
 
 export const updateAddress = async (req, res) => {
-  const { userId } = getAuth(req);
+  const userId = req.appUser._id;
   const { id } = req.params;
+
   try {
-    const user = await User.findOne({ clerkId: userId });
-    if (req.body.isDefault) {
-      await Address.updateMany({ user: user._id }, { isDefault: false });
+    const data = pickAllowed(req.body);
+
+    if (data.countryId || data.cityId || data.subCityId) {
+      const result = await resolveLocation(data);
+      if (result.error) {
+        return res.status(400).json({ message: result.error });
+      }
+      Object.assign(data, result.names);
     }
 
-    // Handle new location fields and denormalize names if needed
-    const addressData = { ...req.body, user: user._id };
-
-    // If location IDs are provided, denormalize the names for display
-    if (addressData.countryId || addressData.cityId || addressData.subCityId) {
-      await denormalizeLocationNames(addressData);
+    if (data.isDefault) {
+      await Address.updateMany(
+        { user: userId, isDefault: true, _id: { $ne: id } },
+        { $set: { isDefault: false } }
+      );
     }
 
     const address = await Address.findOneAndUpdate(
-      { _id: id, user: user._id },
-      addressData,
-      { new: true }
+      { _id: id, user: userId },
+      { $set: data },
+      { new: true, runValidators: true }
     );
-    res.status(200).json(address);
+
+    if (!address) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    return res.status(200).json(address);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({ message: 'Default address conflict, please retry' });
+    }
+
+    logger.error('updateAddress failed', {
+      requestId: req.requestId,
+      userId,
+      addressId: id,
+      error: error.message,
+    });
+    return res.status(500).json({ message: GENERIC_ERROR });
   }
 };
 
 export const deleteAddress = async (req, res) => {
-  const { userId } = getAuth(req);
+  const userId = req.appUser._id;
   const { id } = req.params;
+
   try {
-    
-    const user = await User.findOne({ clerkId: userId });
-    await Address.findOneAndDelete({ _id: id, user: user._id });
-    res.status(200).json({ success: true });
+    const deleted = await Address.findOneAndDelete({ _id: id, user: userId });
+
+    if (!deleted) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    if (deleted.isDefault) {
+      const fallback = await Address.findOne({ user: userId })
+        .sort({ updatedAt: -1 })
+        .select('_id');
+
+      if (fallback) {
+        try {
+          await Address.updateOne(
+            { _id: fallback._id, user: userId },
+            { $set: { isDefault: true } }
+          );
+        } catch (promoteError) {
+          logger.warn('deleteAddress: failed to promote fallback default', {
+            requestId: req.requestId,
+            userId,
+            fallbackId: fallback._id,
+            error: promoteError.message,
+          });
+        }
+      }
+    }
+
+    return res.status(200).json({ success: true });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    logger.error('deleteAddress failed', {
+      requestId: req.requestId,
+      userId,
+      addressId: id,
+      error: error.message,
+    });
+    return res.status(500).json({ message: GENERIC_ERROR });
   }
 };
 
 export const setDefaultAddress = async (req, res) => {
-  const { userId } = getAuth(req);
+  const userId = req.appUser._id;
   const { id } = req.params;
-  try {
-    const user = await User.findOne({ clerkId: userId });
 
-    await Address.updateMany({ user: user._id }, { isDefault: false });
-    const address = await Address.findOneAndUpdate({ _id: id, user: user._id }, { isDefault: true }, { new: true });
-    res.status(200).json(address);
+  try {
+    const target = await Address.findOne({ _id: id, user: userId }).select('_id');
+    if (!target) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    await Address.updateMany(
+      { user: userId, isDefault: true, _id: { $ne: id } },
+      { $set: { isDefault: false } }
+    );
+
+    const address = await Address.findOneAndUpdate(
+      { _id: id, user: userId },
+      { $set: { isDefault: true } },
+      { new: true }
+    );
+
+    if (!address) {
+      return res.status(404).json({ message: 'Address not found' });
+    }
+
+    return res.status(200).json(address);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    if (isDuplicateKeyError(error)) {
+      return res.status(409).json({ message: 'Default address conflict, please retry' });
+    }
+
+    logger.error('setDefaultAddress failed', {
+      requestId: req.requestId,
+      userId,
+      addressId: id,
+      error: error.message,
+    });
+    return res.status(500).json({ message: GENERIC_ERROR });
   }
-}; 
+};
