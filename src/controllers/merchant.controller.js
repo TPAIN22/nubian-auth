@@ -20,10 +20,10 @@ export const applyToBecomeMerchant = async (req, res) => {
       return sendUnauthorized(res, "Authentication required");
     }
 
-    // Check if user already has a merchant application
     const existingMerchant = await Merchant.findOne({ userId });
 
-    if (existingMerchant) {
+    // Block re-submission for any non-revision status; needs_revision is treated as resubmit.
+    if (existingMerchant && existingMerchant.status !== 'needs_revision') {
       return sendError(res, {
         message: "You already have a merchant application",
         code: 'DUPLICATE_APPLICATION',
@@ -46,7 +46,32 @@ export const applyToBecomeMerchant = async (req, res) => {
       });
     }
 
-    const merchant = new Merchant({
+    let merchant;
+    if (existingMerchant) {
+      Object.assign(existingMerchant, {
+        storeName, ownerName, phone, email, merchantType,
+        nationalId, crNumber, iban, logoUrl, description,
+        categories: categories || [],
+        city,
+        productSamples: productSamples || [],
+        status: 'pending',
+        rejectionReason: undefined,
+      });
+      merchant = await existingMerchant.save();
+
+      logger.info('Merchant application resubmitted', {
+        requestId: req.requestId,
+        userId,
+        storeName,
+      });
+
+      return sendSuccess(res, {
+        data: merchant,
+        message: "Merchant application resubmitted successfully",
+      });
+    }
+
+    merchant = new Merchant({
       userId,
       storeName, ownerName, phone, email, merchantType,
       nationalId, crNumber, iban, logoUrl, description,
