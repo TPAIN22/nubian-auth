@@ -33,7 +33,16 @@ const cartSchema = new mongoose.Schema({
   // Final amount the user pays: subtotal - discount + shipping (clamped at 0).
   totalPrice:    { type: Number, default: 0 },
   appliedCoupon: { type: appliedCouponSchema, default: null },
-}, { timestamps: true });
+}, {
+  timestamps: true,
+  // Flatten Mongoose Maps to plain objects on serialization. Without this,
+  // `cart.toObject()` keeps `attributes` as a Map, which JSON-stringifies to
+  // `{}` on the wire — silently dropping every variant attribute (color,
+  // size, etc.). That makes follow-up cart writes ambiguous because the
+  // client can no longer round-trip the exact variant identity.
+  toJSON:   { flattenMaps: true },
+  toObject: { flattenMaps: true },
+});
 
 // Keep denormalized totals + breakdown in sync on every save.
 cartSchema.pre('save', function (next) {

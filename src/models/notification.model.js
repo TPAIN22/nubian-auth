@@ -100,9 +100,30 @@ const notificationSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'sent', 'failed', 'delivered'],
+      // 'queued'   — accepted by the queue, awaiting a worker
+      // 'retrying' — worker attempt failed, will retry per backoff policy
+      // 'pending'  — pre-queue / sync-fallback intermediate state (legacy)
+      // 'sent'     — successfully dispatched to the channel provider
+      // 'delivered'— provider confirmed delivery (future use)
+      // 'failed'   — exhausted retries or unrecoverable error
+      enum: ['queued', 'retrying', 'pending', 'sent', 'failed', 'delivered'],
       default: 'pending',
       index: true,
+    },
+    // Retry/observability fields populated by workers and the channel layer.
+    attempts: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    lastError: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    lastAttemptAt: {
+      type: Date,
+      default: null,
     },
     // Smart rules tracking
     deduplicationKey: {

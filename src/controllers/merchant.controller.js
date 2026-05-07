@@ -6,7 +6,7 @@ import { clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
 import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden, sendPaginated } from '../lib/response.js';
-import { sendMerchantSuspensionEmail, sendMerchantUnsuspensionEmail } from '../lib/mail.js';
+import { queueMerchantSuspensionEmail, queueMerchantUnsuspensionEmail } from '../services/mailService.js';
 
 /**
  * Apply to become a merchant
@@ -585,13 +585,13 @@ export const suspendMerchant = async (req, res) => {
 
     // Send email notification to merchant
     try {
-      await sendMerchantSuspensionEmail({
+      await queueMerchantSuspensionEmail({
         to: merchant.email,
         businessName: merchant.storeName,
         suspensionReason: merchant.suspensionReason,
         suspendedAt: merchant.suspendedAt,
       });
-      logger.info('Suspension email sent to merchant', {
+      logger.info('Suspension email dispatched to merchant', {
         requestId: req.requestId,
         merchantId: merchant._id,
         email: merchant.email,
@@ -702,11 +702,11 @@ export const unsuspendMerchant = async (req, res) => {
 
     // Send email notification to merchant
     try {
-      await sendMerchantUnsuspensionEmail({
+      await queueMerchantUnsuspensionEmail({
         to: merchant.email,
         businessName: merchant.storeName,
       });
-      logger.info('Unsuspension email sent to merchant', {
+      logger.info('Unsuspension email dispatched to merchant', {
         requestId: req.requestId,
         merchantId: merchant._id,
         email: merchant.email,

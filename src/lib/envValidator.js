@@ -50,6 +50,31 @@ const optionalEnvVars = {
     description: 'Logging level',
     default: 'info',
   },
+  REDIS_URL: {
+    value: process.env.REDIS_URL,
+    description: 'Redis connection URL (required when ENABLE_QUEUE=true)',
+    default: 'redis://localhost:6379',
+  },
+  REDIS_PREFIX: {
+    value: process.env.REDIS_PREFIX || '',
+    description: 'Optional Redis key prefix to namespace queues',
+    default: '',
+  },
+  ENABLE_QUEUE: {
+    value: process.env.ENABLE_QUEUE || 'false',
+    description: 'Enable BullMQ-based notification pipeline',
+    default: 'false',
+  },
+  WORKER_ROLES: {
+    value: process.env.WORKER_ROLES || 'push,email,fanout,maintenance',
+    description: 'Comma-separated worker roles (push, email, sms, fanout, maintenance, all)',
+    default: 'push,email,fanout,maintenance',
+  },
+  RUN_WORKERS_INPROCESS: {
+    value: process.env.RUN_WORKERS_INPROCESS || 'false',
+    description: 'Run workers inside the API process (single-dyno deploys)',
+    default: 'false',
+  },
 };
 
 /**
@@ -64,6 +89,9 @@ const validateFormat = (key, value) => {
     PORT: (val) => !isNaN(parseInt(val)) && parseInt(val) > 0 && parseInt(val) < 65536,
     NODE_ENV: (val) => ['development', 'production', 'test'].includes(val),
     LOG_LEVEL: (val) => ['error', 'warn', 'info', 'debug'].includes(val),
+    REDIS_URL: (val) => val.startsWith('redis://') || val.startsWith('rediss://'),
+    ENABLE_QUEUE: (val) => ['true', 'false'].includes(val),
+    RUN_WORKERS_INPROCESS: (val) => ['true', 'false'].includes(val),
   };
 
   if (validations[key]) {
@@ -98,6 +126,15 @@ export const validateEnv = () => {
         example: config.example,
       });
     }
+  }
+
+  // Conditional requirement: REDIS_URL is mandatory when the queue is enabled
+  if (process.env.ENABLE_QUEUE === 'true' && !process.env.REDIS_URL) {
+    missing.push({
+      key: 'REDIS_URL',
+      description: 'Redis connection URL (required when ENABLE_QUEUE=true)',
+      example: 'redis://localhost:6379',
+    });
   }
 
   // Build error message

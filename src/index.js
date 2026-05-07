@@ -284,6 +284,20 @@ const PORT = process.env.PORT || 5000;
       logger.warn('FX bootstrap check failed', { error: fxError.message });
     }
 
+    // Optionally boot in-process notification workers (single-dyno deploys).
+    // No-op when ENABLE_QUEUE !== 'true' or RUN_WORKERS_INPROCESS !== 'true'.
+    try {
+      const { startInProcessWorkers } = await import('./workers/index.js');
+      const inProcWorkers = await startInProcessWorkers();
+      if (inProcWorkers.length > 0) {
+        logger.info('In-process notification workers running', {
+          roles: inProcWorkers.map((w) => w.role),
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to start in-process workers', { error: error.message });
+    }
+
     // Start server only after successful database connection
     const server = app.listen(PORT, '0.0.0.0', () => {
       const address = server.address();

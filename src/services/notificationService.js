@@ -6,6 +6,50 @@ import PushToken from '../models/pushToken.model.js';
 import logger from '../lib/logger.js';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';
+import { enqueue } from '../lib/queue/queues.js';
+import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
+import { wrap } from '../lib/queue/jobShapes.js';
+
+const isQueueEnabled = () => process.env.ENABLE_QUEUE === 'true';
+
+/**
+ * Try to enqueue a job; on Redis failure, mark the notification 'failed' so the
+ * maintenance DLQ sweep can pick it up later. Returns true on success.
+ *
+ * Pure helper, kept module-level so tests can stub it without instantiating
+ * the singleton service.
+ */
+/**
+ * Compute milliseconds remaining until the user's quiet-hours window closes.
+ * Mirrors the logic in NotificationPreferences.isInQuietHours so workers and
+ * producers agree on when the window ends.
+ *
+ * Returns 0 when not currently in quiet hours.
+ */
+const msUntilQuietHoursEnd = (quietHours) => {
+  if (!quietHours?.enabled) return 0;
+  const now = new Date();
+  const [endH, endM] = (quietHours.end || '08:00').split(':').map(Number);
+  const end = new Date(now);
+  end.setHours(endH, endM, 0, 0);
+  // If end time already passed today, the window straddles midnight.
+  if (end <= now) end.setDate(end.getDate() + 1);
+  return Math.max(0, end.getTime() - now.getTime());
+};
+
+const enqueueOrFallback = async (queueName, jobName, payload, opts = {}) => {
+  try {
+    await enqueue(queueName, jobName, wrap(payload), opts);
+    return true;
+  } catch (err) {
+    logger.error('Enqueue failed — leaving notification for DLQ sweep', {
+      queue: queueName,
+      jobName,
+      error: err.message,
+    });
+    return false;
+  }
+};
 
 /**
  * Production-grade Notification Service
@@ -185,31 +229,19 @@ class NotificationService {
         status: 'pending',
       });
 
-      // Send through enabled channels
-      // For push channel specifically requested, try to send even if not in enabledChannels (for testing)
-      // But respect user preferences for actual production notifications
-      const channelsToSend = enabledChannels.filter(c => c !== 'in_app'); // in_app already created
-      
-      // If push was explicitly requested but not in enabledChannels, log warning but still try to send for debugging
-      if (channel === 'push' && !channelsToSend.includes('push')) {
-        logger.warn('Push channel requested but not enabled in preferences - attempting to send anyway', {
-          notificationId: notification._id.toString(),
-          type,
-          enabledChannels,
-          bypassReason: 'explicit channel request',
+      // Send through enabled channels.
+      //   - in_app is already persisted above
+      //   - push goes through dispatchPush(), which either enqueues a job
+      //     (when ENABLE_QUEUE=true) or calls the sync sendPushNotification
+      //     fallback (legacy path, no Redis dependency).
+      const channelsToSend = enabledChannels.filter((c) => c !== 'in_app');
+      const pushExplicitlyRequested = channel === 'push';
+      const pushAllowedByPrefs = channelsToSend.includes('push');
+
+      if (pushAllowedByPrefs || pushExplicitlyRequested) {
+        await this.dispatchPush(notification, preferences, {
+          bypassPrefs: pushExplicitlyRequested && !pushAllowedByPrefs,
         });
-        // Try to send push notification anyway for debugging
-        try {
-          await this.sendPushNotification(notification, preferences);
-        } catch (error) {
-          logger.error('Failed to send push notification (bypassed preferences)', {
-            error: error.message,
-            notificationId: notification._id.toString(),
-          });
-        }
-      } else if (channelsToSend.includes('push')) {
-        // Normal flow: push is enabled in preferences
-        await this.sendPushNotification(notification, preferences);
       } else {
         logger.info('Push notification skipped - not in enabled channels', {
           notificationId: notification._id.toString(),
@@ -247,7 +279,75 @@ class NotificationService {
   }
 
   /**
-   * Send push notification via Expo
+   * Dispatch a push notification through the right transport.
+   *
+   *   ENABLE_QUEUE=true  → enqueue a `push.send` job (delayed if quiet hours)
+   *                        and mark the doc 'queued'.
+   *   ENABLE_QUEUE=false → call sendPushNotification directly (legacy sync).
+   *
+   * If enqueue itself fails (Redis down), fall back to the sync path so a
+   * Redis outage never breaks the notification creation flow.
+   */
+  async dispatchPush(notification, preferences, opts = {}) {
+    const { bypassPrefs = false } = opts;
+
+    if (!isQueueEnabled()) {
+      try {
+        await this.sendPushNotification(notification, preferences);
+      } catch (error) {
+        logger.error('Sync push send failed', {
+          error: error.message,
+          notificationId: notification._id.toString(),
+          bypassPrefs,
+        });
+      }
+      return;
+    }
+
+    // Queue path: compute quiet-hours delay so the worker fires the push when
+    // the user's quiet window ends, instead of the old behaviour of marking
+    // it 'pending' and never resending.
+    let delay = 0;
+    if (
+      !bypassPrefs &&
+      preferences.quietHours?.enabled &&
+      preferences.isInQuietHours()
+    ) {
+      delay = msUntilQuietHoursEnd(preferences.quietHours);
+      logger.info('Push delayed by quiet hours', {
+        notificationId: notification._id.toString(),
+        delayMs: delay,
+      });
+    }
+
+    // Mark queued before enqueue so observers see the new status immediately.
+    notification.status = 'queued';
+    notification.channel = 'push';
+    await notification.save();
+
+    const enqueued = await enqueueOrFallback(
+      QUEUE_NAMES.PUSH,
+      JOB_NAMES.PUSH_SEND,
+      { notificationId: notification._id.toString(), bypassQuietHours: bypassPrefs },
+      {
+        // Use the deduplication key as the BullMQ jobId — duplicate enqueues
+        // of the same logical event become no-ops automatically.
+        jobId: `push:${notification.deduplicationKey || notification._id.toString()}`,
+        delay,
+      }
+    );
+
+    if (!enqueued) {
+      // Redis unreachable. Mark failed and let the maintenance DLQ sweep retry.
+      notification.status = 'failed';
+      notification.lastError = 'enqueue_failed';
+      notification.lastAttemptAt = new Date();
+      await notification.save();
+    }
+  }
+
+  /**
+   * Send push notification via Expo (synchronous legacy path).
    */
   async sendPushNotification(notification, preferences) {
     try {

@@ -3,7 +3,7 @@ import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendCreated, sendPaginated } from "../lib/response.js";
-import { sendWelcomeEmail } from "../lib/mail.js";
+import { queueWelcomeEmail } from "../services/mailService.js";
 
 // Fields exposed to clients. Excludes internal behaviour-tracking arrays
 // (viewedProducts, cartEvents, searchKeywords, etc.) which are server-only intelligence.
@@ -104,19 +104,20 @@ export const syncUser = async (req, res) => {
 
     // Send welcome email for new users (non-blocking)
     if (isNewUser && user.emailAddress) {
-      sendWelcomeEmail({
+      queueWelcomeEmail({
         to: user.emailAddress,
         userName: firstName || fullName.split(' ')[0] || 'there',
       })
-        .then(() => {
-          logger.info('Welcome email sent successfully', {
+        .then((result) => {
+          logger.info('Welcome email dispatched', {
             requestId: req.requestId,
             userId: user._id,
             emailAddress: user.emailAddress,
+            queued: result?.queued,
           });
         })
         .catch((emailError) => {
-          logger.error('Failed to send welcome email', {
+          logger.error('Failed to dispatch welcome email', {
             requestId: req.requestId,
             userId: user._id,
             emailAddress: user.emailAddress,

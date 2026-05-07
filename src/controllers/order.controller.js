@@ -2,7 +2,7 @@ import Order from "../models/orders.model.js";
 import Merchant from "../models/merchant.model.js";
 import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
-import { sendOrderEmail } from "../lib/mail.js";
+import { queueOrderEmail } from "../services/mailService.js";
 import CommissionService from "../services/commission.service.js";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendNotFound, sendForbidden, sendPaginated, sendCreated } from "../lib/response.js";
@@ -231,8 +231,8 @@ export const createOrder = async (req, res) => {
   try {
     const { order, emailPayload } = await orderService.createOrder(userId, req.body, req.ip);
 
-    sendOrderEmail({ ...emailPayload, status: 'بانتظار التأكيد' }).catch((err) => {
-      logger.error('Failed to send order email', { requestId: req.requestId, error: err.message, orderNumber: order.orderNumber });
+    queueOrderEmail({ ...emailPayload, status: 'بانتظار التأكيد' }).catch((err) => {
+      logger.error('Failed to dispatch order email', { requestId: req.requestId, error: err.message, orderNumber: order.orderNumber });
     });
 
     handleOrderCreated(order._id).catch((err) => {
