@@ -856,46 +856,76 @@ export const sendBroadcast = async (req, res) => {
 
     const totalRecipients = userCount + merchantCount;
 
-    // Process broadcast asynchronously (don't await)
-    // Return immediately with estimated count
-    (async () => {
-      try {
-        if (target === 'users' || target === 'all') {
-          await notificationService.broadcastToUsers({
-            type,
-            title,
-            body,
-            deepLink,
-            metadata,
-            channel: 'push',
-          });
-        }
-
-        if (target === 'merchants' || target === 'all') {
-          await notificationService.broadcastToMerchants({
-            type,
-            title,
-            body,
-            deepLink,
-            metadata,
-            channel: 'push',
-          });
-        }
-
-        logger.info('Broadcast notification processed successfully', {
+    // Queue path: enqueue a single fanout job. The fanout worker reads the
+    // recipient list via a Mongo cursor and emits child push.send jobs so the
+    // producer never holds millions of IDs in memory.
+    let dispatchPath = 'sync';
+    if (process.env.ENABLE_QUEUE === 'true') {
+      const enqueued = await notificationService.enqueueBroadcast({
+        type,
+        title,
+        body,
+        deepLink,
+        metadata,
+        target,
+      });
+      if (enqueued) {
+        dispatchPath = 'queue';
+        logger.info('Broadcast enqueued for fanout', {
           type,
           target,
           estimatedRecipients: totalRecipients,
         });
-      } catch (error) {
-        logger.error('Failed to process broadcast notification asynchronously', {
-          error: error.message,
-          stack: error.stack,
+      } else {
+        logger.warn('Broadcast enqueue failed — falling back to sync dispatch', {
           type,
           target,
         });
       }
-    })();
+    }
+
+    // Sync path (flag off, or Redis unreachable). Preserves the legacy
+    // fire-and-forget IIFE behaviour exactly.
+    if (dispatchPath === 'sync') {
+      (async () => {
+        try {
+          if (target === 'users' || target === 'all') {
+            await notificationService.broadcastToUsers({
+              type,
+              title,
+              body,
+              deepLink,
+              metadata,
+              channel: 'push',
+            });
+          }
+
+          if (target === 'merchants' || target === 'all') {
+            await notificationService.broadcastToMerchants({
+              type,
+              title,
+              body,
+              deepLink,
+              metadata,
+              channel: 'push',
+            });
+          }
+
+          logger.info('Broadcast notification processed successfully', {
+            type,
+            target,
+            estimatedRecipients: totalRecipients,
+          });
+        } catch (error) {
+          logger.error('Failed to process broadcast notification asynchronously', {
+            error: error.message,
+            stack: error.stack,
+            type,
+            target,
+          });
+        }
+      })();
+    }
 
     // Return immediately with estimated count
     return sendSuccess(res, {
@@ -946,6 +976,27 @@ export const sendMarketingNotification = async (req, res) => {
       });
     }
 
+    // Queue path: enqueue a fanout marketing job and return immediately.
+    if (process.env.ENABLE_QUEUE === 'true') {
+      const enqueued = await notificationService.enqueueMarketing({
+        type,
+        title,
+        body,
+        deepLink,
+        metadata,
+        targetRecipients,
+      });
+      if (enqueued) {
+        return sendSuccess(res, {
+          data: { status: 'processing' },
+          message: 'Marketing notification is being processed in the background',
+        });
+      }
+      logger.warn('Marketing enqueue failed — falling back to sync dispatch', { type });
+    }
+
+    // Sync fallback (flag off, or Redis unreachable). Preserves legacy
+    // behaviour: createMarketingNotification awaits the sync push send.
     const notifications = await createMarketingNotification(type, {
       title,
       body,

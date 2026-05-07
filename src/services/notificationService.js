@@ -13,6 +13,52 @@ import { wrap } from '../lib/queue/jobShapes.js';
 const isQueueEnabled = () => process.env.ENABLE_QUEUE === 'true';
 
 /**
+ * Type → category and type → default-priority maps. Centralised here so the
+ * legacy sync path (`batchCreateNotifications`) and the queue-driven fanout
+ * path (`batchPersistQueuedNotifications`) stay in agreement.
+ */
+const TYPE_CATEGORY_MAP = Object.freeze({
+  ORDER_CREATED: 'transactional',
+  ORDER_ACCEPTED: 'transactional',
+  ORDER_SHIPPED: 'transactional',
+  ORDER_DELIVERED: 'transactional',
+  ORDER_CANCELLED: 'transactional',
+  REFUND_PROCESSED: 'transactional',
+  NEW_ORDER: 'merchant_alerts',
+  LOW_STOCK: 'merchant_alerts',
+  PRODUCT_APPROVED: 'merchant_alerts',
+  PRODUCT_REJECTED: 'merchant_alerts',
+  PAYOUT_STATUS: 'merchant_alerts',
+  CART_ABANDONED: 'behavioral',
+  VIEWED_NOT_PURCHASED: 'behavioral',
+  PRICE_DROPPED: 'behavioral',
+  BACK_IN_STOCK: 'behavioral',
+  NEW_ARRIVALS: 'marketing',
+  FLASH_SALE: 'marketing',
+  MERCHANT_PROMOTION: 'marketing',
+  PERSONALIZED_OFFER: 'marketing',
+});
+
+const TYPE_PRIORITY_MAP = Object.freeze({
+  ORDER_CREATED: 90,
+  ORDER_ACCEPTED: 85,
+  ORDER_SHIPPED: 80,
+  ORDER_DELIVERED: 75,
+  ORDER_CANCELLED: 70,
+  NEW_ORDER: 95,
+  LOW_STOCK: 60,
+  PRODUCT_APPROVED: 50,
+  PRODUCT_REJECTED: 55,
+  CART_ABANDONED: 40,
+  PRICE_DROPPED: 30,
+  BACK_IN_STOCK: 35,
+  FLASH_SALE: 45,
+  NEW_ARRIVALS: 20,
+  MERCHANT_PROMOTION: 15,
+  PERSONALIZED_OFFER: 25,
+});
+
+/**
  * Try to enqueue a job; on Redis failure, mark the notification 'failed' so the
  * maintenance DLQ sweep can pick it up later. Returns true on success.
  *
@@ -618,6 +664,104 @@ class NotificationService {
       notification.status = 'failed';
       await notification.save();
       throw error;
+    }
+  }
+
+  /**
+   * Producer-side: enqueue a fanout broadcast job. Returns immediately.
+   * Worker reads recipients in chunks and emits child push.send jobs, so the
+   * HTTP request never blocks on millions of users.
+   *
+   * Falls back to `false` if Redis is unreachable; the caller should use the
+   * legacy sync path in that case.
+   */
+  async enqueueBroadcast({ type, title, body, deepLink, metadata, target, chunkSize }) {
+    return enqueueOrFallback(
+      QUEUE_NAMES.FANOUT,
+      JOB_NAMES.FANOUT_BROADCAST,
+      { type, title, body, deepLink, metadata, target, chunkSize },
+      // Dedup identical broadcasts within the queue's failed-job retention
+      // window — same admin double-click won't notify users twice.
+      { jobId: `fanout:broadcast:${type}:${target}:${title}` }
+    );
+  }
+
+  /**
+   * Producer-side: enqueue a fanout marketing job. `targetRecipients` may be:
+   *   - null         → broadcast to all users
+   *   - string[]     → send to a specific list of user IDs
+   *   - { segment }  → resolve via segment criteria (worker handles)
+   */
+  async enqueueMarketing({ type, title, body, deepLink, metadata, targetRecipients, chunkSize }) {
+    return enqueueOrFallback(
+      QUEUE_NAMES.FANOUT,
+      JOB_NAMES.FANOUT_MARKETING,
+      { type, title, body, deepLink, metadata, targetRecipients, chunkSize },
+      { jobId: `fanout:marketing:${type}:${title}` }
+    );
+  }
+
+  /**
+   * Worker-side helper: bulk-insert notifications with status='queued' and
+   * return the persisted documents (with their _ids populated). Skips the
+   * legacy sync push dispatch — the fanout worker enqueues child push.send
+   * jobs explicitly.
+   *
+   * Uses ordered:false so dedup-key collisions don't abort the whole chunk.
+   * Returns only the docs that actually inserted, so callers don't enqueue
+   * push jobs for missing notifications.
+   */
+  async batchPersistQueuedNotifications(notificationData, recipientIds, recipientType) {
+    if (!recipientIds.length) return [];
+
+    const recipientModel = recipientType === 'merchant' ? 'Merchant' : 'User';
+    const category = TYPE_CATEGORY_MAP[notificationData.type] || 'transactional';
+    const priority =
+      notificationData.priority ?? TYPE_PRIORITY_MAP[notificationData.type] ?? 50;
+    const now = new Date();
+
+    const docs = recipientIds.map((recipientId) => ({
+      _id: new mongoose.Types.ObjectId(),
+      type: notificationData.type,
+      recipientType,
+      recipientId,
+      recipientModel,
+      title: notificationData.title,
+      body: notificationData.body,
+      deepLink: notificationData.deepLink || null,
+      metadata: notificationData.metadata || {},
+      channel: 'push',
+      priority,
+      category,
+      isRead: false,
+      status: 'queued',
+      sentAt: null,
+      deduplicationKey: `${notificationData.type}_${recipientId}_${JSON.stringify(notificationData.metadata || {})}`,
+      expiresAt: notificationData.expiresAt || null,
+      merchantId: notificationData.merchantId || null,
+      createdAt: now,
+      updatedAt: now,
+    }));
+
+    try {
+      await Notification.insertMany(docs, { ordered: false });
+      return docs;
+    } catch (err) {
+      // Mongoose surfaces partial-failure info on `writeErrors`; everything
+      // else is fatal.
+      const writeErrors = err?.writeErrors || err?.result?.result?.writeErrors;
+      if (Array.isArray(writeErrors) && writeErrors.length) {
+        const failedIndices = new Set(writeErrors.map((e) => e.index));
+        const inserted = docs.filter((_, i) => !failedIndices.has(i));
+        logger.warn('Fanout persist had dedup collisions, continuing with the rest', {
+          type: notificationData.type,
+          recipientType,
+          attempted: docs.length,
+          skipped: failedIndices.size,
+        });
+        return inserted;
+      }
+      throw err;
     }
   }
 

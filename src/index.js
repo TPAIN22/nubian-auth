@@ -35,6 +35,7 @@ import marketerAdminRoutes from './routes/marketer.route.js';
 import affiliateRoutes from './routes/affiliate.route.js';
 import referralTrackingRoutes from './routes/referralTracking.route.js';
 import adminCommissionRoutes from './routes/adminCommission.route.js';
+import queuesAdminRoutes from './routes/queues.admin.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { currencyMiddleware } from './middleware/currency.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
@@ -70,10 +71,19 @@ const app = express();
 app.use(enforceHTTPS);
 
 // 🧩 CORS Configuration - MUST BE FIRST
-const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000,http://localhost:3001')
+const BAKED_IN_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://www.nubian-sd.store',
+  'https://nubian-sd.store',
+];
+
+const envOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...BAKED_IN_ORIGINS, ...envOrigins]));
 
 logger.info('CORS: Configured for specific origins', { origins: allowedOrigins });
 
@@ -82,6 +92,7 @@ app.use(cors({
     // Allow requests with no origin (mobile apps, server-to-server, curl)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    logger.warn('CORS: blocked origin', { origin });
     return callback(new Error(`CORS: origin '${origin}' not allowed`));
   },
   credentials: true,
@@ -215,6 +226,7 @@ app.use('/api/admin/marketers', marketerAdminRoutes);
 app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/track', referralTrackingRoutes);
 app.use('/api/admin/commissions', adminCommissionRoutes);
+app.use('/api/admin/queues', queuesAdminRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {
