@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   applyToBecomeMerchant,
+  withdrawMyApplication,
   getMyMerchantStatus,
   getAllMerchants,
   getMerchantById,
@@ -27,6 +28,7 @@ const router = express.Router();
 
 // Public routes (authenticated users can apply)
 router.post('/apply', isAuthenticated, validateMerchantApplication, applyToBecomeMerchant);
+router.delete('/my-application', isAuthenticated, withdrawMyApplication);
 router.get('/my-status', isAuthenticated, getMyMerchantStatus);
 router.get('/list', getPublicMerchants); // New Public Endpoint
 

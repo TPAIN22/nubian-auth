@@ -184,6 +184,102 @@ export const applyToBecomeMerchant = async (req, res) => {
 };
 
 /**
+ * Withdraw the current user's own merchant application.
+ *
+ * Lets a user self-clean their pending/rejected/needs_revision row so they can
+ * re-apply without admin intervention. Approved or suspended accounts cannot
+ * be self-deleted (those have side effects — products listed, orders placed,
+ * balances) and must go through the admin flow.
+ *
+ * Cascades the same way `deleteMerchant` does for consistency.
+ */
+export const withdrawMyApplication = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+
+    if (!userId) {
+      return sendUnauthorized(res, "Authentication required");
+    }
+
+    const merchant = await Merchant.findOne({ userId });
+
+    if (!merchant) {
+      // Idempotent: nothing to withdraw is fine.
+      logger.info('Withdraw application: no record found (no-op)', {
+        requestId: req.requestId,
+        userId,
+      });
+      return sendSuccess(res, {
+        data: { withdrawn: false },
+        message: 'No merchant application to withdraw',
+      });
+    }
+
+    // Hard guardrails: don't let a user self-delete an approved or suspended
+    // account. Those carry products, orders, balances — admin only.
+    const SELF_DELETABLE = new Set(['pending', 'rejected', 'needs_revision']);
+    if (!SELF_DELETABLE.has(merchant.status)) {
+      logger.warn('Withdraw application blocked by status', {
+        requestId: req.requestId,
+        userId,
+        merchantId: merchant._id.toString(),
+        status: merchant.status,
+      });
+      return sendError(res, {
+        message: `Cannot withdraw an application in state "${merchant.status}". Contact support.`,
+        code: 'WITHDRAW_FORBIDDEN',
+        statusCode: 409,
+        details: {
+          status: merchant.status,
+          messageAr: 'لا يمكن سحب الطلب في حالته الحالية. يرجى التواصل مع الدعم.',
+        },
+      });
+    }
+
+    // Best-effort cascade. There shouldn't be live products at these statuses
+    // (you can't list products until approved), but defend in depth.
+    try {
+      await Product.updateMany(
+        { merchant: merchant._id, deletedAt: null },
+        { $set: { isActive: false } },
+      );
+    } catch (cascadeErr) {
+      logger.error('Withdraw application: product cascade failed (continuing)', {
+        requestId: req.requestId,
+        userId,
+        merchantId: merchant._id.toString(),
+        error: cascadeErr.message,
+      });
+    }
+
+    await Merchant.deleteOne({ _id: merchant._id });
+
+    logger.info('Merchant application withdrawn by user', {
+      requestId: req.requestId,
+      userId,
+      merchantId: merchant._id.toString(),
+      previousStatus: merchant.status,
+    });
+
+    return sendSuccess(res, {
+      data: {
+        withdrawn: true,
+        merchantId: merchant._id,
+        previousStatus: merchant.status,
+      },
+      message: 'Application withdrawn successfully',
+    });
+  } catch (error) {
+    logger.error('Error withdrawing merchant application', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
  * Get merchant application status for current user
  */
 export const getMyMerchantStatus = async (req, res) => {
