@@ -148,17 +148,44 @@ export const applyToBecomeMerchant = async (req, res) => {
           userId,
           duplicateField,
           existingStatus: concurrent?.status,
+          mineFound: Boolean(concurrent),
         });
 
-        const conflict = APPLY_CONFLICTS[concurrent?.status] || APPLY_CONFLICTS.pending;
+        // If we found the caller's own row, this is a real conflict — return
+        // the appropriate status-based message.
+        if (concurrent) {
+          const conflict =
+            APPLY_CONFLICTS[concurrent.status] || APPLY_CONFLICTS.pending;
+          return sendError(res, {
+            message: conflict.message,
+            code: conflict.code,
+            statusCode: 409,
+            details: {
+              status: concurrent.status,
+              duplicateField,
+              messageAr: conflict.messageAr,
+            },
+          });
+        }
+
+        // No row matches this userId, but Mongo still rejected the insert.
+        // That means a UNIQUE INDEX exists on a field the schema doesn't
+        // populate — usually a leftover from a renamed field (e.g. clerkId →
+        // userId). Surface that truthfully so the operator can drop the
+        // stale index. DO NOT pretend the user has a pending application.
+        logger.error('Merchant insert blocked by stale unique index', {
+          requestId: req.requestId,
+          userId,
+          duplicateField,
+          hint: `Drop the stale unique index "${duplicateField}_1" on merchantapplications: db.merchantapplications.dropIndex("${duplicateField}_1")`,
+        });
         return sendError(res, {
-          message: conflict.message,
-          code: conflict.code,
-          statusCode: 409,
+          message: `Database has a stale unique index on field "${duplicateField}" that the current schema does not populate. Drop the index and retry.`,
+          code: 'STALE_UNIQUE_INDEX',
+          statusCode: 500,
           details: {
-            status: concurrent?.status,
             duplicateField,
-            messageAr: conflict.messageAr,
+            messageAr: 'هناك خلل في إعدادات قاعدة البيانات. يرجى التواصل مع الدعم الفني.',
           },
         });
       }
