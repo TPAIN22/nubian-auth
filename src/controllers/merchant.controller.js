@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Merchant from "../models/merchant.model.js";
 import Product from "../models/product.model.js";
 import Review from "../models/reviews.model.js";
@@ -271,6 +272,70 @@ export const withdrawMyApplication = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error withdrawing merchant application', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Diagnostic: prove which database the running backend is talking to and
+ * whether a merchant row exists for the caller's clerkId. Use this when the
+ * apply endpoint claims a row exists but mongosh doesn't see one — it almost
+ * always means the backend is connected to a different DB/cluster.
+ *
+ * No PII other than the caller's own row (and only if they are the owner).
+ */
+export const merchantDiagnostic = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    if (!userId) return sendUnauthorized(res, 'Authentication required');
+
+    const conn = mongoose.connection;
+    const collectionName = Merchant.collection?.collectionName ?? 'merchantapplications';
+
+    const totalMerchants = await Merchant.estimatedDocumentCount();
+    const myRow = await Merchant.findOne({ userId }).lean();
+
+    const redactedHost = (() => {
+      // Don't echo the full URI; just the host so the user can match it to
+      // whatever they're connected to in mongosh.
+      const host = conn.host || conn.client?.s?.options?.hosts?.[0]?.host || null;
+      const port = conn.port || conn.client?.s?.options?.hosts?.[0]?.port || null;
+      if (!host) return null;
+      return port ? `${host}:${port}` : host;
+    })();
+
+    return sendSuccess(res, {
+      data: {
+        clerkUserId: userId,
+        mongo: {
+          databaseName: conn.name || conn.db?.databaseName || null,
+          host: redactedHost,
+          readyState: conn.readyState, // 1 = connected
+          collectionName,
+        },
+        merchantApplications: {
+          totalCount: totalMerchants,
+          mineExists: Boolean(myRow),
+          mine: myRow
+            ? {
+                _id: myRow._id,
+                userId: myRow.userId,
+                storeName: myRow.storeName,
+                status: myRow.status,
+                createdAt: myRow.createdAt,
+                updatedAt: myRow.updatedAt,
+              }
+            : null,
+        },
+      },
+      message: 'Merchant diagnostic snapshot',
+    });
+  } catch (error) {
+    logger.error('Error in merchant diagnostic', {
       requestId: req.requestId,
       error: error.message,
       stack: error.stack,
