@@ -8,27 +8,69 @@ import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden, sendPaginated } from '../lib/response.js';
 import { queueMerchantSuspensionEmail, queueMerchantUnsuspensionEmail } from '../services/mailService.js';
 
+// Statuses that allow a user to (re)submit an application by overwriting in place.
+// `needs_revision` and `rejected` are explicitly user-actionable: the dashboard
+// pending page already routes both back to /merchant/apply, so the controller
+// must accept the resubmission rather than 409.
+const RESUBMITTABLE_STATUSES = new Set(['needs_revision', 'rejected']);
+
+// Per-status messaging for the apply endpoint. Keeps Arabic/English in lock-step
+// and gives the dashboard a stable error code to switch on.
+const APPLY_CONFLICTS = {
+  pending: {
+    code: 'APPLICATION_PENDING',
+    message: 'You already have a merchant application under review.',
+    messageAr: 'لديك طلب قيد المراجعة بالفعل.',
+  },
+  approved: {
+    code: 'MERCHANT_APPROVED',
+    message: 'Your merchant account is already approved.',
+    messageAr: 'حسابك التجاري معتمد بالفعل.',
+  },
+  suspended: {
+    code: 'MERCHANT_SUSPENDED',
+    message: 'Your merchant account is suspended. Please contact support.',
+    messageAr: 'تم تعليق حسابك التجاري. يرجى التواصل مع الدعم.',
+  },
+};
+
 /**
  * Apply to become a merchant
- * Any authenticated user can apply
+ * Any authenticated user can apply. Resubmits in place when the existing
+ * application is in needs_revision or rejected state.
  */
 export const applyToBecomeMerchant = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    
+
     if (!userId) {
       return sendUnauthorized(res, "Authentication required");
     }
 
     const existingMerchant = await Merchant.findOne({ userId });
 
-    // Block re-submission for any non-revision status; needs_revision is treated as resubmit.
-    if (existingMerchant && existingMerchant.status !== 'needs_revision') {
+    if (existingMerchant && !RESUBMITTABLE_STATUSES.has(existingMerchant.status)) {
+      const conflict = APPLY_CONFLICTS[existingMerchant.status] || {
+        code: 'APPLICATION_CONFLICT',
+        message: `Application is in state "${existingMerchant.status}" and cannot be resubmitted.`,
+        messageAr: 'لا يمكن إعادة تقديم الطلب في حالته الحالية.',
+      };
+
+      logger.info('Merchant application blocked by existing record', {
+        requestId: req.requestId,
+        userId,
+        existingStatus: existingMerchant.status,
+        code: conflict.code,
+      });
+
       return sendError(res, {
-        message: "You already have a merchant application",
-        code: 'DUPLICATE_APPLICATION',
+        message: conflict.message,
+        code: conflict.code,
         statusCode: 409,
-        details: { status: existingMerchant.status },
+        details: {
+          status: existingMerchant.status,
+          messageAr: conflict.messageAr,
+        },
       });
     }
 
@@ -43,6 +85,9 @@ export const applyToBecomeMerchant = async (req, res) => {
         message: "Required fields: storeName, ownerName, phone, email, merchantType, nationalId, iban, description, city",
         code: 'VALIDATION_ERROR',
         statusCode: 400,
+        details: {
+          messageAr: 'يرجى تعبئة جميع الحقول المطلوبة.',
+        },
       });
     }
 
@@ -56,12 +101,15 @@ export const applyToBecomeMerchant = async (req, res) => {
         productSamples: productSamples || [],
         status: 'pending',
         rejectionReason: undefined,
+        revisionNotes: undefined,
       });
       merchant = await existingMerchant.save();
 
       logger.info('Merchant application resubmitted', {
         requestId: req.requestId,
         userId,
+        merchantId: merchant._id.toString(),
+        previousStatus: existingMerchant.status,
         storeName,
       });
 
@@ -71,21 +119,44 @@ export const applyToBecomeMerchant = async (req, res) => {
       });
     }
 
-    merchant = new Merchant({
-      userId,
-      storeName, ownerName, phone, email, merchantType,
-      nationalId, crNumber, iban, logoUrl, description,
-      categories: categories || [],
-      city,
-      productSamples: productSamples || [],
-      status: 'pending',
-    });
-
-    await merchant.save();
+    try {
+      merchant = await Merchant.create({
+        userId,
+        storeName, ownerName, phone, email, merchantType,
+        nationalId, crNumber, iban, logoUrl, description,
+        categories: categories || [],
+        city,
+        productSamples: productSamples || [],
+        status: 'pending',
+      });
+    } catch (createErr) {
+      // Race condition: another request from the same user created a Merchant
+      // between our findOne and create. Treat as duplicate gracefully.
+      if (createErr?.code === 11000 && createErr?.keyPattern?.userId) {
+        const concurrent = await Merchant.findOne({ userId });
+        logger.warn('Merchant application race resolved via duplicate-key recovery', {
+          requestId: req.requestId,
+          userId,
+          existingStatus: concurrent?.status,
+        });
+        const conflict = APPLY_CONFLICTS[concurrent?.status] || APPLY_CONFLICTS.pending;
+        return sendError(res, {
+          message: conflict.message,
+          code: conflict.code,
+          statusCode: 409,
+          details: {
+            status: concurrent?.status,
+            messageAr: conflict.messageAr,
+          },
+        });
+      }
+      throw createErr;
+    }
 
     logger.info('Merchant application submitted', {
       requestId: req.requestId,
       userId,
+      merchantId: merchant._id.toString(),
       storeName,
     });
 
@@ -808,6 +879,8 @@ export const unsuspendMerchant = async (req, res) => {
 
 /**
  * Delete merchant (Admin only)
+ * Cascades: deactivates all merchant products so they stop appearing in shop.
+ * Orders keep their merchant snapshot for audit/refund flows.
  */
 export const deleteMerchant = async (req, res) => {
   try {
@@ -830,18 +903,124 @@ export const deleteMerchant = async (req, res) => {
       deletedBy: adminId,
     });
 
-    // Delete the merchant
-    await Merchant.findByIdAndDelete(id);
+    // Cascade: deactivate products first so the storefront stops showing them
+    // even if the merchant delete fails afterward.
+    try {
+      const productCascade = await Product.updateMany(
+        { merchant: merchant._id, deletedAt: null },
+        { $set: { isActive: false } },
+      );
+      logger.info('Merchant deletion: products deactivated', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        modifiedCount: productCascade.modifiedCount,
+      });
+    } catch (cascadeErr) {
+      logger.error('Failed to deactivate products during merchant deletion', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: cascadeErr.message,
+      });
+      // Don't block the delete — admin asked for it explicitly.
+    }
+
+    await Merchant.deleteOne({ _id: merchant._id });
 
     logger.info('Merchant deleted', {
       requestId: req.requestId,
       merchantId: id,
+      userId: merchant.userId,
       deletedBy: adminId,
     });
 
     return sendSuccess(res, { data: { id }, message: "Merchant deleted successfully" });
   } catch (error) {
     logger.error('Error deleting merchant', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Purge merchant trail by Clerk userId (Admin only).
+ *
+ * Recovery tool for the "I deleted the user but they still see لديك طلب موجود"
+ * scenario: when a Clerk user has been removed manually (not via the webhook)
+ * or when the user.deleted webhook failed, an orphan Merchant row can remain
+ * with a userId whose unique index blocks future applications. This endpoint
+ * removes that orphan and deactivates any products referencing it.
+ *
+ * Idempotent: returns 200 with `purged: false` if nothing existed to clean.
+ */
+export const purgeMerchantByClerkId = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { clerkId } = req.params;
+
+    if (!clerkId || typeof clerkId !== 'string') {
+      return sendError(res, {
+        message: 'clerkId path parameter is required',
+        code: 'VALIDATION_ERROR',
+        statusCode: 400,
+      });
+    }
+
+    const merchant = await Merchant.findOne({ userId: clerkId });
+
+    if (!merchant) {
+      logger.info('Merchant purge: no record found for clerkId (no-op)', {
+        requestId: req.requestId,
+        clerkId,
+        adminId,
+      });
+      return sendSuccess(res, {
+        data: { purged: false, clerkId },
+        message: 'No merchant record found for this user',
+      });
+    }
+
+    let productsDeactivated = 0;
+    try {
+      const cascade = await Product.updateMany(
+        { merchant: merchant._id, deletedAt: null },
+        { $set: { isActive: false } },
+      );
+      productsDeactivated = cascade.modifiedCount || 0;
+    } catch (cascadeErr) {
+      logger.error('Merchant purge: product cascade failed (continuing)', {
+        requestId: req.requestId,
+        clerkId,
+        merchantId: merchant._id,
+        error: cascadeErr.message,
+      });
+    }
+
+    await Merchant.deleteOne({ _id: merchant._id });
+
+    logger.info('Merchant purged by clerkId', {
+      requestId: req.requestId,
+      clerkId,
+      merchantId: merchant._id.toString(),
+      previousStatus: merchant.status,
+      productsDeactivated,
+      purgedBy: adminId,
+    });
+
+    return sendSuccess(res, {
+      data: {
+        purged: true,
+        clerkId,
+        merchantId: merchant._id,
+        previousStatus: merchant.status,
+        productsDeactivated,
+      },
+      message: 'Merchant trail purged successfully',
+    });
+  } catch (error) {
+    logger.error('Error purging merchant by clerkId', {
       requestId: req.requestId,
       error: error.message,
       stack: error.stack,

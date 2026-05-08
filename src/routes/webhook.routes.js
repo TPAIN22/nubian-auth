@@ -1,5 +1,7 @@
 import express from 'express';
 import User from '../models/user.model.js';
+import Merchant from '../models/merchant.model.js';
+import Product from '../models/product.model.js';
 import { Webhook } from 'svix';
 import logger from '../lib/logger.js';
 
@@ -113,9 +115,11 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
 
       case 'user.deleted':
         {
-          // Soft-delete: anonymise PII but keep the document so that all
-          // Orders, Tickets, Reviews, and Addresses referencing this user._id
-          // remain intact. Hard-deleting leaves dangling ObjectIds everywhere.
+          // Soft-delete the User to preserve Order/Ticket/Review FK integrity,
+          // BUT cascade-clean the Merchant trail so the same human can re-apply
+          // after re-signing up (which gives them a brand-new clerkId, but if
+          // an admin has manually deleted the Mongo User row they may keep the
+          // old clerkId; in either case, leftover Merchant docs cannot block).
           const clerkId = data.id;
           logger.info('Processing user.deleted event', { clerkId });
 
@@ -138,6 +142,40 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
             });
           } else {
             logger.warn('User deletion: user not found in database', { clerkId });
+          }
+
+          // ── Cascade: clean up merchant trail ────────────────────────────
+          // The unique index on Merchant.userId would otherwise block any
+          // future application from this clerkId (or from an admin re-creating
+          // the same Mongo User row). Products are deactivated rather than
+          // deleted to preserve order history; orders keep their snapshot.
+          try {
+            const merchant = await Merchant.findOne({ userId: clerkId });
+            if (merchant) {
+              const productCascade = await Product.updateMany(
+                { merchant: merchant._id, deletedAt: null },
+                { $set: { isActive: false } },
+              );
+
+              await Merchant.deleteOne({ _id: merchant._id });
+
+              logger.info('Merchant cascade-cleaned on user.deleted', {
+                clerkId,
+                merchantId: merchant._id.toString(),
+                merchantStatus: merchant.status,
+                productsDeactivated: productCascade.modifiedCount,
+              });
+            } else {
+              logger.info('user.deleted: no merchant record to clean', { clerkId });
+            }
+          } catch (cascadeErr) {
+            // Don't fail the webhook — Clerk has already deleted the user.
+            // The orphan can be cleaned later via admin purge endpoint.
+            logger.error('Failed to cascade-clean merchant on user.deleted', {
+              clerkId,
+              error: cascadeErr.message,
+              stack: process.env.NODE_ENV === 'development' ? cascadeErr.stack : undefined,
+            });
           }
         }
         break;

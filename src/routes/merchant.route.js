@@ -13,6 +13,7 @@ import {
   suspendMerchant,
   unsuspendMerchant,
   deleteMerchant,
+  purgeMerchantByClerkId,
   getMyMerchantProfile,
   updateMerchantProfile,
   getPublicMerchants,
@@ -48,6 +49,11 @@ router.patch('/:id/request-revision', isAuthenticated, isAdmin, ...validateObjec
 router.patch('/:id/suspend', isAuthenticated, isAdmin, ...validateObjectId('id'), validateMerchantSuspension, suspendMerchant);
 router.patch('/:id/unsuspend', isAuthenticated, isAdmin, ...validateObjectId('id'), unsuspendMerchant);
 router.delete('/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), deleteMerchant);
+
+// Recovery: purge orphan merchant trail by Clerk userId. Used when the user
+// was removed manually or the user.deleted webhook failed and a stale Merchant
+// row is blocking re-application. Idempotent.
+router.delete('/admin/purge/:clerkId', isAuthenticated, isAdmin, purgeMerchantByClerkId);
 
 export default router;
 
