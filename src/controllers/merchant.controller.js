@@ -130,15 +130,25 @@ export const applyToBecomeMerchant = async (req, res) => {
         status: 'pending',
       });
     } catch (createErr) {
-      // Race condition: another request from the same user created a Merchant
-      // between our findOne and create. Treat as duplicate gracefully.
-      if (createErr?.code === 11000 && createErr?.keyPattern?.userId) {
+      // Any duplicate-key error at this point means another row already exists
+      // — either a race against another request from the same user, or a stale
+      // legacy unique index (e.g. an old `email_1` from a previous schema). In
+      // every case we want to return a clean conflict envelope, not let it
+      // bubble up as the generic DUPLICATE_ENTRY from the global error handler.
+      if (createErr?.code === 11000) {
+        const duplicateField =
+          Object.keys(createErr.keyPattern || {})[0] ||
+          Object.keys(createErr.keyValue || {})[0] ||
+          'unknown';
         const concurrent = await Merchant.findOne({ userId });
-        logger.warn('Merchant application race resolved via duplicate-key recovery', {
+
+        logger.warn('Merchant application duplicate-key recovery', {
           requestId: req.requestId,
           userId,
+          duplicateField,
           existingStatus: concurrent?.status,
         });
+
         const conflict = APPLY_CONFLICTS[concurrent?.status] || APPLY_CONFLICTS.pending;
         return sendError(res, {
           message: conflict.message,
@@ -146,6 +156,7 @@ export const applyToBecomeMerchant = async (req, res) => {
           statusCode: 409,
           details: {
             status: concurrent?.status,
+            duplicateField,
             messageAr: conflict.messageAr,
           },
         });
