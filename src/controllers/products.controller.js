@@ -697,6 +697,19 @@ export const createProduct = async (req, res) => {
 
     if (req.merchant) req.body.merchant = req.merchant._id;
 
+    // Every product must be attributable to a merchant — order placement falls
+    // back to a "platform" bucket when one is missing, which silently distorts
+    // merchant revenue. Admins creating products on behalf of a merchant must
+    // pass the merchant id explicitly.
+    if (!req.body.merchant) {
+      return sendError(res, {
+        message: 'merchant is required',
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        details: [{ field: 'merchant', message: 'A merchant id is required when creating a product' }],
+      });
+    }
+
     if (!req.body.category) return sendError(res, { message: 'Category is required', statusCode: 400, code: 'VALIDATION_ERROR' });
     if (!req.body.images || !Array.isArray(req.body.images) || req.body.images.length === 0) {
       return sendError(res, { message: 'At least one image is required', statusCode: 400, code: 'VALIDATION_ERROR' });

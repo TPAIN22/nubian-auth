@@ -165,16 +165,18 @@ export async function calculateProductScores() {
   // 1. Activity stats for all products in one aggregation
   const activityMap = await aggregateActivity(since7d, since24h);
 
-  // 2. Fetch active products (only fields needed for scoring)
+  // 2. Fetch active products (only fields needed for scoring).
+  // computeScores filters inactive variants itself, so we don't need $elemMatch
+  // here — combining $elemMatch with sibling 'variants.isActive' projections
+  // triggers Mongo's "Path collision at variants.isActive" error.
   const products = await Product.find(
     { isActive: true, deletedAt: null },
     {
       averageRating: 1,
       featured: 1,
       createdAt: 1,
-      variants: { $elemMatch: { isActive: { $ne: false } } },
-      'variants.isActive': 1,
-      'variants.merchantPrice': 1,
+      'variants.isActive':         1,
+      'variants.merchantPrice':    1,
       'variants.merchantDiscount': 1,
     }
   ).lean();
