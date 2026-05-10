@@ -14,11 +14,20 @@ import { ServiceError } from "../lib/errors.js";
 // Always reads from the price snapshot stored on the order item — never the
 // current product price — so completed orders are immutable from the customer's
 // perspective even after pricing or discounts change.
-function formatOrderProduct(item) {
+function formatOrderProduct(item, order) {
   if (!item.product) return null;
 
-  const snapshotFinalPrice    = item.price || 0;
-  const snapshotMerchantPrice = item.merchantPrice || 0;
+  // Prices stored on order line items are always in the BASE currency (USD).
+  // Apply the order's locked-in fx snapshot so the order screen shows what
+  // the customer actually paid (and matches what the cart preview showed).
+  const fxRate     = (order?.fxSnapshot?.rate && order.fxSnapshot.rate > 0)
+    ? order.fxSnapshot.rate
+    : 1;
+  const currencyCode = order?.currencyCodeSelected || order?.fxSnapshot?.base || 'USD';
+  const toDisplay  = (n) => Math.round((Number(n) || 0) * fxRate * 100) / 100;
+
+  const snapshotFinalPrice    = toDisplay(item.price);
+  const snapshotMerchantPrice = toDisplay(item.merchantPrice);
   const snapshotMarkup        = item.nubianMarkup || 10;
   const snapshotDynamic       = item.dynamicMarkup || 0;
 
@@ -28,8 +37,9 @@ function formatOrderProduct(item) {
     ? snapshotMerchantPrice * (1 + snapshotMarkup / 100)
     : snapshotFinalPrice;
 
-  const displayOriginalPrice = item.originalPrice > 0
-    ? item.originalPrice
+  const rawOriginal = item.originalPrice > 0 ? toDisplay(item.originalPrice) : 0;
+  const displayOriginalPrice = rawOriginal > 0
+    ? rawOriginal
     : (fallbackOriginal > snapshotFinalPrice ? fallbackOriginal : snapshotFinalPrice);
 
   const displayDiscountPercentage = item.discountPercentage > 0
@@ -39,7 +49,7 @@ function formatOrderProduct(item) {
         : 0);
 
   const displayDiscountAmount = item.discountAmount > 0
-    ? item.discountAmount
+    ? toDisplay(item.discountAmount)
     : Math.max(0, displayOriginalPrice - snapshotFinalPrice);
 
   return {
@@ -54,6 +64,7 @@ function formatOrderProduct(item) {
     discountAmount:     displayDiscountAmount,
     discountPercentage: displayDiscountPercentage,
     hasDiscount:        displayDiscountAmount > 0,
+    currencyCode,
     pricingBreakdown: {
       merchantPrice: snapshotMerchantPrice,
       nubianMarkup:  snapshotMarkup,
@@ -201,7 +212,7 @@ export const getUserOrders = async (req, res) => {
       ...order.toObject(),
       transferProof:  order.transferProof || null,
       productsCount:  order.products.length,
-      productsDetails: order.products.map(formatOrderProduct).filter(Boolean),
+      productsDetails: order.products.map((p) => formatOrderProduct(p, order)).filter(Boolean),
     }));
 
     return sendPaginated(res, { data: enhancedOrders, page, limit, total });
@@ -297,7 +308,7 @@ export const getOrders = async (req, res) => {
         email: order.user?.emailAddress || "غير محدد",
         phone: order.phoneNumber,
       },
-      productsDetails: order.products.map(formatOrderProduct).filter(Boolean),
+      productsDetails: order.products.map((p) => formatOrderProduct(p, order)).filter(Boolean),
       orderSummary: {
         subtotal: order.totalAmount,
         discount: order.discountAmount,
@@ -334,7 +345,7 @@ export const getOrderById = async (req, res) => {
       ...order.toObject(),
       transferProof:   order.transferProof || null,
       productsCount:   order.products.length,
-      productsDetails: order.products.map(formatOrderProduct).filter(Boolean),
+      productsDetails: order.products.map((p) => formatOrderProduct(p, order)).filter(Boolean),
       orderSummary: {
         subtotal: order.totalAmount,
         discount: order.discountAmount,
