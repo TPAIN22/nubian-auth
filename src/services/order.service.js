@@ -6,6 +6,7 @@ import Currency from '../models/currency.model.js';
 import Marketer from '../models/marketer.model.js';
 import ReferralTrackingLog from '../models/referralTrackingLog.model.js';
 import CouponUsage from '../models/couponUsage.model.js';
+import Product from '../models/product.model.js';
 import User from '../models/user.model.js';
 import couponService from './coupon.service.js';
 import { getFxSnapshotForOrder, applyPsychologicalPricing } from './currency.service.js';
@@ -94,12 +95,6 @@ class OrderService {
           'PRODUCT_UNAVAILABLE'
         );
       }
-      if (item.product.stock < item.quantity) {
-        throw new ServiceError(
-          `"${item.product.name}" only has ${item.product.stock} unit(s) in stock`,
-          'INSUFFICIENT_STOCK'
-        );
-      }
 
       let itemAttributes = {};
       if (item.attributes instanceof Map) {
@@ -111,6 +106,19 @@ class OrderService {
       }
 
       const itemVariant = item.variantId ? item.product.variants?.id(item.variantId) : null;
+
+      // Stock check: prefer variant stock when a variant is selected. The
+      // product-level `stock` field is a denormalized rollup of active
+      // variants and can drift (variants edited via findOneAndUpdate skip
+      // the pre-save hook, and the rollup excludes inactive variants),
+      // which would falsely block an order whose variant actually has units.
+      const availableStock = itemVariant ? (itemVariant.stock || 0) : (item.product.stock || 0);
+      if (availableStock < item.quantity) {
+        throw new ServiceError(
+          `"${item.product.name}" only has ${availableStock} unit(s) in stock`,
+          'INSUFFICIENT_STOCK'
+        );
+      }
 
       // Authoritative price snapshot — every order line records what the engine
       // returned at checkout time, so completed orders never re-price.
@@ -149,9 +157,9 @@ class OrderService {
           product:       item.product._id,
           quantity:      item.quantity,
           price:         itemPrice,
-          merchantPrice: itemMerchantPrice,
-          nubianMarkup:  itemNubianMarkup,
-          dynamicMarkup: itemDynamicMarkup,
+          merchantPrice: pricing.basePrice,
+          nubianMarkup:  pricing.breakdown.nubianMarkup,
+          dynamicMarkup: pricing.breakdown.dynamicMarkup,
         });
       } else {
         platformTotalAmount += itemTotal;
@@ -160,7 +168,7 @@ class OrderService {
           name:          item.product.name,
           quantity:      item.quantity,
           price:         itemPrice,
-          merchantPrice: itemMerchantPrice,
+          merchantPrice: pricing.basePrice,
           total:         itemTotal,
         });
       }
@@ -440,6 +448,116 @@ class OrderService {
     };
 
     return { order, emailPayload };
+  }
+
+  // ── Quote (preview totals, no DB write) ─────────────────────────────────────
+
+  /**
+   * Compute checkout totals + per-merchant breakdown for the given items
+   * without creating an order. Used by the mobile checkout sheet so the user
+   * sees authoritative pricing before confirming.
+   *
+   * Shipping is not yet modelled — fee is 0 and rate is null. Wire in a real
+   * ShippingRate lookup here once the model exists.
+   *
+   * @param {Object} userDoc       - The User document (req.appUser)
+   * @param {string} addressId     - Address ObjectId
+   * @param {Array}  items         - [{ productId, quantity, variantId?, attributes? }]
+   * @param {string} currencyCode  - Currency to report in the response
+   */
+  async quoteOrder(userDoc, addressId, items, currencyCode = 'USD') {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new ServiceError('items must be a non-empty array', 'EMPTY_ITEMS');
+    }
+
+    const address = await Address.findOne({ _id: addressId, user: userDoc._id });
+    if (!address) {
+      throw new ServiceError('Address not found', 'ADDRESS_NOT_FOUND', 400, [
+        { field: 'addressId', message: 'Invalid or inaccessible addressId', value: String(addressId) },
+      ]);
+    }
+
+    const productIds = items
+      .map((i) => i?.productId)
+      .filter(Boolean);
+    if (productIds.length !== items.length) {
+      throw new ServiceError('Every item requires a productId', 'INVALID_ITEM');
+    }
+
+    const products = await Product.find({ _id: { $in: productIds } }).populate('merchant');
+    const productMap = new Map(products.map((p) => [String(p._id), p]));
+
+    // Translate the wire-format items into the populated cart-product shape
+    // buildOrderItems already understands, so the same stock + pricing rules
+    // run for both quote and order creation.
+    const cartLike = items.map((it) => {
+      const product = productMap.get(String(it.productId));
+      if (!product) {
+        throw new ServiceError(
+          'A product in your cart is no longer available',
+          'PRODUCT_UNAVAILABLE'
+        );
+      }
+      return {
+        product,
+        quantity:   Number(it.quantity) || 0,
+        variantId:  it.variantId || null,
+        attributes: it.attributes || {},
+        size:       it.size || '',
+      };
+    });
+
+    const {
+      totalAmount,
+      merchantMap,
+      platformTotalAmount,
+      unmerchantedProducts,
+    } = this.buildOrderItems(cartLike);
+
+    const shippingFee = 0;
+    const shippingRate = null;
+
+    // Build per-merchant breakdown that mirrors the mobile QuoteResponse shape.
+    const subOrders = [];
+    for (const [merchantId, data] of merchantMap.entries()) {
+      subOrders.push({
+        merchantId,
+        items: data.products.map((p) => ({
+          productId:     String(p.product),
+          quantity:      p.quantity,
+          price:         p.price,
+          merchantPrice: p.merchantPrice,
+        })),
+        subtotal:    data.amount,
+        shippingFee: 0,
+        total:       data.amount,
+      });
+    }
+
+    if (platformTotalAmount > 0) {
+      subOrders.push({
+        merchantId:  null,
+        items: unmerchantedProducts.map((p) => ({
+          productId:     String(p.product),
+          quantity:      p.quantity,
+          price:         p.price,
+          merchantPrice: p.merchantPrice,
+        })),
+        subtotal:    platformTotalAmount,
+        shippingFee: 0,
+        total:       platformTotalAmount,
+      });
+    }
+
+    return {
+      address,
+      shippingRate,
+      subtotal:    totalAmount,
+      shippingFee,
+      total:       totalAmount + shippingFee,
+      currency:    currencyCode,
+      subOrders,
+    };
   }
 }
 
