@@ -53,7 +53,7 @@ class AffiliateService {
         name,
         code,
         phone,
-        referralLink: `${process.env.AFFILIATE_BASE_URL || 'https://nubian-sd.store'}?ref=${code}`
+        referralLink: `${process.env.AFFILIATE_BASE_URL || 'https://nubian-sd.com'}?ref=${code}`
       }], { session });
 
       // 5. Update user role and referral code in MongoDB

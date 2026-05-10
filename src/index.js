@@ -75,8 +75,8 @@ app.use(enforceHTTPS);
 const BAKED_IN_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'https://www.nubian-sd.store',
-  'https://nubian-sd.store',
+  'https://www.nubian-sd.com',
+  'https://nubian-sd.com',
 ];
 
 const envOrigins = (process.env.CORS_ORIGINS || '')

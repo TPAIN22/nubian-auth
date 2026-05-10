@@ -43,7 +43,7 @@ const optionalEnvVars = {
   CORS_ORIGINS: {
     value: process.env.CORS_ORIGINS,
     description: 'Comma-separated list of allowed CORS origins',
-    default: 'http://localhost:3000,http://localhost:3001,https://www.nubian-sd.store,https://nubian-sd.store',
+    default: 'http://localhost:3000,http://localhost:3001,https://www.nubian-sd.com,https://nubian-sd.com',
   },
   LOG_LEVEL: {
     value: process.env.LOG_LEVEL || 'info',

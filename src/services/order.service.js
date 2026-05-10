@@ -107,13 +107,30 @@ class OrderService {
 
       const itemVariant = item.variantId ? item.product.variants?.id(item.variantId) : null;
 
-      // Stock check: prefer variant stock when a variant is selected. The
-      // product-level `stock` field is a denormalized rollup of active
-      // variants and can drift (variants edited via findOneAndUpdate skip
-      // the pre-save hook, and the rollup excludes inactive variants),
-      // which would falsely block an order whose variant actually has units.
-      const availableStock = itemVariant ? (itemVariant.stock || 0) : (item.product.stock || 0);
+      // Stock check: prefer variant stock when a variant is selected; otherwise
+      // sum live variant stocks (never the cached `product.stock` rollup —
+      // findOneAndUpdate paths skip the pre-save hook that maintains it).
+      const liveProductStock = Array.isArray(item.product.variants)
+        ? item.product.variants.reduce(
+            (sum, v) => sum + (v.isActive !== false ? (v.stock || 0) : 0),
+            0,
+          )
+        : (item.product.stock || 0);
+      const availableStock = itemVariant ? (itemVariant.stock || 0) : liveProductStock;
+
       if (availableStock < item.quantity) {
+        logger.warn('Stock check failed', {
+          productId:        String(item.product._id),
+          productName:      item.product.name,
+          requestedQty:     item.quantity,
+          requestedVariant: item.variantId ? String(item.variantId) : null,
+          variantResolved:  Boolean(itemVariant),
+          variantStock:     itemVariant ? itemVariant.stock : null,
+          variantIsActive:  itemVariant ? itemVariant.isActive : null,
+          cachedProductStock: item.product.stock,
+          liveProductStock,
+          variantCount:     Array.isArray(item.product.variants) ? item.product.variants.length : 0,
+        });
         throw new ServiceError(
           `"${item.product.name}" only has ${availableStock} unit(s) in stock`,
           'INSUFFICIENT_STOCK'
