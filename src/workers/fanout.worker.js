@@ -247,7 +247,7 @@ const persistAndEnqueueChunk = async ({
     opts: {
       // Use the dedup key as the BullMQ jobId so retries / accidental
       // double-fanouts don't double-deliver to the same recipient.
-      jobId: `push:${n.deduplicationKey || n._id.toString()}`,
+      jobId: `push-${n.deduplicationKey || n._id.toString()}`,
     },
   }));
 

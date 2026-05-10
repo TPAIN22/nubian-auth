@@ -73,7 +73,7 @@ const sendOrEnqueue = async (jobName, payload, opts = {}) => {
 export const queueWelcomeEmail = (payload) =>
   sendOrEnqueue(JOB_NAMES.EMAIL_WELCOME, payload, {
     critical: true,
-    jobId: payload?.to ? `email:welcome:${payload.to}` : undefined,
+    jobId: payload?.to ? `email-welcome-${payload.to}` : undefined,
   });
 
 /**
@@ -86,7 +86,7 @@ export const queueOrderEmail = (payload) =>
     critical: true,
     jobId:
       payload?.orderNumber && payload?.status
-        ? `email:order:${payload.orderNumber}:${payload.status}`
+        ? `email-order-${payload.orderNumber}-${payload.status}`
         : undefined,
   });
 
@@ -103,7 +103,7 @@ export const queueMerchantSuspensionEmail = (payload) => {
         ? new Date(payload.suspendedAt).getTime()
         : null;
   return sendOrEnqueue(JOB_NAMES.EMAIL_MERCHANT_SUSPENSION, payload, {
-    jobId: payload?.to && ts ? `email:suspension:${payload.to}:${ts}` : undefined,
+    jobId: payload?.to && ts ? `email-suspension-${payload.to}-${ts}` : undefined,
   });
 };
 

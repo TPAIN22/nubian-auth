@@ -102,7 +102,13 @@ export const getQueueDefaults = (name) => QUEUE_DEFAULTS[name];
  */
 export const enqueue = async (queueName, jobName, payload, opts = {}) => {
   const queue = getQueue(queueName);
-  return queue.add(jobName, payload, opts);
+  // BullMQ rejects custom jobIds containing ':' (it collides with internal
+  // Redis key namespacing). Sanitize defensively so callers can build ids
+  // from arbitrary strings (titles, recipient ids, etc.) without crashing.
+  const safeOpts = opts.jobId
+    ? { ...opts, jobId: String(opts.jobId).replace(/:/g, '-') }
+    : opts;
+  return queue.add(jobName, payload, safeOpts);
 };
 
 /**

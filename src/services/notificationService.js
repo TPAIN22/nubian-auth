@@ -378,7 +378,7 @@ class NotificationService {
       {
         // Use the deduplication key as the BullMQ jobId — duplicate enqueues
         // of the same logical event become no-ops automatically.
-        jobId: `push:${notification.deduplicationKey || notification._id.toString()}`,
+        jobId: `push-${notification.deduplicationKey || notification._id.toString()}`,
         delay,
       }
     );
@@ -682,7 +682,7 @@ class NotificationService {
       { type, title, body, deepLink, metadata, target, chunkSize },
       // Dedup identical broadcasts within the queue's failed-job retention
       // window — same admin double-click won't notify users twice.
-      { jobId: `fanout:broadcast:${type}:${target}:${title}` }
+      { jobId: `fanout-broadcast-${type}-${target}-${title}` }
     );
   }
 
@@ -697,7 +697,7 @@ class NotificationService {
       QUEUE_NAMES.FANOUT,
       JOB_NAMES.FANOUT_MARKETING,
       { type, title, body, deepLink, metadata, targetRecipients, chunkSize },
-      { jobId: `fanout:marketing:${type}:${title}` }
+      { jobId: `fanout-marketing-${type}-${title}` }
     );
   }
 
