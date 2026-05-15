@@ -240,7 +240,14 @@ export const createOrder = async (req, res) => {
   }
 
   try {
-    const { order, emailPayload } = await orderService.createOrder(userId, req.body, req.ip);
+    // Carry the request-scoped currency (from x-currency header via
+    // currencyMiddleware) into the service body, so orders are stored in the
+    // shopper's selected currency instead of falling back to USD.
+    const body = {
+      ...req.body,
+      currencyCode: req.body.currencyCode || req.currencyCode,
+    };
+    const { order, emailPayload } = await orderService.createOrder(userId, body, req.ip);
 
     queueOrderEmail({ ...emailPayload, status: 'بانتظار التأكيد' }).catch((err) => {
       logger.error('Failed to dispatch order email', { requestId: req.requestId, error: err.message, orderNumber: order.orderNumber });
