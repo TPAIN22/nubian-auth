@@ -7,7 +7,10 @@ class RiskEngineService {
   
   // Arabic keywords for risk
   // "تسمم" (poisoning), "ضرر" (harm/damage), "احتيال" (fraud), "مزور" (fake/forged)
-  RISK_KEYWORDS = ["تسمم", "ضرر", "احتيال", "مزور"];
+  RISK_KEYWORDS = [
+      "تسمم", "ضرر", "احتيال", "مزور",
+      "poison", "harm", "fraud", "scam", "fake", "counterfeit", "dangerous", "sick"
+  ];
 
   /**
    * Evaluate a ticket for risk BEFORE it is saved.
@@ -30,7 +33,7 @@ class RiskEngineService {
 
     // 2. Keyword detection
     const textToCheck = `${subject} ${description}`;
-    const foundKeywords = this.RISK_KEYWORDS.filter(keyword => textToCheck.includes(keyword));
+    const foundKeywords = this.RISK_KEYWORDS.filter(keyword => textToCheck.toLowerCase().includes(keyword.toLowerCase()));
     
     if (foundKeywords.length > 0) {
         riskScore += 30;

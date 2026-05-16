@@ -1219,6 +1219,53 @@ export const hardDeleteProduct = async (req, res) => {
 };
 
 /**
+ * Admin: Suspend a product — manual takedown for risk/abuse.
+ */
+export const suspendProduct = async (req, res) => {
+  try {
+    const { userId } = getAuth(req);
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    const product = await Product.findByIdAndUpdate(
+      id,
+      {
+        status: 'suspended',
+        isActive: false,
+        suspensionReason: reason || 'Manual admin suspension',
+      },
+      { new: true, runValidators: false }
+    )
+      .populate('merchant', 'storeName email logoUrl city status')
+      .populate('category', 'name');
+
+    if (!product) {
+      return sendNotFound(res, 'Product');
+    }
+
+    logger.warn('Product suspended by admin', {
+      requestId: req.requestId,
+      userId,
+      productId: product._id,
+      reason: product.suspensionReason,
+    });
+
+    return sendSuccess(res, {
+      data: product,
+      message: 'Product suspended successfully',
+    });
+  } catch (error) {
+    logger.error('Error suspending product', {
+      requestId: req.requestId,
+      productId: req.params.id,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
  * Admin: Update product ranking fields (priorityScore and featured)
  * This endpoint allows admins to control product ranking/ordering
  */

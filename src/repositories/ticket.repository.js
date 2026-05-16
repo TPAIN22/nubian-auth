@@ -35,7 +35,8 @@ class TicketRepository {
       .populate('userId', 'fullName emailAddress phone')
       .populate('relatedOrderId', 'orderNumber totalAmount')
       .populate('relatedProductId', 'name')
-      .lean(); // Use lean for performance unless we need save()
+      .populate('relatedMerchantId', 'storeName businessName')
+      .lean();
   }
 
   async findByTicketNumber(ticketNumber) {

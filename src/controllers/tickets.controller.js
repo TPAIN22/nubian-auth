@@ -1,13 +1,37 @@
 import ticketService from "../services/ticket.service.js";
 import { sendSuccess, sendError } from "../lib/response.js";
-import { getAuth } from "@clerk/express";
+import { getAuth, clerkClient } from "@clerk/express";
 import User from "../models/user.model.js";
+import Merchant from "../models/merchant.model.js";
 
-// Helper to get local User ID (reused)
 const getLocalUser = async (req) => {
     const { userId } = getAuth(req);
     if (!userId) return null;
     return await User.findOne({ clerkId: userId });
+};
+
+const getRequestActor = async (req) => {
+    const { userId } = getAuth(req);
+    if (!userId) return { user: null, clerkRole: null, merchant: null, clerkId: null };
+
+    const user = await User.findOne({ clerkId: userId });
+
+    let clerkRole = req.auth?.sessionClaims?.publicMetadata?.role || null;
+    if (!clerkRole) {
+        try {
+            const clerkUser = await clerkClient.users.getUser(userId);
+            clerkRole = clerkUser?.publicMetadata?.role || null;
+        } catch (_) {
+            clerkRole = null;
+        }
+    }
+
+    let merchant = null;
+    if (clerkRole === 'merchant') {
+        merchant = await Merchant.findOne({ userId });
+    }
+
+    return { user, clerkRole, merchant, clerkId: userId };
 };
 
 export const createTicket = async (req, res) => {
@@ -15,7 +39,8 @@ export const createTicket = async (req, res) => {
     const user = await getLocalUser(req);
     if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
 
-    const ticket = await ticketService.createTicket(user._id, req.body);
+    const attachments = req.body.attachments || [];
+    const ticket = await ticketService.createTicket(user._id, { ...req.body, attachments });
     return sendSuccess(res, { data: ticket, message: "Ticket created successfully" }, 201);
   } catch (error) {
     return sendError(res, { message: error.message, statusCode: 400 });
@@ -24,7 +49,7 @@ export const createTicket = async (req, res) => {
 
 export const getTickets = async (req, res) => {
   try {
-    const user = await getLocalUser(req);
+    const { user, clerkRole, merchant } = await getRequestActor(req);
     if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
 
     const filter = {};
@@ -33,8 +58,34 @@ export const getTickets = async (req, res) => {
     if (req.query.category && req.query.category !== 'all') filter.category = req.query.category;
     if (req.query.riskScore) filter.riskScore = { $gte: parseInt(req.query.riskScore) };
 
-    const result = await ticketService.getAllTickets(filter, req.query); // pagination in query
-    return sendSuccess(res, { data: result.tickets, pagination: result.pagination });
+    const isStaff = clerkRole === 'admin' || clerkRole === 'support' || user.role === 'admin' || user.role === 'support';
+
+    if (isStaff) {
+        // no restriction
+    } else if (clerkRole === 'merchant') {
+        if (!merchant) {
+            return sendError(res, { message: "Merchant profile not found", statusCode: 403 });
+        }
+        filter.relatedMerchantId = merchant._id;
+    } else {
+        filter.userId = user._id;
+    }
+
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
+    const pagination = { skip: (page - 1) * limit, limit };
+
+    const result = await ticketService.getAllTickets(filter, pagination);
+    const total = result.total || 0;
+    return sendSuccess(res, {
+      data: result.tickets,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
   } catch (error) {
     return sendError(res, { message: error.message, statusCode: 500 });
   }
@@ -42,32 +93,35 @@ export const getTickets = async (req, res) => {
 
 export const getTicketDetails = async (req, res) => {
     try {
-        const user = await getLocalUser(req);
+        const { user, merchant } = await getRequestActor(req);
         if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
 
-        const ticket = await ticketService.getTicketDetails(req.params.id, user._id, user.role);
+        const ticket = await ticketService.getTicketDetails(req.params.id, user._id, user.role, merchant?._id || null);
         return sendSuccess(res, { data: ticket });
     } catch (error) {
-        return sendError(res, { message: error.message, statusCode: 404 }); // or 403
+        return sendError(res, { message: error.message, statusCode: 404 });
     }
 }
 
 export const addMessage = async (req, res) => {
     try {
-        const user = await getLocalUser(req);
+        const { user, merchant } = await getRequestActor(req);
         if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
-        
-        // Handle file uploads (Multer middleware should have run before this)
-        const attachments = req.files ? req.files.map(file => file.path) : [];
+
+        const attachments = req.body.attachments || [];
 
         const message = await ticketService.addMessage(req.params.id, user._id, user.role, {
             message: req.body.message,
             attachments
-        });
+        }, merchant?._id || null);
 
         return sendSuccess(res, { data: message, message: "Message added" });
     } catch (error) {
-        return sendError(res, { message: error.message, statusCode: 500 });
+        const msg = error.message || "";
+        let statusCode = 500;
+        if (msg.includes("Unauthorized")) statusCode = 403;
+        else if (msg.includes("not found")) statusCode = 404;
+        return sendError(res, { message: msg, statusCode });
     }
 }
 

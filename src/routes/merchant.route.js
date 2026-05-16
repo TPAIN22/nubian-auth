@@ -19,6 +19,7 @@ import {
   getMyMerchantProfile,
   updateMerchantProfile,
   getPublicMerchants,
+  freezeMerchant,
 } from '../controllers/merchant.controller.js';
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
 import { isMerchant, isApprovedMerchant } from '../middleware/merchant.middleware.js';
@@ -52,6 +53,7 @@ router.patch('/:id/reject', isAuthenticated, isAdmin, ...validateObjectId('id'),
 router.patch('/:id/request-revision', isAuthenticated, isAdmin, ...validateObjectId('id'), requestMerchantRevision);
 router.patch('/:id/suspend', isAuthenticated, isAdmin, ...validateObjectId('id'), validateMerchantSuspension, suspendMerchant);
 router.patch('/:id/unsuspend', isAuthenticated, isAdmin, ...validateObjectId('id'), unsuspendMerchant);
+router.post('/:id/freeze', isAuthenticated, isAdmin, ...validateObjectId('id'), freezeMerchant);
 router.delete('/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), deleteMerchant);
 
 // Recovery: purge orphan merchant trail by Clerk userId. Used when the user

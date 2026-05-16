@@ -9,12 +9,14 @@ import {
   getStats,
 } from "../controllers/tickets.controller.js";
 import { handleValidationErrors } from "../middleware/validation.middleware.js";
+import { isAuthenticated, isAdmin } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
 // POST /tickets
 router.post(
   "/",
+  isAuthenticated,
   [
     body("type")
       .isIn(["support", "complaint", "legal"])
@@ -41,17 +43,19 @@ router.post(
     body("relatedProductId").optional().isMongoId().withMessage("Invalid Product ID"),
     body("relatedMerchantId").optional().isMongoId().withMessage("Invalid Merchant ID"),
     body("priority").optional().isIn(["low", "medium", "high"]),
+    body("attachments").optional().isArray(),
     handleValidationErrors,
   ],
   createTicket
 );
 
 // GET /tickets/stats
-router.get("/stats", getStats);
+router.get("/stats", isAuthenticated, isAdmin, getStats);
 
 // GET /tickets
 router.get(
   "/",
+  isAuthenticated,
   [
     query("page").optional().isInt({ min: 1 }),
     query("limit").optional().isInt({ min: 1, max: 100 }),
@@ -73,16 +77,19 @@ router.get(
 // GET /tickets/:id
 router.get(
   "/:id",
+  isAuthenticated,
   [
     param("id").isMongoId().withMessage("Invalid Ticket ID"),
     handleValidationErrors
   ],
-  getTicketDetails // Ensure controller exports this name. (It was getTicketDetails in my view)
+  getTicketDetails
 );
 
 // PATCH /tickets/:id/status
 router.patch(
   "/:id/status",
+  isAuthenticated,
+  isAdmin,
   [
     param("id").isMongoId(),
     body("status")
@@ -99,12 +106,13 @@ router.patch(
     body("adminNotes").optional().isString(),
     handleValidationErrors,
   ],
-  updateStatus // Ensure controller exports this name. (It was updateStatus in my view)
+  updateStatus
 );
 
 // POST /tickets/:id/messages
 router.post(
   "/:id/messages",
+  isAuthenticated,
   [
     param("id").isMongoId(),
     body("message").notEmpty().withMessage("Message is required"),

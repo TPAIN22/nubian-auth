@@ -1273,6 +1273,47 @@ export const updateMerchantProfile = async (req, res) => {
 };
 
 /**
+ * Freeze merchant (Admin only) — manual flag toggle for risk/abuse.
+ */
+export const freezeMerchant = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    const merchant = await Merchant.findByIdAndUpdate(
+      id,
+      {
+        isFlagged: true,
+        flaggedAt: new Date(),
+        flagReason: reason || 'Manual admin freeze',
+      },
+      { new: true }
+    );
+
+    if (!merchant) {
+      return sendNotFound(res, "Merchant");
+    }
+
+    logger.info('Merchant frozen by admin', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      adminId,
+      reason: merchant.flagReason,
+    });
+
+    return sendSuccess(res, { data: merchant, message: "Merchant frozen successfully" });
+  } catch (error) {
+    logger.error('Error freezing merchant', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
  * Get reviews for all products belonging to a store (public endpoint)
  */
 export const getStoreReviews = async (req, res) => {

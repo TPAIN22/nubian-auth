@@ -100,18 +100,5 @@ ticketSchema.index({ status: 1, priority: 1, createdAt: -1 });
 ticketSchema.index({ status: 1, createdAt: -1 });
 ticketSchema.index({ category: 1, status: 1 });
 
-ticketSchema.pre('save', async function (next) {
-  if (this.isNew && !this.ticketNumber) {
-    const Counter = mongoose.model('Counter');
-    const counter = await Counter.findOneAndUpdate(
-      { _id: 'ticketNumber' },
-      { $inc: { seq: 1 } },
-      { new: true, upsert: true }
-    );
-    this.ticketNumber = `TKT-${String(counter.seq).padStart(5, '0')}`;
-  }
-  next();
-});
-
 const Ticket = mongoose.model("Ticket", ticketSchema);
 export default Ticket;

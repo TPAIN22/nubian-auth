@@ -16,7 +16,7 @@ const ticketMessageSchema = new mongoose.Schema(
     // To distinguish between user and support agent/admin
     senderRole: {
         type: String,
-        enum: ['user', 'admin', 'support'],
+        enum: ['user', 'admin', 'support', 'merchant'],
         required: true,
         default: 'user'
     },

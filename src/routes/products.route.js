@@ -16,6 +16,7 @@ import {
   toggleDynamicPricing,
   exploreProducts,
   bulkImportProducts,
+  suspendProduct,
 } from '../controllers/products.controller.js'
 import { validateProductCreate, validateProductUpdate } from '../middleware/validators/product.validator.js'
 import { validatePagination } from '../middleware/validators/pagination.validator.js'
@@ -44,6 +45,7 @@ router.patch('/admin/:id/toggle-active', isAuthenticated, isAdmin, ...validateOb
 router.patch('/admin/:id/ranking', isAuthenticated, isAdmin, ...validateObjectId('id'), handleValidationErrors, updateProductRanking)
 router.patch('/admin/:id/restore', isAuthenticated, isAdmin, ...validateObjectId('id'), handleValidationErrors, restoreProduct)
 router.delete('/admin/:id/hard-delete', isAuthenticated, isAdmin, ...validateObjectId('id'), handleValidationErrors, hardDeleteProduct)
+router.post('/:id/suspend', isAuthenticated, isAdmin, ...validateObjectId('id'), handleValidationErrors, suspendProduct)
 
 // Dynamic pricing control — lock/unlock per-product, optionally override nubianMarkup
 // Body: { enabled: boolean, nubianMarkup?: number }

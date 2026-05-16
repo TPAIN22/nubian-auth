@@ -1,9 +1,9 @@
 import Dispute from "../models/dispute.model.js";
 
 class DisputeRepository {
-  async createDispute(disputeData) {
+  async createDispute(disputeData, session) {
     const dispute = new Dispute(disputeData);
-    return await dispute.save();
+    return await dispute.save({ session });
   }
 
   async findByTicketId(ticketId) {
@@ -14,15 +14,11 @@ class DisputeRepository {
     return await Dispute.findById(disputeId);
   }
 
-  async updateStatus(disputeId, status, resolutionNotes) {
-    const update = { status };
-    if (resolutionNotes) {
-      update.resolutionNotes = resolutionNotes;
-    }
+  async updateStatus(disputeId, update, session) {
     return await Dispute.findByIdAndUpdate(
       disputeId,
       update,
-      { new: true }
+      { session, new: true }
     );
   }
 

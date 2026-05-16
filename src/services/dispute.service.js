@@ -79,21 +79,17 @@ class DisputeService {
               await merchantRepository.unfreezeBalance(dispute.merchantId, originalAmount - approvedAmount, session); // Returned part
           }
 
-          // Update dispute
-          const updatedDispute = await disputeRepository.updateStatus(
-              disputeId, 
-              status, 
-              adminNote,
-              session
-          );
-          
-          updatedDispute.resolution = resolution;
-          updatedDispute.adminDecisionNote = adminNote;
-          updatedDispute.resolvedBy = adminId;
-          updatedDispute.resolvedAt = new Date();
-          updatedDispute.frozen = false; // logic resolved
-          
-          await updatedDispute.save({ session });
+          const update = {
+              status,
+              resolutionNotes: adminNote,
+              resolution,
+              adminDecisionNote: adminNote,
+              resolvedBy: adminId,
+              resolvedAt: new Date(),
+              frozen: false
+          };
+
+          const updatedDispute = await disputeRepository.updateStatus(disputeId, update, session);
 
           await session.commitTransaction();
           return updatedDispute;
