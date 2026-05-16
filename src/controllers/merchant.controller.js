@@ -988,6 +988,24 @@ export const unsuspendMerchant = async (req, res) => {
     merchant.suspendedAt = undefined;
     await merchant.save();
 
+    try {
+      const cascadeResult = await Product.updateMany(
+        { merchant: merchant._id, deletedAt: null },
+        { $set: { isActive: true } },
+      );
+      logger.info('Unsuspended merchant: products reactivated', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        modifiedCount: cascadeResult.modifiedCount,
+      });
+    } catch (cascadeErr) {
+      logger.error('Failed to reactivate merchant products on unsuspension', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        error: cascadeErr.message,
+      });
+    }
+
     logger.info('Merchant unsuspended', {
       requestId: req.requestId,
       merchantId: merchant._id,
