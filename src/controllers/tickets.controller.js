@@ -50,15 +50,16 @@ export const createTicket = async (req, res) => {
 export const getTickets = async (req, res) => {
   try {
     const { user, clerkRole, merchant } = await getRequestActor(req);
-    if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
+
+    const isStaff = clerkRole === 'admin' || clerkRole === 'support' || user?.role === 'admin' || user?.role === 'support';
+
+    if (!user && !isStaff) return sendError(res, { message: "User not found", statusCode: 404 });
 
     const filter = {};
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
     if (req.query.priority) filter.priority = req.query.priority;
     if (req.query.category && req.query.category !== 'all') filter.category = req.query.category;
     if (req.query.riskScore) filter.riskScore = { $gte: parseInt(req.query.riskScore) };
-
-    const isStaff = clerkRole === 'admin' || clerkRole === 'support' || user.role === 'admin' || user.role === 'support';
 
     if (isStaff) {
         // no restriction
@@ -96,10 +97,12 @@ export const getTickets = async (req, res) => {
 
 export const getTicketDetails = async (req, res) => {
     try {
-        const { user, merchant } = await getRequestActor(req);
-        if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
+        const { user, clerkRole, merchant } = await getRequestActor(req);
+        const isStaff = clerkRole === 'admin' || clerkRole === 'support' || user?.role === 'admin' || user?.role === 'support';
+        if (!user && !isStaff) return sendError(res, { message: "User not found", statusCode: 404 });
 
-        const ticket = await ticketService.getTicketDetails(req.params.id, user._id, user.role, merchant?._id || null);
+        const effectiveRole = isStaff ? (clerkRole || user?.role) : user?.role;
+        const ticket = await ticketService.getTicketDetails(req.params.id, user?._id, effectiveRole, merchant?._id || null);
         return sendSuccess(res, { data: ticket });
     } catch (error) {
         return sendError(res, { message: error.message, statusCode: 404 });
@@ -108,12 +111,14 @@ export const getTicketDetails = async (req, res) => {
 
 export const addMessage = async (req, res) => {
     try {
-        const { user, merchant } = await getRequestActor(req);
-        if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
+        const { user, clerkRole, merchant } = await getRequestActor(req);
+        const isStaff = clerkRole === 'admin' || clerkRole === 'support' || user?.role === 'admin' || user?.role === 'support';
+        if (!user && !isStaff) return sendError(res, { message: "User not found", statusCode: 404 });
 
         const attachments = req.body.attachments || [];
+        const effectiveRole = isStaff ? (clerkRole || user?.role) : user?.role;
 
-        const message = await ticketService.addMessage(req.params.id, user._id, user.role, {
+        const message = await ticketService.addMessage(req.params.id, user?._id, effectiveRole, {
             message: req.body.message,
             attachments
         }, merchant?._id || null);
@@ -131,13 +136,7 @@ export const addMessage = async (req, res) => {
 export const updateStatus = async (req, res) => {
     try {
         const user = await getLocalUser(req);
-        if (!user) return sendError(res, { message: "User not found", statusCode: 404 });
-
-        if (user.role !== 'admin' && user.role !== 'support') {
-             return sendError(res, { message: "Unauthorized", statusCode: 403 });
-        }
-
-        const ticket = await ticketService.updateTicketStatus(req.params.id, req.body.status, req.body.adminNotes, user._id);
+        const ticket = await ticketService.updateTicketStatus(req.params.id, req.body.status, req.body.adminNotes, user?._id);
         return sendSuccess(res, { data: ticket, message: "Status updated" });
     } catch (error) {
         return sendError(res, { message: error.message, statusCode: 500 });
@@ -146,11 +145,6 @@ export const updateStatus = async (req, res) => {
 
 export const getStats = async (req, res) => {
     try {
-        const user = await getLocalUser(req);
-        if (!user || (user.role !== 'admin' && user.role !== 'support')) {
-            return sendError(res, { message: "Unauthorized", statusCode: 403 });
-        }
-
         const stats = await ticketService.getStats();
         return sendSuccess(res, { data: stats });
     } catch (error) {
