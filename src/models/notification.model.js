@@ -36,6 +36,11 @@ const notificationSchema = new mongoose.Schema(
         'FLASH_SALE',
         'MERCHANT_PROMOTION',
         'PERSONALIZED_OFFER',
+        // Support tickets
+        'TICKET_CREATED',
+        'TICKET_REPLY',
+        'NEW_TICKET_ADMIN',
+        'TICKET_REPLY_ADMIN',
       ],
       index: true,
     },

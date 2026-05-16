@@ -66,7 +66,10 @@ export const getTickets = async (req, res) => {
         if (!merchant) {
             return sendError(res, { message: "Merchant profile not found", statusCode: 403 });
         }
-        filter.relatedMerchantId = merchant._id;
+        filter.$or = [
+          { relatedMerchantId: merchant._id },
+          { userId: user._id }
+        ];
     } else {
         filter.userId = user._id;
     }
