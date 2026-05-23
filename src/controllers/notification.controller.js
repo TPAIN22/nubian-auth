@@ -1,4 +1,5 @@
 import notificationService from '../services/notificationService.js';
+import Notification from '../models/notification.model.js';
 import NotificationPreferences from '../models/notificationPreferences.model.js';
 import PushToken from '../models/pushToken.model.js';
 import User from '../models/user.model.js';
@@ -13,6 +14,34 @@ import {
   handleBackInStock,
   handleRefundProcessed,
 } from '../services/notificationEventHandlers.js';
+
+/**
+ * Resolve the currently-authed Clerk user into the recipient buckets they own.
+ * Every approved merchant also has a `User` row (created by the user.created
+ * webhook), so the old `if (merchant && !user)` guard always picked 'user' and
+ * merchants never saw their merchant-targeted notifications. We now return
+ * both buckets and let read/mark endpoints query them as a union.
+ */
+const resolveRecipients = async (clerkUserId) => {
+  if (!clerkUserId) return { user: null, merchant: null };
+  const [user, merchant] = await Promise.all([
+    User.findOne({ clerkId: clerkUserId }),
+    Merchant.findOne({ userId: clerkUserId, status: 'approved' }),
+  ]);
+  return { user, merchant };
+};
+
+/**
+ * Build the $or clauses that match notifications addressed to any of the
+ * recipient buckets owned by the caller. Returns null when the caller owns no
+ * buckets (callers should treat that as USER_NOT_FOUND).
+ */
+const recipientOrClauses = ({ user, merchant }) => {
+  const or = [];
+  if (user) or.push({ recipientType: 'user', recipientId: user._id });
+  if (merchant) or.push({ recipientType: 'merchant', recipientId: merchant._id });
+  return or.length ? or : null;
+};
 
 /**
  * Save push token (Expo push token strategy)
@@ -429,17 +458,9 @@ export const getNotifications = async (req, res) => {
       });
     }
 
-    // Determine recipient type (user or merchant)
-    const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-
-    let recipientType = 'user';
-    let recipientId = user?._id;
-
-    if (merchant && !user) {
-      recipientType = 'merchant';
-      recipientId = merchant._id;
-    } else if (!user) {
+    const recipients = await resolveRecipients(userId);
+    const or = recipientOrClauses(recipients);
+    if (!or) {
       return sendError(res, {
         message: 'User not found',
         code: 'USER_NOT_FOUND',
@@ -447,20 +468,40 @@ export const getNotifications = async (req, res) => {
       });
     }
 
-    const result = await notificationService.getNotifications(
-      recipientId,
-      recipientType,
-      {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
-        category: category || null,
-        isRead: isRead !== undefined ? isRead === 'true' : null,
-        type: type || null,
-      }
-    );
+    const parsedLimit = parseInt(limit, 10) || 50;
+    const parsedOffset = parseInt(offset, 10) || 0;
+
+    const query = {
+      $or: or,
+      $and: [
+        {
+          $or: [
+            { expiresAt: { $exists: false } },
+            { expiresAt: { $gt: new Date() } },
+          ],
+        },
+      ],
+    };
+    if (category) query.category = category;
+    if (isRead !== undefined) query.isRead = isRead === 'true';
+    if (type) query.type = type;
+
+    const [notifications, total] = await Promise.all([
+      Notification.find(query)
+        .sort({ priority: -1, createdAt: -1 })
+        .limit(parsedLimit)
+        .skip(parsedOffset)
+        .lean(),
+      Notification.countDocuments(query),
+    ]);
 
     return sendSuccess(res, {
-      data: result,
+      data: {
+        notifications,
+        total,
+        limit: parsedLimit,
+        offset: parsedOffset,
+      },
       message: 'Notifications retrieved successfully',
     });
   } catch (error) {
@@ -492,16 +533,9 @@ export const getUnreadCount = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-
-    let recipientType = 'user';
-    let recipientId = user?._id;
-
-    if (merchant && !user) {
-      recipientType = 'merchant';
-      recipientId = merchant._id;
-    } else if (!user) {
+    const recipients = await resolveRecipients(userId);
+    const or = recipientOrClauses(recipients);
+    if (!or) {
       return sendError(res, {
         message: 'User not found',
         code: 'USER_NOT_FOUND',
@@ -509,11 +543,21 @@ export const getUnreadCount = async (req, res) => {
       });
     }
 
-    const count = await notificationService.getUnreadCount(
-      recipientId,
-      recipientType,
-      category || null
-    );
+    const query = {
+      $or: or,
+      isRead: false,
+      $and: [
+        {
+          $or: [
+            { expiresAt: { $exists: false } },
+            { expiresAt: { $gt: new Date() } },
+          ],
+        },
+      ],
+    };
+    if (category) query.category = category;
+
+    const count = await Notification.countDocuments(query);
 
     return sendSuccess(res, {
       data: { count },
@@ -547,16 +591,9 @@ export const markAsRead = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-
-    let recipientType = 'user';
-    let recipientId = user?._id;
-
-    if (merchant && !user) {
-      recipientType = 'merchant';
-      recipientId = merchant._id;
-    } else if (!user) {
+    const recipients = await resolveRecipients(userId);
+    const or = recipientOrClauses(recipients);
+    if (!or) {
       return sendError(res, {
         message: 'User not found',
         code: 'USER_NOT_FOUND',
@@ -564,10 +601,13 @@ export const markAsRead = async (req, res) => {
       });
     }
 
-    const notification = await notificationService.markAsRead(
-      notificationId,
-      recipientId,
-      recipientType
+    // Authorize: only mark as read if the notification actually addresses one
+    // of the caller's recipient buckets. Prevents one user from marking
+    // another user's notifications via ID guessing.
+    const notification = await Notification.findOneAndUpdate(
+      { _id: notificationId, $or: or },
+      { isRead: true },
+      { new: true }
     );
 
     if (!notification) {
@@ -595,7 +635,14 @@ export const markAsRead = async (req, res) => {
  */
 export const markMultipleAsRead = async (req, res) => {
   try {
-    const { notificationIds } = req.body;
+    // Accept both the canonical field (`notificationIds`) and the short
+    // `ids` form the dashboard was sending — the previous mismatch made
+    // dashboard "Mark all read" silently no-op.
+    const notificationIds = Array.isArray(req.body?.notificationIds)
+      ? req.body.notificationIds
+      : Array.isArray(req.body?.ids)
+        ? req.body.ids
+        : null;
     const { userId } = getAuth(req);
 
     if (!userId) {
@@ -606,7 +653,7 @@ export const markMultipleAsRead = async (req, res) => {
       });
     }
 
-    if (!Array.isArray(notificationIds) || notificationIds.length === 0) {
+    if (!notificationIds || notificationIds.length === 0) {
       return sendError(res, {
         message: 'notificationIds must be a non-empty array',
         code: 'INVALID_NOTIFICATION_IDS',
@@ -614,16 +661,9 @@ export const markMultipleAsRead = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-
-    let recipientType = 'user';
-    let recipientId = user?._id;
-
-    if (merchant && !user) {
-      recipientType = 'merchant';
-      recipientId = merchant._id;
-    } else if (!user) {
+    const recipients = await resolveRecipients(userId);
+    const or = recipientOrClauses(recipients);
+    if (!or) {
       return sendError(res, {
         message: 'User not found',
         code: 'USER_NOT_FOUND',
@@ -631,10 +671,9 @@ export const markMultipleAsRead = async (req, res) => {
       });
     }
 
-    const result = await notificationService.markMultipleAsRead(
-      notificationIds,
-      recipientId,
-      recipientType
+    const result = await Notification.updateMany(
+      { _id: { $in: notificationIds }, $or: or },
+      { isRead: true }
     );
 
     return sendSuccess(res, {
@@ -821,7 +860,7 @@ export const updatePreferences = async (req, res) => {
 export const sendBroadcast = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    const { type, title, body, deepLink, metadata, target } = req.body; // target: 'users' | 'merchants' | 'all'
+    const { type, title, body, deepLink, metadata, target, campaignId } = req.body; // target: 'users' | 'merchants' | 'all'
 
     if (!userId) {
       return sendError(res, {
@@ -868,6 +907,7 @@ export const sendBroadcast = async (req, res) => {
         deepLink,
         metadata,
         target,
+        campaignId,
       });
       if (enqueued) {
         dispatchPath = 'queue';
@@ -958,7 +998,7 @@ export const sendBroadcast = async (req, res) => {
 export const sendMarketingNotification = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    const { type, title, body, deepLink, metadata, targetRecipients } = req.body;
+    const { type, title, body, deepLink, metadata, targetRecipients, campaignId } = req.body;
 
     if (!userId) {
       return sendError(res, {
@@ -985,6 +1025,7 @@ export const sendMarketingNotification = async (req, res) => {
         deepLink,
         metadata,
         targetRecipients,
+        campaignId,
       });
       if (enqueued) {
         return sendSuccess(res, {

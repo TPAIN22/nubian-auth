@@ -24,18 +24,25 @@ export async function handleOrderCreated(orderId) {
       return;
     }
 
-    // Notify user about order creation
+    // Notify user about order creation. Prefer the converted total in the
+    // currency the user actually selected at checkout; fall back to the
+    // base-currency total (USD) when the converted figure isn't populated.
+    const displayCurrency = order.currencyCodeSelected || 'USD';
+    const displayAmount =
+      order.finalAmountConverted != null ? order.finalAmountConverted : order.finalAmount;
     await notificationService.createNotification({
       type: 'ORDER_CREATED',
       recipientType: 'user',
       recipientId: order.user.clerkId || order.user._id,
       title: 'Order Confirmed',
-      body: `Your order #${order.orderNumber} has been placed successfully. Total: ${order.finalAmount} SDG`,
+      body: `Your order #${order.orderNumber} has been placed successfully. Total: ${displayAmount} ${displayCurrency}`,
       deepLink: `/orders/${order._id}`,
       metadata: {
         orderId: order._id.toString(),
         orderNumber: order.orderNumber,
         totalAmount: order.finalAmount,
+        totalAmountConverted: order.finalAmountConverted,
+        currency: displayCurrency,
         status: order.status,
       },
       channel: 'push',
@@ -416,17 +423,19 @@ export async function handleRefundProcessed(orderId, refundAmount) {
       return;
     }
 
+    const refundCurrency = order.currencyCodeSelected || 'USD';
     await notificationService.createNotification({
       type: 'REFUND_PROCESSED',
       recipientType: 'user',
       recipientId: order.user.clerkId || order.user._id,
       title: 'Refund Processed',
-      body: `Your refund of ${refundAmount} SDG for order #${order.orderNumber} has been processed`,
+      body: `Your refund of ${refundAmount} ${refundCurrency} for order #${order.orderNumber} has been processed`,
       deepLink: `/orders/${order._id}`,
       metadata: {
         orderId: order._id.toString(),
         orderNumber: order.orderNumber,
         refundAmount,
+        currency: refundCurrency,
       },
       channel: 'push',
       deduplicationKey: `REFUND_PROCESSED_${order._id}`,

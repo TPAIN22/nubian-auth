@@ -83,6 +83,24 @@ const msUntilQuietHoursEnd = (quietHours) => {
   return Math.max(0, end.getTime() - now.getTime());
 };
 
+/**
+ * Build the BullMQ jobId for a fanout broadcast/marketing job.
+ *
+ *   campaignId provided → honour it verbatim (caller controls dedup).
+ *   no campaignId       → bucket by 30s so an admin double-clicking "Send"
+ *                         collapses into one job, but a deliberate re-send
+ *                         minutes/hours later goes through. The old key
+ *                         (just type+title+target) silently swallowed any
+ *                         re-send within BullMQ's failed-job retention.
+ */
+const DEDUP_BUCKET_MS = 30_000;
+const buildCampaignJobId = (mode, { type, title, target, campaignId }) => {
+  if (campaignId) return `fanout-${mode}-${campaignId}`;
+  const bucket = Math.floor(Date.now() / DEDUP_BUCKET_MS);
+  const audience = target ? `-${target}` : '';
+  return `fanout-${mode}-${type}${audience}-${title}-${bucket}`;
+};
+
 const enqueueOrFallback = async (queueName, jobName, payload, opts = {}) => {
   try {
     await enqueue(queueName, jobName, wrap(payload), opts);
@@ -142,7 +160,11 @@ class NotificationService {
         }
         recipientObjectId = user._id;
       } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-        const merchant = await Merchant.findOne({ clerkId: recipientId });
+        // Merchant.userId stores the Clerk userId (see merchant.model.js); there
+        // is no `clerkId` field on Merchant. Looking it up with the wrong field
+        // was the cause of zero NEW_ORDER / LOW_STOCK / PRODUCT_* pushes ever
+        // reaching merchants.
+        const merchant = await Merchant.findOne({ userId: recipientId });
         if (!merchant) {
           throw new Error(`Merchant not found: ${recipientId}`);
         }
@@ -675,14 +697,12 @@ class NotificationService {
    * Falls back to `false` if Redis is unreachable; the caller should use the
    * legacy sync path in that case.
    */
-  async enqueueBroadcast({ type, title, body, deepLink, metadata, target, chunkSize }) {
+  async enqueueBroadcast({ type, title, body, deepLink, metadata, target, chunkSize, campaignId }) {
     return enqueueOrFallback(
       QUEUE_NAMES.FANOUT,
       JOB_NAMES.FANOUT_BROADCAST,
       { type, title, body, deepLink, metadata, target, chunkSize },
-      // Dedup identical broadcasts within the queue's failed-job retention
-      // window — same admin double-click won't notify users twice.
-      { jobId: `fanout-broadcast-${type}-${target}-${title}` }
+      { jobId: buildCampaignJobId('broadcast', { type, title, target, campaignId }) }
     );
   }
 
@@ -692,12 +712,12 @@ class NotificationService {
    *   - string[]     → send to a specific list of user IDs
    *   - { segment }  → resolve via segment criteria (worker handles)
    */
-  async enqueueMarketing({ type, title, body, deepLink, metadata, targetRecipients, chunkSize }) {
+  async enqueueMarketing({ type, title, body, deepLink, metadata, targetRecipients, chunkSize, campaignId }) {
     return enqueueOrFallback(
       QUEUE_NAMES.FANOUT,
       JOB_NAMES.FANOUT_MARKETING,
       { type, title, body, deepLink, metadata, targetRecipients, chunkSize },
-      { jobId: `fanout-marketing-${type}-${title}` }
+      { jobId: buildCampaignJobId('marketing', { type, title, campaignId }) }
     );
   }
 
@@ -1228,7 +1248,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      const merchant = await Merchant.findOne({ clerkId: recipientId });
+      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
+      const merchant = await Merchant.findOne({ userId: recipientId });
       if (merchant) recipientObjectId = merchant._id;
     }
 
@@ -1270,7 +1291,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      const merchant = await Merchant.findOne({ clerkId: recipientId });
+      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
+      const merchant = await Merchant.findOne({ userId: recipientId });
       if (merchant) recipientObjectId = merchant._id;
     }
 
@@ -1286,7 +1308,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      const merchant = await Merchant.findOne({ clerkId: recipientId });
+      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
+      const merchant = await Merchant.findOne({ userId: recipientId });
       if (merchant) recipientObjectId = merchant._id;
     }
 
@@ -1302,7 +1325,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      const merchant = await Merchant.findOne({ clerkId: recipientId });
+      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
+      const merchant = await Merchant.findOne({ userId: recipientId });
       if (merchant) recipientObjectId = merchant._id;
     }
 
