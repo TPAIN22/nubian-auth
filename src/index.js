@@ -73,6 +73,7 @@ app.use(enforceHTTPS);
 
 // 🧩 CORS Configuration - MUST BE FIRST
 const BAKED_IN_ORIGINS = [
+  'http://192.168.50.83',
   'http://localhost:3000',
   'http://localhost:3001',
   'https://www.nubian-sd.com',
