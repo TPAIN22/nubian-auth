@@ -183,6 +183,13 @@ export const validateSubCityUpdate = [
 ];
 
 // Parameter validation for IDs
+// Used by update/delete routes where the resource id is `:id`
+export const validateIdParam = [
+  param('id')
+    .isMongoId()
+    .withMessage('Invalid ID')
+];
+
 export const validateCountryId = [
   param('countryId')
     .isMongoId()

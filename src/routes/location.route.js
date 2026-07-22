@@ -27,6 +27,7 @@ import {
   validateCountryId,
   validateCityId,
   validateSubCityId,
+  validateIdParam,
   validateActiveQuery
 } from '../middleware/validators/location.validator.js';
 
@@ -79,13 +80,13 @@ router.post('/countries',
 
 router.put('/countries/:id',
   isAuthenticated, isAdmin,
-  validateCountryId, handleValidationErrors,
+  validateIdParam, handleValidationErrors,
   updateCountry
 );
 
 router.delete('/countries/:id',
   isAuthenticated, isAdmin,
-  validateCountryId, handleValidationErrors,
+  validateIdParam, handleValidationErrors,
   deleteCountry
 );
 
@@ -101,13 +102,13 @@ router.post('/countries/:countryId/cities',
 
 router.put('/cities/:id',
   isAuthenticated, isAdmin,
-  validateCityId, handleValidationErrors,
+  validateIdParam, handleValidationErrors,
   updateCity
 );
 
 router.delete('/cities/:id',
   isAuthenticated, isAdmin,
-  validateCityId, handleValidationErrors,
+  validateIdParam, handleValidationErrors,
   deleteCity
 );
 
@@ -123,13 +124,13 @@ router.post('/cities/:cityId/subcities',
 
 router.put('/subcities/:id',
   isAuthenticated, isAdmin,
-  validateSubCityId, handleValidationErrors,
+  validateIdParam, handleValidationErrors,
   updateSubCity
 );
 
 router.delete('/subcities/:id',
   isAuthenticated, isAdmin,
-  validateSubCityId, handleValidationErrors,
+  validateIdParam, handleValidationErrors,
   deleteSubCity
 );
 
