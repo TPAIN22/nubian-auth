@@ -76,6 +76,13 @@ async function getOrCreateUser(clerkId, requestId) {
  * @returns {Promise<Object>} - Converted cart object
  */
 async function convertCart(cartObj, currencyCode) {
+  // Stamp the USD base BEFORE anything is overwritten below. Coupon `value`,
+  // `maxDiscount` and `minOrderAmount` are all stored in USD, so the coupon
+  // endpoints have to be given `subtotalBase` — handing them the converted
+  // `subtotal` applies a fixed $10 coupon as though it were 10 SDG.
+  if (cartObj.subtotal !== undefined) cartObj.subtotalBase = cartObj.subtotal;
+  cartObj.baseCurrency = 'USD';
+
   if (!currencyCode || currencyCode.toUpperCase() === 'USD') {
     return cartObj;
   }

@@ -207,6 +207,82 @@ export function convertAndFormatPriceSync(amountUSD, currencyCode, rateInfo, cur
 }
 
 /**
+ * Resolve the { config, rate } pair needed to convert into `currencyCode`,
+ * fetching each at most once. The result is shaped to be passed straight back
+ * in as the `context` argument of `convertProductPrices`, so a single request
+ * never hits Currency / ExchangeRate twice.
+ *
+ * For USD we deliberately return the *default* config rather than the DB row:
+ * the seeded USD document carries `roundingStrategy: "ENDING_9"`, and product
+ * payloads have never had that applied (convertProductPrices only loads a DB
+ * config when the code isn't USD). Loading it here would silently start
+ * re-pricing every USD amount that flows through these helpers.
+ */
+export async function getCurrencyContext(currencyCode) {
+  const upperCode = currencyCode?.toUpperCase() || "USD";
+
+  if (upperCode === "USD") {
+    return { upperCode, config: getDefaultCurrencyConfig("USD"), rate: null };
+  }
+
+  const [config, rate] = await Promise.all([
+    Currency.findOne({ code: upperCode }).lean(),
+    getLatestRate(upperCode),
+  ]);
+
+  return { upperCode, config: config || getDefaultCurrencyConfig(upperCode), rate };
+}
+
+/**
+ * Convert one USD scalar into the context's currency.
+ *
+ * Always use this instead of the `applyPsychologicalPricing(usd * rate)`
+ * shortcut: that shortcut skips `marketMarkupAdjustment`, which
+ * convertAndFormatPriceSync applies *before* rounding. Any surface that takes
+ * the shortcut reports a number below what the shopper was actually charged
+ * the moment a market markup is configured.
+ */
+export function convertAmount(amountUSD, context) {
+  const { upperCode, config, rate } = context || {};
+  return convertAndFormatPriceSync(amountUSD, upperCode, rate, config).priceConverted;
+}
+
+/**
+ * Convert order / quote lines into the context's currency.
+ *
+ * Rounding happens PER UNIT and quantities multiply afterwards — the same order
+ * of operations `convertProductPrices` uses, since it converts each unit price
+ * individually. Converting the aggregate instead yields a total that disagrees
+ * with the line items the shopper is looking at: under SDG's NEAREST_10
+ * strategy `round10(unit) * qty` and `round10(unit * qty)` drift by up to 5 per
+ * unit. Every surface that reports a converted order total must come through
+ * here, or the checkout screen and the stored order will disagree again.
+ *
+ * @param {Array<{unitPrice:number, quantity:number}>} lines - USD unit prices
+ * @param {Object} context - from getCurrencyContext()
+ */
+export function convertLineTotals(lines, context) {
+  const cache = new Map();
+  const convert = (usd) => {
+    if (cache.has(usd)) return cache.get(usd);
+    const converted = convertAmount(usd, context);
+    cache.set(usd, converted);
+    return converted;
+  };
+
+  let total = 0;
+  const converted = (lines || []).map((line) => {
+    const quantity = Number(line?.quantity) || 0;
+    const unitPrice = convert(Number(line?.unitPrice) || 0);
+    const lineTotal = unitPrice * quantity;
+    total += lineTotal;
+    return { ...line, unitPrice, lineTotal };
+  });
+
+  return { lines: converted, total };
+}
+
+/**
  * Convert Product Prices (OPTIMIZED)
  */
 export async function convertProductPrices(product, currencyCode, context = {}) {
@@ -349,9 +425,12 @@ function buildPriceEnvelope(source, convert, config) {
 /**
  * FX Snapshot for orders
  */
-export async function getFxSnapshotForOrder(currencyCode) {
+export async function getFxSnapshotForOrder(currencyCode, context) {
   const upperCode = currencyCode?.toUpperCase() || "USD";
-  const rateInfo = await getLatestRate(upperCode);
+  // Reuse the caller's context when it has one so the rate we *store* on the
+  // order is provably the same rate we *converted* with. (USD contexts carry a
+  // null rate — fall through and let getLatestRate return the 1:1 stub.)
+  const rateInfo = context?.rate ?? (await getLatestRate(upperCode));
 
   return {
     base: "USD",

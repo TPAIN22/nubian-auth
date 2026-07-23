@@ -4,6 +4,7 @@ import Order from '../models/orders.model.js';
 import couponService from '../services/coupon.service.js';
 import Product from '../models/product.model.js';
 import { sendSuccess, sendError, sendCreated, sendNotFound } from '../lib/response.js';
+import { getCurrencyContext, convertAmount } from '../services/currency.service.js';
 import logger from '../lib/logger.js';
 import { getAuth } from '@clerk/express';
 import mongoose from 'mongoose';
@@ -208,10 +209,33 @@ export const getCouponByCode = async (req, res) => {
       }
     }
 
-    // Calculate discount preview if order amount provided
+    // Calculate discount preview if order amount provided.
+    //
+    // `orderAmount` is expected in USD — the currency `value`, `maxDiscount`
+    // and `minOrderAmount` are stored in. Clients send the quote's
+    // `subtotalBase` here, never the display-currency `subtotal`, so this
+    // preview is computed exactly the way couponService.reserveCoupon will
+    // compute it at order time. We only convert the *result* for display.
     let discountAmount = 0;
     if (validation.valid && orderAmount) {
       discountAmount = coupon.calculateDiscount(parseFloat(orderAmount));
+    }
+
+    const displayCurrency = req.currencyCode || 'USD';
+    let discountAmountConverted = discountAmount;
+    if (displayCurrency !== 'USD' && discountAmount > 0) {
+      try {
+        const ctx = await getCurrencyContext(displayCurrency);
+        discountAmountConverted = convertAmount(discountAmount, ctx);
+      } catch (err) {
+        // Fall back to the USD figure rather than failing the lookup; the
+        // authoritative discount is still applied server-side at checkout.
+        logger.warn('Coupon discount conversion failed', {
+          requestId: req.requestId,
+          currency: displayCurrency,
+          error: err.message,
+        });
+      }
     }
 
     return sendSuccess(res, {
@@ -237,6 +261,12 @@ export const getCouponByCode = async (req, res) => {
           originalAmount: parseFloat(orderAmount),
           discountAmount,
           finalAmount: parseFloat(orderAmount) - discountAmount,
+          // Amounts above are USD (the base every coupon field is stored in).
+          // `discountAmountConverted` is the same discount in the caller's
+          // display currency — that's the one to render.
+          currency: 'USD',
+          discountAmountConverted,
+          displayCurrency,
         } : null,
       },
     });

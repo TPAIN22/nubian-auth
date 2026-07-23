@@ -2,14 +2,18 @@ import Order from '../models/orders.model.js';
 import Cart from '../models/carts.model.js';
 import Address from '../models/address.model.js';
 import Counter from '../models/counter.model.js';
-import Currency from '../models/currency.model.js';
 import Marketer from '../models/marketer.model.js';
 import ReferralTrackingLog from '../models/referralTrackingLog.model.js';
 import CouponUsage from '../models/couponUsage.model.js';
 import Product from '../models/product.model.js';
 import User from '../models/user.model.js';
 import couponService from './coupon.service.js';
-import { getFxSnapshotForOrder, applyPsychologicalPricing } from './currency.service.js';
+import {
+  getFxSnapshotForOrder,
+  getCurrencyContext,
+  convertAmount,
+  convertLineTotals,
+} from './currency.service.js';
 import { getProductPrice, mapToObject } from '../utils/cartUtils.js';
 import { calculateFinalPrice } from '../lib/pricing.engine.js';
 import { ServiceError } from '../lib/errors.js';
@@ -238,18 +242,39 @@ class OrderService {
   /**
    * Convert USD order totals into the user's selected currency.
    * Never throws — returns nulls if conversion fails so the order still goes through.
+   *
+   * The total is built by converting each line's UNIT price and then multiplying
+   * by quantity (see convertLineTotals) rather than converting the aggregate.
+   * That's what the cart/checkout screens show the shopper, and converting the
+   * aggregate instead is exactly what made the dashboard total drift from the
+   * app total by a few units per line.
+   *
+   * @param {Object} args
+   * @param {Array}  args.orderProducts - order line items (USD `price`, `quantity`)
+   * @param {number} args.discountAmount - USD discount already applied
    */
-  async resolveCurrencyConversions(totals, currencyCode, fxSnapshot) {
+  async resolveCurrencyConversions({ orderProducts, discountAmount }, currencyCode, context) {
     if (!currencyCode || currencyCode.toUpperCase() === 'USD') {
       return { totalAmountConverted: null, discountAmountConverted: null, finalAmountConverted: null };
     }
     try {
-      const currency = await Currency.findOne({ code: currencyCode.toUpperCase() }).lean();
-      const rate     = fxSnapshot?.rate || 1;
+      const ctx = context || (await getCurrencyContext(currencyCode));
+
+      const { total: totalAmountConverted } = convertLineTotals(
+        (orderProducts || []).map((p) => ({ unitPrice: p.price, quantity: p.quantity })),
+        ctx,
+      );
+
+      const discountAmountConverted = discountAmount > 0 ? convertAmount(discountAmount, ctx) : 0;
+
       return {
-        totalAmountConverted:    applyPsychologicalPricing(totals.totalAmount    * rate, currency),
-        discountAmountConverted: applyPsychologicalPricing(totals.discountAmount * rate, currency),
-        finalAmountConverted:    applyPsychologicalPricing(totals.finalAmount    * rate, currency),
+        totalAmountConverted,
+        discountAmountConverted,
+        // Derived by subtraction rather than converted on its own, so the stored
+        // order always satisfies final = total − discount in the shopper's
+        // currency. Converting finalAmount independently lets rounding break
+        // that identity and the dashboard shows three numbers that don't add up.
+        finalAmountConverted: Math.max(0, totalAmountConverted - discountAmountConverted),
       };
     } catch (err) {
       logger.warn('Currency conversion failed — order saved in USD', { error: err.message });
@@ -390,15 +415,19 @@ class OrderService {
 
     // 9. Pre-resolve referral marketer + currency (parallel)
     const selectedCurrency = body.currencyCode || user.currencyCode || 'USD';
-    const [resolvedMarketer, fxSnapshot] = await Promise.all([
+    const [resolvedMarketer, currencyContext] = await Promise.all([
       this.resolveMarketer(body.referralCode || null, clerkUserId),
-      getFxSnapshotForOrder(selectedCurrency),
+      getCurrencyContext(selectedCurrency),
     ]);
 
+    // Snapshot and conversion share one context, so the rate recorded on the
+    // order is the rate the stored amounts were actually computed with.
+    const fxSnapshot = await getFxSnapshotForOrder(selectedCurrency, currencyContext);
+
     const currencyConversions = await this.resolveCurrencyConversions(
-      { totalAmount, discountAmount, finalAmount },
+      { orderProducts, discountAmount },
       selectedCurrency,
-      fxSnapshot
+      currencyContext
     );
 
     // 10. Create the order — single DB write
@@ -525,6 +554,7 @@ class OrderService {
     });
 
     const {
+      orderProducts,
       totalAmount,
       merchantMap,
       platformTotalAmount,
@@ -534,45 +564,69 @@ class OrderService {
     const shippingFee = 0;
     const shippingRate = null;
 
+    // buildOrderItems works in USD (the pricing engine reads raw merchant prices
+    // off the documents). Convert before returning — this response previously
+    // shipped USD amounts stamped with the user's currency code, which is how
+    // the checkout summary ended up showing unconverted totals.
+    const context = await getCurrencyContext(currencyCode);
+    const toDisplay = (lines) =>
+      convertLineTotals(
+        lines.map((p) => ({ unitPrice: p.price, quantity: p.quantity })),
+        context,
+      );
+
+    const { total: subtotal } = toDisplay(orderProducts);
+
     // Build per-merchant breakdown that mirrors the mobile QuoteResponse shape.
     const subOrders = [];
     for (const [merchantId, data] of merchantMap.entries()) {
+      const { lines, total } = toDisplay(data.products);
       subOrders.push({
         merchantId,
-        items: data.products.map((p) => ({
+        items: data.products.map((p, i) => ({
           productId:     String(p.product),
           quantity:      p.quantity,
-          price:         p.price,
-          merchantPrice: p.merchantPrice,
+          price:         lines[i].unitPrice,
+          merchantPrice: convertAmount(p.merchantPrice, context),
         })),
-        subtotal:    data.amount,
+        subtotal:    total,
         shippingFee: 0,
-        total:       data.amount,
+        total,
       });
     }
 
     if (platformTotalAmount > 0) {
+      const { lines, total } = toDisplay(unmerchantedProducts);
       subOrders.push({
         merchantId:  null,
-        items: unmerchantedProducts.map((p) => ({
+        items: unmerchantedProducts.map((p, i) => ({
           productId:     String(p.product),
           quantity:      p.quantity,
-          price:         p.price,
-          merchantPrice: p.merchantPrice,
+          price:         lines[i].unitPrice,
+          merchantPrice: convertAmount(p.merchantPrice, context),
         })),
-        subtotal:    platformTotalAmount,
+        subtotal:    total,
         shippingFee: 0,
-        total:       platformTotalAmount,
+        total,
       });
     }
 
     return {
       address,
       shippingRate,
-      subtotal:    totalAmount,
+      subtotal,
       shippingFee,
-      total:       totalAmount + shippingFee,
-      currency:    currencyCode,
+      total:       subtotal + shippingFee,
+      currency:    context.upperCode,
+
+      // USD base alongside the display amounts. Coupon `value`, `maxDiscount`
+      // and `minOrderAmount` are all stored in USD, so clients must send
+      // `subtotalBase` — not `subtotal` — to the coupon endpoints; sending the
+      // display amount makes a fixed $10 coupon behave like a 10 SDG one.
+      baseCurrency: 'USD',
+      subtotalBase: totalAmount,
+      totalBase:    totalAmount + shippingFee,
+
       subOrders,
     };
   }
