@@ -75,6 +75,46 @@ const optionalEnvVars = {
     description: 'Run workers inside the API process (single-dyno deploys)',
     default: 'false',
   },
+
+  // ── Geo / maps ─────────────────────────────────────────────────────────────
+  // All map + geocoding traffic is proxied through /api/geo, so these keys stay
+  // server-side. Provider is swappable without touching code — see
+  // services/geo/providers/index.js for the per-provider config each key feeds.
+  GEO_PROVIDER: {
+    value: process.env.GEO_PROVIDER || 'none',
+    description: 'Active map/geocoding provider (google, nominatim, none)',
+    default: 'none',
+  },
+  GEO_FALLBACK_PROVIDERS: {
+    value: process.env.GEO_FALLBACK_PROVIDERS || '',
+    description: 'Comma-separated providers to try when the primary fails',
+    default: '',
+  },
+  GEO_GOOGLE_API_KEY: {
+    value: process.env.GEO_GOOGLE_API_KEY,
+    description: 'Server-side key for the Google provider (never sent to clients)',
+    default: '',
+  },
+  GEO_DEFAULT_LAT: {
+    value: process.env.GEO_DEFAULT_LAT || '15.5007',
+    description: 'Map centre latitude when the device has no fix (default: Khartoum)',
+    default: '15.5007',
+  },
+  GEO_DEFAULT_LNG: {
+    value: process.env.GEO_DEFAULT_LNG || '32.5599',
+    description: 'Map centre longitude when the device has no fix (default: Khartoum)',
+    default: '32.5599',
+  },
+  GEO_COUNTRY_CODES: {
+    value: process.env.GEO_COUNTRY_CODES || '',
+    description: 'Comma-separated ISO country codes to bias/restrict search (e.g. sd,sa,ae)',
+    default: '',
+  },
+  GEO_TILE_URL: {
+    value: process.env.GEO_TILE_URL || '',
+    description: 'Raster tile template handed to clients for non-SDK map rendering',
+    default: '',
+  },
 };
 
 /**
@@ -93,6 +133,9 @@ const validateFormat = (key, value) => {
     ENABLE_QUEUE: (val) => ['true', 'false'].includes(val),
     RUN_WORKERS_INPROCESS: (val) => ['true', 'false'].includes(val),
   };
+  // Note: only *required* vars are format-checked here. Geo config is validated
+  // at first use by GeoService, which logs and falls through to the next
+  // provider rather than taking the process down over a map key.
 
   if (validations[key]) {
     return validations[key](value);

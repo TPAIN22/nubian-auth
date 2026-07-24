@@ -17,20 +17,11 @@ import {
 import { getProductPrice, mapToObject } from '../utils/cartUtils.js';
 import { calculateFinalPrice } from '../lib/pricing.engine.js';
 import { ServiceError } from '../lib/errors.js';
+import { buildShippingAddressText, toAddressSnapshot } from '../lib/address.js';
+import { LOCATION_SOURCE } from '../services/geo/types.js';
 import logger from '../lib/logger.js';
 
 // ─── Private helpers (no HTTP knowledge) ─────────────────────────────────────
-
-function buildShippingAddressText(addr) {
-  return [
-    addr.name,
-    addr.city,
-    addr.area,
-    addr.street,
-    addr.building,
-    addr.notes ? `ملاحظات: ${addr.notes}` : null,
-  ].filter(Boolean).join(' - ').trim();
-}
 
 function normalizePaymentMethod(value) {
   const v = String(value || '').trim().toUpperCase();
@@ -49,11 +40,17 @@ class OrderService {
    * Resolve and validate a shipping address from an addressId.
    * Enforces ownership: the address must belong to userId.
    *
-   * @returns {{ addressText, phoneNumber, city }}
+   * Returns both the flat legacy fields (still written to every order) and an
+   * immutable snapshot, so the order stops depending on the saved address the
+   * moment it is placed.
+   *
+   * @returns {{ addressText, phoneNumber, city, addressSnapshot }}
    * @throws  ServiceError if address not found or not owned by user
    */
   async resolveAddress(addressId, userId) {
-    if (!addressId) return { addressText: '', phoneNumber: '', city: '' };
+    if (!addressId) {
+      return { addressText: '', phoneNumber: '', city: '', addressSnapshot: undefined };
+    }
 
     const addr = await Address.findOne({ _id: addressId, user: userId });
     if (!addr) {
@@ -61,10 +58,16 @@ class OrderService {
         { field: 'addressId', message: 'Invalid or inaccessible addressId', value: String(addressId) },
       ]);
     }
+
+    const snapshot = toAddressSnapshot(addr);
+
     return {
       addressText: buildShippingAddressText(addr),
       phoneNumber: String(addr.phone || addr.whatsapp || '').trim(),
-      city:        String(addr.city  || '').trim(),
+      // v2 addresses carry a geocoded city; v1 rows fall back to the hierarchy
+      // name. Either way `city` on the order stays populated as it always was.
+      city:        String(addr.city || addr.cityName || snapshot.city || '').trim(),
+      addressSnapshot: snapshot,
     };
   }
 
@@ -335,13 +338,29 @@ class OrderService {
     }
 
     // 4. Resolve shipping address
-    let { addressText, phoneNumber, city } = body.addressId
+    let { addressText, phoneNumber, city, addressSnapshot } = body.addressId
       ? await this.resolveAddress(String(body.addressId), user._id)
       : {
+          // Legacy free-text path — still supported for any client that has not
+          // moved to addressId.
           addressText: String(body.shippingAddress || '').trim(),
           phoneNumber:  String(body.phoneNumber    || '').trim(),
           city:         String(body.city           || '').trim(),
+          // Built below, once the text has been validated.
+          addressSnapshot: undefined,
         };
+
+    // A map-first address is defined by its pin, not its prose: a shopper can
+    // legitimately drop a pin on an unnamed street where the geocoder returns
+    // nothing and they add no building detail. That address is deliverable, so
+    // the legacy 10-character minimum must not reject it — instead give the
+    // order a readable line derived from the coordinates.
+    const snapshotCoords = addressSnapshot?.location?.coordinates;
+    if (Array.isArray(snapshotCoords) && snapshotCoords.length === 2) {
+      const [lng, lat] = snapshotCoords;
+      const pinLine = `📍 ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      addressText = addressText.length >= 10 ? addressText : [addressText, pinLine].filter(Boolean).join(' - ');
+    }
 
     if (!addressText || addressText.length < 10 || addressText.length > 500) {
       throw new ServiceError('Shipping address must be between 10 and 500 characters', 'VALIDATION_ERROR', 400, [
@@ -354,6 +373,23 @@ class OrderService {
       ]);
     }
     if (!city) city = 'غير محدد';
+
+    // Every order gets a snapshot — no exceptions.
+    //
+    // The free-text path has no saved address to freeze, but an order with no
+    // snapshot forces every downstream consumer to keep a second code path
+    // alive forever. Building one from the posted text costs nothing and means
+    // "read addressSnapshot" is always correct. It is honestly marked `legacy`
+    // / `low` confidence with no coordinates, because that is exactly what it is.
+    if (!addressSnapshot) {
+      addressSnapshot = toAddressSnapshot({
+        name: String(body.name || '').trim(),
+        phone: phoneNumber,
+        formattedAddress: addressText,
+        city,
+        locationSource: LOCATION_SOURCE.LEGACY,
+      });
+    }
 
     // 5. Build order line items + validate stock
     const {
@@ -445,6 +481,7 @@ class OrderService {
       address:         addressText,
       phoneNumber,
       city,
+      addressSnapshot,
       transferProof:   body.transferProof || body.paymentProofUrl || null,
       marketer:          resolvedMarketer?.id   || null,
       referralCodeUsed:  resolvedMarketer?.code || null,

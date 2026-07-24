@@ -21,6 +21,8 @@ import addressRoutes from './routes/address.route.js';
 import checkoutRoutes from './routes/checkout.route.js';
 import couponRoutes from './routes/coupons.route.js';
 import locationRoutes from './routes/location.route.js';
+import geoRoutes from './routes/geo.route.js';
+import addressAdminRoutes from './routes/address.admin.route.js';
 import merchantRoutes from './routes/merchant.route.js';
 import homeRoutes from './routes/home.route.js';
 import healthRoutes from './routes/health.route.js';
@@ -214,7 +216,11 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/checkout', checkoutRoutes);
 app.use('/api/coupons', couponRoutes);
+// Legacy country → city → subcity hierarchy. Kept mounted: existing addresses
+// still reference these ids and the dashboard still administers them.
 app.use('/api/locations', locationRoutes);
+// Map-first geocoding proxy. Vendor-neutral — see services/geo/.
+app.use('/api/geo', geoRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/fx', fxRoutes);
 app.use('/api/me/preferences', preferencesRoutes);
@@ -224,6 +230,7 @@ app.use('/api/recommendations', recommendationsRoutes);
 app.use('/api/tracking', trackingRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/admin/addresses', addressAdminRoutes);
 app.use('/api/admin/currencies', currencyAdminRoutes);
 app.use('/api/admin/marketers', marketerAdminRoutes);
 app.use('/api/affiliate', affiliateRoutes);
