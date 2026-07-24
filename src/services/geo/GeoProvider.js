@@ -72,16 +72,25 @@ export class GeoProvider {
 
   /**
    * Client-facing map configuration. Deliberately vendor-shaped-but-neutral:
-   * clients receive a style/tile URL and attribution and render with whatever
-   * map engine they use. Never include a secret here — this is public.
+   * clients receive a basemap strategy plus optional URLs and render with
+   * whatever map engine they use. Never include a secret here — this is public.
    *
-   * @returns {{ provider: string, styleUrl: string|null, tileUrl: string|null,
-   *             attribution: string, maxZoom: number, defaultCenter: {lat:number,lng:number},
+   * `basemap` tells the client *how* to draw, without naming a vendor:
+   *   'raster' — draw the XYZ tiles at `tileUrl`
+   *   'vector' — draw the style at `styleUrl`
+   *   'native' — the provider's tiles are only licensed through its platform
+   *              SDK, so the client must use its own native basemap
+   *   'none'   — no basemap available; render a coordinate-only placeholder
+   *
+   * @returns {{ provider: string, basemap: 'raster'|'vector'|'native'|'none',
+   *             styleUrl: string|null, tileUrl: string|null, attribution: string,
+   *             maxZoom: number, defaultCenter: {lat:number,lng:number},
    *             defaultZoom: number }}
    */
   getClientConfig() {
     return {
       provider: this.key,
+      basemap: 'none',
       styleUrl: null,
       tileUrl: null,
       attribution: '',

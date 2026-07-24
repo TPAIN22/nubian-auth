@@ -110,9 +110,12 @@ export class NominatimGeoProvider extends GeoProvider {
   }
 
   getClientConfig() {
+    const styleUrl = this.config.styleUrl || null;
+
     return {
       ...super.getClientConfig(),
-      styleUrl: this.config.styleUrl || null,
+      basemap: styleUrl ? 'vector' : 'raster',
+      styleUrl,
       tileUrl: this.tileUrl,
       attribution: this.attribution,
       maxZoom: 19,

@@ -67,8 +67,12 @@ export class GoogleGeoProvider extends GeoProvider {
   getClientConfig() {
     return {
       ...super.getClientConfig(),
-      // Clients render Google tiles through their own platform SDK (Play
-      // Services / MapKit), so there is no URL to hand out here.
+      // Google tiles are only licensed for display through Google's own
+      // platform SDKs, so there is deliberately no tile/style URL to hand out.
+      // Clients must render with a native Google basemap — which also keeps us
+      // inside the "No Use With Non-Google Maps" term that forbids showing
+      // Geocoding/Places results on someone else's basemap.
+      basemap: 'native',
       styleUrl: null,
       tileUrl: null,
       attribution: '© Google',

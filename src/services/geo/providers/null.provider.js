@@ -30,9 +30,15 @@ export class NullGeoProvider extends GeoProvider {
   }
 
   getClientConfig() {
+    const tileUrl = this.config.tileUrl || null;
+
     return {
       ...super.getClientConfig(),
-      tileUrl: this.config.tileUrl || null,
+      // A tile URL can still be configured without any geocoding provider —
+      // that gives a usable map with no address labels, which is exactly the
+      // degraded mode this provider exists for.
+      basemap: tileUrl ? 'raster' : 'none',
+      tileUrl,
       attribution: this.config.attribution || '',
     };
   }
