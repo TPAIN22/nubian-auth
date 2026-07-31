@@ -8,6 +8,7 @@
  */
 import axios from 'axios';
 import { getGeoService } from '../services/geo/index.js';
+import { getServiceAreaConfig } from '../services/deliveryArea.service.js';
 import { sendError, sendSuccess } from '../lib/response.js';
 import logger from '../lib/logger.js';
 
@@ -17,11 +18,19 @@ const GENERIC_ERROR = 'Location service unavailable';
  * Public map configuration — provider key, tile/style URL, attribution,
  * capabilities and the debounce timings clients should honour.
  * Contains no secrets by construction (see `GeoProvider#getClientConfig`).
+ *
+ * Also carries the delivery service area, so the picker can grey out its own
+ * confirm button before the shopper fills in a form we're going to reject.
+ * Composed here rather than inside the geo service because coverage is a
+ * database concern and `services/geo/` must stay vendor- and DB-free.
  */
 export const getConfig = async (req, res) => {
   try {
     return sendSuccess(res, {
-      data: getGeoService().getClientConfig(),
+      data: {
+        ...getGeoService().getClientConfig(),
+        serviceArea: await getServiceAreaConfig(),
+      },
       message: 'Map configuration retrieved successfully',
     });
   } catch (error) {
@@ -77,10 +86,26 @@ export const search = async (req, res) => {
   const { q, lat, lng, radius, language, sessionToken } = req.query;
 
   try {
+    // Bias unanchored searches to the middle of the area we actually serve, so
+    // "market" surfaces Khartoum results rather than whatever the provider
+    // ranks highest countrywide. Only a bias — the provider may still return
+    // out-of-area places, and the save/checkout gates remain what enforce
+    // coverage. A client-supplied anchor always wins.
+    let bias = { lat, lng };
+
+    if (lat === undefined && lng === undefined) {
+      const { bbox } = await getServiceAreaConfig();
+      if (bbox) {
+        bias = {
+          lat: (bbox.minLat + bbox.maxLat) / 2,
+          lng: (bbox.minLng + bbox.maxLng) / 2,
+        };
+      }
+    }
+
     const results = await getGeoService().autocomplete({
       query: q,
-      lat,
-      lng,
+      ...bias,
       radiusMeters: radius,
       language,
       sessionToken,

@@ -10,6 +10,7 @@ import {
   isValidCoordinate,
 } from '../services/geo/types.js';
 import { applyGeoAddress, toGeoPoint } from '../lib/address.js';
+import { COVERAGE, evaluateCoverage } from '../services/deliveryArea.service.js';
 import logger from '../lib/logger.js';
 
 /**
@@ -106,7 +107,14 @@ const resolveLocation = async ({ countryId, cityId, subCityId }) => {
  * label is a nicety, and blocking a save on a third-party outage would be a
  * worse product than an address with no formatted line.
  *
- * @returns {Promise<{ data?: Object, error?: string }>}
+ * Delivery coverage *is* enforced here, against the pin rather than any
+ * geocoded name — see `deliveryArea.service.js` for why names can't be trusted.
+ * This is the early gate: it stops a shopper filling in a whole address form
+ * before finding out at checkout that we don't deliver there. It is not the
+ * authoritative one — `order.service.resolveAddress` re-checks, because a zone
+ * can be redrawn long after an address was saved.
+ *
+ * @returns {Promise<{ data?: Object, error?: string, code?: string }>}
  */
 const buildAddressPatch = async (body, { requestId } = {}) => {
   const data = pickAllowed(body);
@@ -155,6 +163,22 @@ const buildAddressPatch = async (body, { requestId } = {}) => {
         requestId,
         error: error.message,
       });
+    }
+
+    const coverage = await evaluateCoverage({ location: data.location }, { requestId });
+
+    if (coverage.status === COVERAGE.OUTSIDE) {
+      logger.info('address: rejected a pin outside the delivery area', {
+        requestId,
+        lat: latitude,
+        lng: longitude,
+        city: data.city || null,
+      });
+
+      return {
+        error: 'We do not deliver to this location yet',
+        code: 'OUT_OF_SERVICE_AREA',
+      };
     }
   }
 
@@ -208,8 +232,8 @@ export const addAddress = async (req, res) => {
   const userId = req.appUser._id;
 
   try {
-    const { data, error } = await buildAddressPatch(req.body, { requestId: req.requestId });
-    if (error) return res.status(400).json({ message: error });
+    const { data, error, code } = await buildAddressPatch(req.body, { requestId: req.requestId });
+    if (error) return res.status(400).json({ message: error, ...(code && { code }) });
 
     if (data.isDefault) {
       await clearDefaultFor(userId);
@@ -222,7 +246,15 @@ export const addAddress = async (req, res) => {
     if (isDuplicateKeyError(error)) {
       try {
         await clearDefaultFor(userId);
-        const { data } = await buildAddressPatch(req.body, { requestId: req.requestId });
+        const { data, error: retryRejection, code: retryCode } = await buildAddressPatch(
+          req.body,
+          { requestId: req.requestId }
+        );
+        // Coverage can flip between the two attempts (a zone deactivated
+        // mid-request); without this the retry would spread `undefined`.
+        if (retryRejection) {
+          return res.status(400).json({ message: retryRejection, ...(retryCode && { code: retryCode }) });
+        }
         const address = await Address.create({ ...data, user: userId });
         return res.status(201).json(address.toJSON());
       } catch (retryError) {
@@ -249,8 +281,8 @@ export const updateAddress = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const { data, error } = await buildAddressPatch(req.body, { requestId: req.requestId });
-    if (error) return res.status(400).json({ message: error });
+    const { data, error, code } = await buildAddressPatch(req.body, { requestId: req.requestId });
+    if (error) return res.status(400).json({ message: error, ...(code && { code }) });
 
     if (data.isDefault) {
       await Address.updateMany(
