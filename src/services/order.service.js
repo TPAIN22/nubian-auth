@@ -18,6 +18,7 @@ import { getProductPrice, mapToObject } from '../utils/cartUtils.js';
 import { calculateFinalPrice } from '../lib/pricing.engine.js';
 import { ServiceError } from '../lib/errors.js';
 import { buildShippingAddressText, toAddressSnapshot } from '../lib/address.js';
+import { COVERAGE, evaluateCoverage } from './deliveryArea.service.js';
 import { LOCATION_SOURCE } from '../services/geo/types.js';
 import logger from '../lib/logger.js';
 
@@ -44,8 +45,19 @@ class OrderService {
    * immutable snapshot, so the order stops depending on the saved address the
    * moment it is placed.
    *
+   * Also the authoritative delivery-coverage gate. The address controller
+   * rejects out-of-area pins at save time for the shopper's sake, but only this
+   * check is load-bearing: an address saved before a zone existed, or one that
+   * fell outside the boundary when it was last redrawn, reaches checkout
+   * perfectly valid and must still be stopped here.
+   *
+   * Addresses with no pin at all cannot be tested against a polygon, so once
+   * coverage is configured they are asked to confirm a location on the map
+   * rather than waved through — a pinless address is exactly the case where
+   * "which city is this?" is least answerable.
+   *
    * @returns {{ addressText, phoneNumber, city, addressSnapshot }}
-   * @throws  ServiceError if address not found or not owned by user
+   * @throws  ServiceError if the address is missing, not owned, or undeliverable
    */
   async resolveAddress(addressId, userId) {
     if (!addressId) {
@@ -57,6 +69,38 @@ class OrderService {
       throw new ServiceError('Address not found', 'ADDRESS_NOT_FOUND', 400, [
         { field: 'addressId', message: 'Invalid or inaccessible addressId', value: String(addressId) },
       ]);
+    }
+
+    const coverage = await evaluateCoverage(addr, { requirePin: true });
+
+    if (coverage.status === COVERAGE.OUTSIDE) {
+      logger.info('checkout: blocked an order outside the delivery area', {
+        userId: String(userId),
+        addressId: String(addressId),
+        city: addr.city || addr.cityName || null,
+      });
+
+      throw new ServiceError(
+        'We do not deliver to this location yet',
+        'OUT_OF_SERVICE_AREA',
+        400,
+        [{ field: 'addressId', message: 'This address is outside our delivery area' }]
+      );
+    }
+
+    if (coverage.status === COVERAGE.NO_PIN) {
+      logger.info('checkout: blocked an order on an address with no pin', {
+        userId: String(userId),
+        addressId: String(addressId),
+        isLegacy: Boolean(addr.isLegacy),
+      });
+
+      throw new ServiceError(
+        'Please confirm this address on the map before ordering',
+        'ADDRESS_NEEDS_PIN',
+        400,
+        [{ field: 'addressId', message: 'This address has no map location' }]
+      );
     }
 
     const snapshot = toAddressSnapshot(addr);
