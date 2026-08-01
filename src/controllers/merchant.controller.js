@@ -3,11 +3,15 @@ import Merchant, { buildUnclaimedUserId, isUnclaimedUserId } from "../models/mer
 import Product from "../models/product.model.js";
 import Review from "../models/reviews.model.js";
 import Notify from "../models/merchantNotify.model.js";
+import Currency from "../models/currency.model.js";
 import { clerkClient } from '@clerk/express';
 import logger from '../lib/logger.js';
 import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden, sendPaginated } from '../lib/response.js';
 import { queueMerchantSuspensionEmail, queueMerchantUnsuspensionEmail } from '../services/mailService.js';
+import { enrichProductsWithPricing } from './products.controller.js';
+import { convertProductPrices } from '../services/currency.service.js';
+import { getLatestRate } from '../services/fx.service.js';
 
 // Statuses that allow a user to (re)submit an application by overwriting in place.
 // `needs_revision` and `rejected` are explicitly user-actionable: the dashboard
@@ -572,16 +576,53 @@ export const getStoreProducts = async (req, res) => {
 
     const totalProducts = await Product.countDocuments(filter);
 
+    // Same two-stage treatment every other product surface gets (see
+    // products.controller.js:getAllProducts). Without it the storefront serves
+    // raw merchant base prices — no markup, no discount, no FX — and the client
+    // renders those numbers under the shopper's own currency symbol.
+    const enrichedProducts = enrichProductsWithPricing(products);
+
+    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
+    let finalProducts = enrichedProducts;
+
+    if (currencyCode !== 'USD') {
+      try {
+        // Resolve config + rate ONCE for the page rather than per product.
+        const [currencyConfig, rateInfo] = await Promise.all([
+          Currency.findOne({ code: currencyCode }).lean(),
+          getLatestRate(currencyCode),
+        ]);
+
+        const currencyContext = { config: currencyConfig, rate: rateInfo };
+
+        finalProducts = await Promise.all(
+          enrichedProducts.map((product) =>
+            convertProductPrices(product, currencyCode, currencyContext)
+          )
+        );
+      } catch (conversionError) {
+        // A missing rate must not empty the storefront — fall back to USD.
+        logger.warn('Currency conversion failed for store products, returning USD prices', {
+          requestId: req.requestId,
+          storeId: id,
+          currencyCode,
+          error: conversionError.message,
+        });
+        finalProducts = enrichedProducts;
+      }
+    }
+
     logger.info('Store products retrieved', {
       requestId: req.requestId,
       storeId: id,
       total: totalProducts,
       page,
       limit,
+      currencyCode,
     });
 
     return sendPaginated(res, {
-      data: products,
+      data: finalProducts,
       page,
       limit,
       total: totalProducts,
