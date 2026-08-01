@@ -1547,6 +1547,112 @@ export const createStoreForMerchant = async (req, res) => {
 };
 
 /**
+ * Edit an unclaimed store (Admin only)
+ *
+ * Restricted to stores with no owner. Once a real user claims a store, its data
+ * belongs to them and is edited through the merchant's own profile endpoint —
+ * an admin silently rewriting a live merchant's payout details is a different
+ * (and far more sensitive) capability than fixing a typo on a store nobody owns.
+ */
+export const updateStoreForMerchant = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+
+    const merchant = await Merchant.findById(id);
+    if (!merchant) return sendNotFound(res, "Merchant");
+
+    if (merchant.claimStatus !== 'unclaimed') {
+      return sendError(res, {
+        message: 'This store is owned by a registered merchant and can no longer be edited here',
+        code: 'STORE_ALREADY_CLAIMED',
+        statusCode: 400,
+        details: { userId: merchant.userId },
+      });
+    }
+
+    const {
+      storeName, ownerName, email, phone, merchantType,
+      nationalId, crNumber, iban, logoUrl, banner, description,
+      categories, city, productSamples,
+    } = req.body;
+
+    // Email is the claim key, so a change has to stay unique across every store —
+    // otherwise two stores would compete for the same signup.
+    if (email !== undefined) {
+      const normalizedEmail = email.toLowerCase().trim();
+
+      if (normalizedEmail !== merchant.email) {
+        const clash = await Merchant.findOne({
+          email: normalizedEmail,
+          _id: { $ne: merchant._id },
+        });
+
+        if (clash) {
+          return sendError(res, {
+            message: `A ${clash.claimStatus === 'unclaimed' ? 'store' : 'merchant account'} already exists for ${normalizedEmail}`,
+            code: 'MERCHANT_EMAIL_TAKEN',
+            statusCode: 409,
+            details: {
+              merchantId: clash._id.toString(),
+              storeName: clash.storeName,
+              claimStatus: clash.claimStatus,
+            },
+          });
+        }
+
+        // A pending claim was raised by whoever signed up with the OLD address.
+        // Keeping it would let an admin retarget the store at a different email
+        // while a stale confirm button still points at the previous applicant.
+        if (merchant.claimRequestedBy) {
+          logger.info('Clearing pending claim request after store email change', {
+            requestId: req.requestId,
+            merchantId: merchant._id.toString(),
+            previousEmail: merchant.email,
+            newEmail: normalizedEmail,
+          });
+          merchant.claimRequestedBy = null;
+          merchant.claimRequestedAt = undefined;
+        }
+
+        merchant.email = normalizedEmail;
+      }
+    }
+
+    if (storeName    !== undefined) merchant.storeName    = storeName;
+    if (ownerName    !== undefined) merchant.ownerName    = ownerName;
+    if (phone        !== undefined) merchant.phone        = phone;
+    if (merchantType !== undefined) merchant.merchantType = merchantType;
+    if (nationalId   !== undefined) merchant.nationalId   = nationalId;
+    if (crNumber     !== undefined) merchant.crNumber     = crNumber;
+    if (iban         !== undefined) merchant.iban         = iban;
+    if (logoUrl      !== undefined) merchant.logoUrl      = logoUrl;
+    if (banner       !== undefined) merchant.banner       = banner;
+    if (description  !== undefined) merchant.description  = description;
+    if (city         !== undefined) merchant.city         = city;
+    if (categories   !== undefined) merchant.categories   = categories;
+    if (productSamples !== undefined) merchant.productSamples = productSamples;
+
+    await merchant.save();
+
+    logger.info('Unclaimed store updated by admin', {
+      requestId: req.requestId,
+      merchantId: merchant._id.toString(),
+      adminId,
+    });
+
+    return sendSuccess(res, { data: merchant, message: 'Store updated successfully' });
+  } catch (error) {
+    logger.error('Error updating store', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
  * Find registered Clerk users matching an unclaimed store's email (Admin only)
  *
  * Read-only helper that powers the "link owner" dialog. Returns candidates and

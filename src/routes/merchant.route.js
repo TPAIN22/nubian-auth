@@ -21,12 +21,13 @@ import {
   getPublicMerchants,
   freezeMerchant,
   createStoreForMerchant,
+  updateStoreForMerchant,
   getStoreClaimCandidates,
   linkStoreToUser,
 } from '../controllers/merchant.controller.js';
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
 import { isMerchant, isApprovedMerchant } from '../middleware/merchant.middleware.js';
-import { validateMerchantApplication, validateMerchantUpdate, validateMerchantStatusUpdate, validateMerchantSuspension, validateAdminStoreCreate, validateStoreLink } from '../middleware/validators/merchant.validator.js';
+import { validateMerchantApplication, validateMerchantUpdate, validateMerchantStatusUpdate, validateMerchantSuspension, validateAdminStoreCreate, validateAdminStoreUpdate, validateStoreLink } from '../middleware/validators/merchant.validator.js';
 import { validateObjectId } from '../middleware/validation.middleware.js';
 
 const router = express.Router();
@@ -54,6 +55,7 @@ router.get('/', isAuthenticated, isAdmin, getAllMerchants);
 // Admin-created stores. Registered before '/:id' so the literal path is not
 // swallowed by the ObjectId param route.
 router.post('/admin/stores', isAuthenticated, isAdmin, validateAdminStoreCreate, createStoreForMerchant);
+router.patch('/admin/stores/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), validateAdminStoreUpdate, updateStoreForMerchant);
 
 router.get('/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), getMerchantById);
 router.get('/:id/claim-candidates', isAuthenticated, isAdmin, ...validateObjectId('id'), getStoreClaimCandidates);

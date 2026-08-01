@@ -59,6 +59,34 @@ export const validateAdminStoreCreate = [
 ];
 
 /**
+ * Validation for editing an admin-created store
+ * (PATCH /api/merchants/admin/stores/:id)
+ *
+ * Every field is optional — this is a partial update. The controller applies
+ * only the keys actually present in the body.
+ */
+export const validateAdminStoreUpdate = [
+  sanitizeString('storeName',   { min: 2, max: 100, optional: true }),
+  sanitizeString('ownerName',   { min: 2, max: 100, optional: true }),
+  validateEmail('email', true),
+  validatePhone('phone', true),
+  body('merchantType')
+    .optional()
+    .isIn(['individual', 'business'])
+    .withMessage('merchantType must be "individual" or "business"'),
+  sanitizeString('nationalId',  { min: 0, max: 50, optional: true }),
+  sanitizeString('crNumber',    { min: 0, max: 50, optional: true }),
+  sanitizeString('iban',        { min: 0, max: 50, optional: true }),
+  sanitizeString('description', { min: 1, max: 2000, optional: true }),
+  sanitizeString('city',        { min: 1, max: 100, optional: true }),
+  body('categories').optional().isArray().withMessage('categories must be an array'),
+  body('productSamples').optional().isArray().withMessage('productSamples must be an array'),
+  body('logoUrl').optional().isString().isLength({ max: 1000 }),
+  body('banner').optional().isString().isLength({ max: 1000 }),
+  handleValidationErrors,
+];
+
+/**
  * Validation for linking an unclaimed store to a registered user
  * (POST /api/merchants/:id/link-user)
  */
