@@ -6,12 +6,15 @@ import {
   getMerchantPricingAnalytics,
   getCurrencyAnalytics,
 } from '../controllers/pricingAnalytics.controller.js';
-import { getAdminOverview } from '../controllers/adminAnalytics.controller.js';
+import { getAdminOverview, getAdminTimeseries } from '../controllers/adminAnalytics.controller.js';
 
 const router = express.Router();
 
 // Admin-only: platform-wide overview cards (merchants, products, orders, revenue)
 router.get('/overview',           isAuthenticated, isAdmin,            getAdminOverview);
+
+// Admin-only: daily order/revenue series for the overview trend chart
+router.get('/timeseries',         isAuthenticated, isAdmin,            getAdminTimeseries);
 
 // Admin-only: full platform pricing overview (reveals markups, margins)
 router.get('/pricing',            isAuthenticated, isAdmin,            getPricingAnalytics);
