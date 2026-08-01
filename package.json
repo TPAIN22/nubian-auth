@@ -12,7 +12,9 @@
     "seed:currencies": "node src/seeds/currencies.seed.js",
     "seed:zones": "node scripts/seed-delivery-zones.js",
     "verify:zones": "node scripts/seed-delivery-zones.js --verify",
-    "fetch:zone": "node scripts/fetch-zone.js"
+    "fetch:zone": "node scripts/fetch-zone.js",
+    "fix:product-indexes": "node scripts/fix-stale-product-indexes.js",
+    "backfill:product-merchant": "node scripts/backfill-product-merchant.js"
   },
   "keywords": [
     "ecommerce",

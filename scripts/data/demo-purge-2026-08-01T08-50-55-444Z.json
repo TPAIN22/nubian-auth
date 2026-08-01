@@ -1,0 +1,484 @@
+{
+  "purgedAt": "2026-08-01T08:50:55.446Z",
+  "reason": "Seeded demo products with an unresolvable legacy merchantId",
+  "legacyMerchantIds": [
+    "69dfcda0485105cb0464da23"
+  ],
+  "products": [
+    {
+      "_id": "69eef794234fd5d3edaaacac",
+      "name": "Samsung Galaxy S24",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef794234fd5d3edaaacaf",
+      "name": "Apple AirPods Pro 2nd Gen",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef795234fd5d3edaaacb2",
+      "name": "Lenovo IdeaPad 15\" Laptop",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef795234fd5d3edaaacb5",
+      "name": "Sony WH-1000XM5 Headphones",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef796234fd5d3edaaacb8",
+      "name": "Xiaomi Smart TV 43\"",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef796234fd5d3edaaacbb",
+      "name": "Classic White Dress Shirt",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef797234fd5d3edaaacbe",
+      "name": "Slim Fit Chino Pants",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef797234fd5d3edaaacc1",
+      "name": "Leather Oxford Shoes",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef798234fd5d3edaaacc4",
+      "name": "Linen Jalabiya (White)",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef799234fd5d3edaaacc7",
+      "name": "Embroidered Abaya",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef799234fd5d3edaaacca",
+      "name": "Floral Chiffon Maxi Dress",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79a234fd5d3edaaaccd",
+      "name": "Structured Leather Handbag",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79a234fd5d3edaaacd0",
+      "name": "Satin Silk Hijab",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79b234fd5d3edaaacd3",
+      "name": "Stainless Steel Pressure Cooker 8L",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79b234fd5d3edaaacd6",
+      "name": "Nespresso Vertuo Coffee Machine",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79d234fd5d3edaaacd9",
+      "name": "Ceramic Dinner Set 24 Pieces",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79e234fd5d3edaaacdc",
+      "name": "Philips Air Fryer 4.5L",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79e234fd5d3edaaacdf",
+      "name": "Argan Oil Face & Hair Serum 30ml",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79f234fd5d3edaaace2",
+      "name": "Matte Lipstick Set (6 Shades)",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef79f234fd5d3edaaace5",
+      "name": "Bulgarian Rose Water Toner 200ml",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a0234fd5d3edaaace8",
+      "name": "Luxury Arabian Oud Perfume 50ml",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a1234fd5d3edaaaceb",
+      "name": "Premium TPE Yoga Mat 6mm",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a1234fd5d3edaaacee",
+      "name": "Adjustable Dumbbell Set 2–20kg",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a2234fd5d3edaaacf1",
+      "name": "Men's Lightweight Running Shoes",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a2234fd5d3edaaacf4",
+      "name": "The Alchemist — Arabic Edition",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a3234fd5d3edaaacf7",
+      "name": "Hardcover Dotted Notebook A5 (3-Pack)",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a3234fd5d3edaaacfa",
+      "name": "Arabic Calligraphy Pen Set",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a4234fd5d3edaaacfd",
+      "name": "LEGO Classic Creative Bricks 500pcs",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a5234fd5d3edaaad00",
+      "name": "Baby Foam Play Mat 150×180cm",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a5234fd5d3edaaad03",
+      "name": "Kids' Ergonomic School Backpack",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a6234fd5d3edaaad06",
+      "name": "iPad Air 5th Generation",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a6234fd5d3edaaad09",
+      "name": "Apple Watch Series 9 45mm",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a7234fd5d3edaaad0c",
+      "name": "Huawei MatePad 11 2023",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a8234fd5d3edaaad0f",
+      "name": "Samsung Galaxy Watch 6 Classic",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a8234fd5d3edaaad12",
+      "name": "Canon EOS M50 Mark II Camera",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a9234fd5d3edaaad15",
+      "name": "GoPro Hero 12 Black",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7a9234fd5d3edaaad18",
+      "name": "PlayStation 5 Console",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7aa234fd5d3edaaad1b",
+      "name": "Xbox Series S",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ab234fd5d3edaaad1e",
+      "name": "Nintendo Switch OLED",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ab234fd5d3edaaad21",
+      "name": "Logitech MX Master 3S Mouse",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ac234fd5d3edaaad24",
+      "name": "Mechanical Gaming Keyboard RGB",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ac234fd5d3edaaad27",
+      "name": "Dell 27\" IPS Monitor 144Hz",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ad234fd5d3edaaad2a",
+      "name": "USB-C Hub 7-in-1",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ae234fd5d3edaaad2d",
+      "name": "Anker Power Bank 20000mAh",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ae234fd5d3edaaad30",
+      "name": "TP-Link WiFi 6 Router AX3000",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7af234fd5d3edaaad33",
+      "name": "Samsung T7 Portable SSD 1TB",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b0234fd5d3edaaad36",
+      "name": "Mini Portable Projector 1080p",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b0234fd5d3edaaad39",
+      "name": "Ring Light 18\" with Stand",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b1234fd5d3edaaad3c",
+      "name": "Kindle Paperwhite 11th Gen",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b2234fd5d3edaaad3f",
+      "name": "JBL Charge 5 Bluetooth Speaker",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b2234fd5d3edaaad42",
+      "name": "Webcam 4K Ultra HD",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b3234fd5d3edaaad45",
+      "name": "Wireless Fast Charging Pad 15W",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b4234fd5d3edaaad48",
+      "name": "Smart Security Camera 2K WiFi",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b4234fd5d3edaaad4b",
+      "name": "DJI Mini 4 Drone",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b5234fd5d3edaaad4e",
+      "name": "Gaming Headset 7.1 Surround",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b5234fd5d3edaaad51",
+      "name": "Casual Denim Jacket",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b6234fd5d3edaaad54",
+      "name": "Merino V-Neck Sweater",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b6234fd5d3edaaad57",
+      "name": "Classic Polo Shirt",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b7234fd5d3edaaad5a",
+      "name": "Cargo Shorts",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b8234fd5d3edaaad5d",
+      "name": "Genuine Leather Belt",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b8234fd5d3edaaad60",
+      "name": "Slim Fit Wool Blazer",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7b9234fd5d3edaaad63",
+      "name": "Tracksuit Set Men",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ba234fd5d3edaaad66",
+      "name": "Summer Linen Shirt Blue",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ba234fd5d3edaaad69",
+      "name": "Leather Chelsea Boots",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bb234fd5d3edaaad6c",
+      "name": "RFID Slim Leather Wallet",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bb234fd5d3edaaad6f",
+      "name": "Down Puffer Jacket Men",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bc234fd5d3edaaad72",
+      "name": "Board Swim Shorts",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bc234fd5d3edaaad75",
+      "name": "Fleece Zip Hoodie",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bd234fd5d3edaaad78",
+      "name": "Analog Dress Watch",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7be234fd5d3edaaad7b",
+      "name": "Aviator Sunglasses UV400",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7be234fd5d3edaaad7e",
+      "name": "3-Piece Business Suit",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bf234fd5d3edaaad81",
+      "name": "Silk Tie & Pocket Square Set",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7bf234fd5d3edaaad84",
+      "name": "Canvas Travel Backpack 30L",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c0234fd5d3edaaad87",
+      "name": "Mesh Gym Shorts",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c0234fd5d3edaaad8a",
+      "name": "Slip-On Leather Loafers",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c1234fd5d3edaaad8d",
+      "name": "Cotton Crew-Neck T-Shirt 5-Pack",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c1234fd5d3edaaad90",
+      "name": "Linen Trousers Beige",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c2234fd5d3edaaad93",
+      "name": "Waterproof Rain Jacket",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c3234fd5d3edaaad96",
+      "name": "Leather Winter Gloves",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c3234fd5d3edaaad99",
+      "name": "Bodycon Midi Dress",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c4234fd5d3edaaad9c",
+      "name": "High-Waist Wide Leg Trousers",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c4234fd5d3edaaad9f",
+      "name": "Cropped Denim Jacket Women",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c5234fd5d3edaaada2",
+      "name": "Block Heel Ankle Strap Sandals",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c6234fd5d3edaaada5",
+      "name": "Gold Layered Statement Necklace",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c6234fd5d3edaaada8",
+      "name": "Boho Straw Sun Hat",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c7234fd5d3edaaadab",
+      "name": "Oversized Blazer Cream",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c7234fd5d3edaaadae",
+      "name": "High Waist Flare Jeans",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c8234fd5d3edaaadb1",
+      "name": "Seamless Sports Bra",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c8234fd5d3edaaadb4",
+      "name": "High Waist Yoga Leggings",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c9234fd5d3edaaadb7",
+      "name": "Classic Ballet Flats",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7c9234fd5d3edaaadba",
+      "name": "Pearl Drop Earrings",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ca234fd5d3edaaadbd",
+      "name": "White Canvas Sneakers Women",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7ca234fd5d3edaaadc0",
+      "name": "Belted Linen Shirt Dress",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7cb234fd5d3edaaadc3",
+      "name": "Long Wool Winter Coat",
+      "prevIsActive": true
+    },
+    {
+      "_id": "69eef7cc234fd5d3edaaadc6",
+      "name": "Gold Chain Mini Crossbody Bag",
+      "prevIsActive": true
+    }
+  ]
+}
