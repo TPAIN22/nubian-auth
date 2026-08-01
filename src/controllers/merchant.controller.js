@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import Merchant from "../models/merchant.model.js";
+import Merchant, { buildUnclaimedUserId, isUnclaimedUserId } from "../models/merchant.model.js";
 import Product from "../models/product.model.js";
 import Review from "../models/reviews.model.js";
 import Notify from "../models/merchantNotify.model.js";
@@ -117,6 +117,39 @@ export const applyToBecomeMerchant = async (req, res) => {
       return sendSuccess(res, {
         data: merchant,
         message: "Merchant application resubmitted successfully",
+      });
+    }
+
+    // An admin may have already built this person's store (and its products)
+    // before they signed up. Creating a second record here would strand those
+    // products on a store the applicant can never reach. Flag the match for an
+    // admin to confirm instead — claiming is never automatic, because the store
+    // may already hold a balance.
+    const unclaimedStore = await Merchant.findOne({
+      claimStatus: 'unclaimed',
+      email: email.toLowerCase().trim(),
+    });
+
+    if (unclaimedStore) {
+      unclaimedStore.claimRequestedBy = userId;
+      unclaimedStore.claimRequestedAt = new Date();
+      await unclaimedStore.save();
+
+      logger.info('Merchant application matched an unclaimed store', {
+        requestId: req.requestId,
+        userId,
+        merchantId: unclaimedStore._id.toString(),
+        email: unclaimedStore.email,
+      });
+
+      return sendError(res, {
+        message: 'A store already exists for this email address. An administrator will review and link it to your account.',
+        code: 'STORE_AWAITING_CLAIM',
+        statusCode: 409,
+        details: {
+          storeName: unclaimedStore.storeName,
+          messageAr: 'يوجد متجر مسجل بهذا البريد الإلكتروني. سيقوم المسؤول بمراجعته وربطه بحسابك.',
+        },
       });
     }
 
@@ -403,11 +436,14 @@ export const getMyMerchantStatus = async (req, res) => {
  */
 export const getAllMerchants = async (req, res) => {
   try {
-    const { status } = req.query;
-    
+    const { status, claimStatus } = req.query;
+
     const query = {};
     if (status && ['pending', 'approved', 'rejected', 'needs_revision', 'suspended'].includes(status)) {
       query.status = status;
+    }
+    if (claimStatus && ['unclaimed', 'claimed'].includes(claimStatus)) {
+      query.claimStatus = claimStatus;
     }
 
     const merchants = await Merchant.find(query).sort({ appliedAt: -1 });
@@ -589,7 +625,18 @@ export const approveMerchant = async (req, res) => {
     merchant.approvedBy = adminId;
     await merchant.save();
 
-    // Update Clerk user's publicMetadata to set role to "merchant" and merchantStatus
+    // Update Clerk user's publicMetadata to set role to "merchant" and merchantStatus.
+    // Unclaimed stores have a placeholder userId and no Clerk account yet — the
+    // metadata write happens at claim time instead (see linkStoreToUser).
+    if (isUnclaimedUserId(merchant.userId)) {
+      logger.info('Merchant approved; Clerk role deferred until the store is claimed', {
+        requestId: req.requestId,
+        merchantId: merchant._id,
+        approvedBy: adminId,
+      });
+      return sendSuccess(res, { data: merchant, message: "Merchant approved successfully" });
+    }
+
     try {
       // Get existing metadata to preserve other fields
       const clerkUser = await clerkClient.users.getUser(merchant.userId);
@@ -1414,6 +1461,289 @@ export const getPublicMerchants = async (req, res) => {
     logger.error('Error getting public merchants', {
       requestId: req.requestId,
       error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Create a store on a merchant's behalf (Admin only)
+ *
+ * Lets an admin onboard a seller who has not registered — or cannot navigate the
+ * application flow — so products can be listed immediately. The store gets a
+ * placeholder userId and claimStatus 'unclaimed'; products attach to its _id,
+ * which survives the later claim untouched.
+ */
+export const createStoreForMerchant = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+
+    const {
+      storeName, ownerName, email, phone, merchantType,
+      nationalId, crNumber, iban, logoUrl, banner, description,
+      categories, city, productSamples,
+    } = req.body;
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // The email is the claim key — a duplicate would make it ambiguous which
+    // store an applicant is entitled to.
+    const existing = await Merchant.findOne({ email: normalizedEmail });
+    if (existing) {
+      return sendError(res, {
+        message: `A ${existing.claimStatus === 'unclaimed' ? 'store' : 'merchant account'} already exists for ${normalizedEmail}`,
+        code: 'MERCHANT_EMAIL_TAKEN',
+        statusCode: 409,
+        details: {
+          merchantId: existing._id.toString(),
+          storeName: existing.storeName,
+          claimStatus: existing.claimStatus,
+        },
+      });
+    }
+
+    const merchant = await Merchant.create({
+      userId: buildUnclaimedUserId(),
+      storeName,
+      ownerName,
+      email: normalizedEmail,
+      phone,
+      merchantType: merchantType || 'individual',
+      nationalId,
+      crNumber,
+      iban,
+      logoUrl,
+      banner,
+      description,
+      categories: categories || [],
+      city,
+      productSamples: productSamples || [],
+      // Approved on creation — an admin vouching for the store IS the review,
+      // and products cannot sell under any other status.
+      status: 'approved',
+      approvedAt: new Date(),
+      approvedBy: adminId,
+      claimStatus: 'unclaimed',
+      createdByAdmin: adminId,
+    });
+
+    logger.info('Unclaimed store created by admin', {
+      requestId: req.requestId,
+      merchantId: merchant._id.toString(),
+      storeName,
+      email: normalizedEmail,
+      adminId,
+    });
+
+    return sendCreated(res, merchant, 'Store created successfully');
+  } catch (error) {
+    logger.error('Error creating store for merchant', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Find registered Clerk users matching an unclaimed store's email (Admin only)
+ *
+ * Read-only helper that powers the "link owner" dialog. Returns candidates and
+ * whether each already owns a store — it never mutates anything.
+ */
+export const getStoreClaimCandidates = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const merchant = await Merchant.findById(id);
+    if (!merchant) return sendNotFound(res, "Merchant");
+
+    if (merchant.claimStatus !== 'unclaimed') {
+      return sendError(res, {
+        message: 'This store is already linked to a user',
+        code: 'STORE_ALREADY_CLAIMED',
+        statusCode: 400,
+      });
+    }
+
+    const searchEmail = (req.query.email || merchant.email || '').toLowerCase().trim();
+
+    let clerkUsers = [];
+    try {
+      const result = await clerkClient.users.getUserList({
+        emailAddress: [searchEmail],
+        limit: 10,
+      });
+      clerkUsers = result?.data || [];
+    } catch (clerkError) {
+      logger.error('Clerk lookup failed while resolving claim candidates', {
+        requestId: req.requestId,
+        merchantId: id,
+        error: clerkError.message,
+      });
+      return sendError(res, {
+        message: 'Could not reach the identity provider. Try again shortly.',
+        code: 'CLERK_ERROR',
+        statusCode: 503,
+      });
+    }
+
+    // Flag candidates that already own a store — linking those would orphan
+    // whichever store loses the userId.
+    const clerkIds = clerkUsers.map((u) => u.id);
+    const ownedStores = clerkIds.length
+      ? await Merchant.find({ userId: { $in: clerkIds } }).select('userId storeName').lean()
+      : [];
+    const ownedByUserId = new Map(ownedStores.map((s) => [s.userId, s]));
+
+    const candidates = clerkUsers.map((u) => {
+      const owned = ownedByUserId.get(u.id);
+      return {
+        clerkUserId: u.id,
+        email: u.emailAddresses?.find((e) => e.id === u.primaryEmailAddressId)?.emailAddress
+          || u.emailAddresses?.[0]?.emailAddress
+          || null,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        imageUrl: u.imageUrl,
+        role: u.publicMetadata?.role || null,
+        existingStore: owned ? { storeName: owned.storeName } : null,
+        linkable: !owned,
+      };
+    });
+
+    return sendSuccess(res, {
+      data: {
+        merchant: {
+          _id: merchant._id,
+          storeName: merchant.storeName,
+          email: merchant.email,
+          claimRequestedBy: merchant.claimRequestedBy,
+          claimRequestedAt: merchant.claimRequestedAt,
+        },
+        searchEmail,
+        candidates,
+      },
+      message: 'Claim candidates retrieved successfully',
+    });
+  } catch (error) {
+    logger.error('Error getting store claim candidates', {
+      requestId: req.requestId,
+      error: error.message,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Link an unclaimed store to a registered user (Admin only)
+ *
+ * The confirmation step of the claim flow. Rewrites the placeholder userId to the
+ * real Clerk id and grants the merchant role. Products reference Merchant._id, so
+ * they carry over with no migration.
+ */
+export const linkStoreToUser = async (req, res) => {
+  try {
+    const { userId: adminId } = getAuth(req);
+    const { id } = req.params;
+    const { clerkUserId } = req.body;
+
+    const merchant = await Merchant.findById(id);
+    if (!merchant) return sendNotFound(res, "Merchant");
+
+    if (merchant.claimStatus !== 'unclaimed') {
+      return sendError(res, {
+        message: 'This store is already linked to a user',
+        code: 'STORE_ALREADY_CLAIMED',
+        statusCode: 400,
+        details: { userId: merchant.userId },
+      });
+    }
+
+    // Resolve the target user before touching anything.
+    let clerkUser;
+    try {
+      clerkUser = await clerkClient.users.getUser(clerkUserId);
+    } catch (clerkError) {
+      logger.warn('Clerk user lookup failed during store link', {
+        requestId: req.requestId,
+        merchantId: id,
+        clerkUserId,
+        error: clerkError.message,
+      });
+      return sendError(res, {
+        message: 'No registered user found with that id',
+        code: 'USER_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    // One store per user: userId is unique, so this would fail at the index
+    // anyway — a clear 409 beats an E11000.
+    const alreadyOwns = await Merchant.findOne({ userId: clerkUserId });
+    if (alreadyOwns) {
+      return sendError(res, {
+        message: 'That user already owns a store',
+        code: 'USER_ALREADY_MERCHANT',
+        statusCode: 409,
+        details: {
+          merchantId: alreadyOwns._id.toString(),
+          storeName: alreadyOwns.storeName,
+        },
+      });
+    }
+
+    const previousUserId = merchant.userId;
+
+    merchant.userId = clerkUserId;
+    merchant.claimStatus = 'claimed';
+    merchant.claimedAt = new Date();
+    merchant.claimedBy = adminId;
+    merchant.claimRequestedBy = null;
+    merchant.claimRequestedAt = undefined;
+    await merchant.save();
+
+    // Clerk metadata is what the dashboard middleware gates on — without this the
+    // owner is linked in Mongo but still locked out of /merchant/*.
+    try {
+      const existingMetadata = clerkUser.publicMetadata || {};
+      await clerkClient.users.updateUser(clerkUserId, {
+        publicMetadata: {
+          ...existingMetadata,
+          role: 'merchant',
+          merchantStatus: merchant.status,
+        },
+      });
+    } catch (clerkError) {
+      // The link itself succeeded; surface the partial failure so an admin can
+      // retry rather than silently leaving the owner without dashboard access.
+      logger.error('Store linked but Clerk role update failed', {
+        requestId: req.requestId,
+        merchantId: merchant._id.toString(),
+        clerkUserId,
+        error: clerkError.message,
+      });
+      return sendSuccess(res, {
+        data: merchant,
+        message: 'Store linked, but granting merchant access failed. Re-run the link to retry.',
+      });
+    }
+
+    logger.info('Unclaimed store linked to user', {
+      requestId: req.requestId,
+      merchantId: merchant._id.toString(),
+      previousUserId,
+      clerkUserId,
+      adminId,
+    });
+
+    return sendSuccess(res, { data: merchant, message: 'Store linked to user successfully' });
+  } catch (error) {
+    logger.error('Error linking store to user', {
+      requestId: req.requestId,
+      error: error.message,
+      stack: error.stack,
     });
     throw error;
   }

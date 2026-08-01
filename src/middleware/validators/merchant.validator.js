@@ -31,6 +31,47 @@ export const validateMerchantApplication = [
 ];
 
 /**
+ * Validation for admin-created stores (POST /api/merchants/admin/stores)
+ *
+ * Deliberately looser than validateMerchantApplication: an admin onboarding a
+ * seller who has not registered has no nationalId, IBAN, or phone yet. Those are
+ * collected from the owner after they claim the store.
+ */
+export const validateAdminStoreCreate = [
+  sanitizeString('storeName',   { min: 2, max: 100 }),
+  sanitizeString('ownerName',   { min: 2, max: 100 }),
+  validateEmail('email'),
+  validatePhone('phone', true),
+  body('merchantType')
+    .optional()
+    .isIn(['individual', 'business'])
+    .withMessage('merchantType must be "individual" or "business"'),
+  sanitizeString('nationalId',  { min: 0, max: 50, optional: true }),
+  sanitizeString('crNumber',    { min: 0, max: 50, optional: true }),
+  sanitizeString('iban',        { min: 0, max: 50, optional: true }),
+  sanitizeString('description', { min: 1, max: 2000 }),
+  sanitizeString('city',        { min: 1, max: 100 }),
+  body('categories').optional().isArray().withMessage('categories must be an array'),
+  body('productSamples').optional().isArray().withMessage('productSamples must be an array'),
+  body('logoUrl').optional().isString().isLength({ max: 1000 }),
+  body('banner').optional().isString().isLength({ max: 1000 }),
+  handleValidationErrors,
+];
+
+/**
+ * Validation for linking an unclaimed store to a registered user
+ * (POST /api/merchants/:id/link-user)
+ */
+export const validateStoreLink = [
+  body('clerkUserId')
+    .isString()
+    .trim()
+    .isLength({ min: 1, max: 100 })
+    .withMessage('clerkUserId is required'),
+  handleValidationErrors,
+];
+
+/**
  * Validation for merchant profile update (PUT /api/merchants/my-profile)
  * Only the fields the merchant is allowed to self-edit.
  */

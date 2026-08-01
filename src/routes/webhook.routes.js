@@ -79,6 +79,26 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
           );
 
           logger.info('User created/confirmed via webhook', { clerkId, userId: newUser._id });
+
+          // An admin may have pre-built a store for this person. Flag the match
+          // for admin review — never link automatically: the store can already
+          // hold a balance, so handing it over is a human decision.
+          const signupEmail = newUser.emailAddress?.toLowerCase().trim();
+          if (signupEmail) {
+            const unclaimedStore = await Merchant.findOneAndUpdate(
+              { claimStatus: 'unclaimed', email: signupEmail },
+              { claimRequestedBy: clerkId, claimRequestedAt: new Date() },
+              { new: true }
+            );
+
+            if (unclaimedStore) {
+              logger.info('Signup matched an unclaimed store; awaiting admin confirmation', {
+                clerkId,
+                merchantId: unclaimedStore._id.toString(),
+                storeName: unclaimedStore.storeName,
+              });
+            }
+          }
         }
         break;
 
