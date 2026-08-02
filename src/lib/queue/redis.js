@@ -18,11 +18,37 @@ const buildOptions = () => {
       enableReadyCheck: false,
       // Reconnect with capped exponential backoff. Returning a number tells
       // ioredis to retry after that many ms; returning null stops retries.
-      retryStrategy: (times) => Math.min(times * 200, 5000),
+      // The cap is deliberately high: a brief blip still reconnects within a
+      // second or two, but a Redis that is gone for good (deleted instance,
+      // bad URL) settles into one attempt per 30s instead of flooding logs.
+      retryStrategy: (times) => Math.min(times * 200, 30000),
       connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 10000),
       // Tag the client so it shows up identifiable in `CLIENT LIST`.
       connectionName: process.env.REDIS_CLIENT_NAME || 'nubian-api',
     },
+  };
+};
+
+/**
+ * A connection that can never succeed (deleted instance, wrong host) retries
+ * forever, and every attempt emits an error + a reconnecting warning. That is
+ * thousands of near-identical lines a day. Log the first occurrence of each
+ * message immediately, then at most once a minute, with a count of what was
+ * suppressed — enough to see the outage without drowning everything else.
+ */
+const LOG_THROTTLE_MS = 60_000;
+const makeThrottledLogger = () => {
+  const state = new Map(); // message → { lastLoggedAt, suppressed }
+  return (level, message, meta) => {
+    const now = Date.now();
+    const entry = state.get(message) || { lastLoggedAt: 0, suppressed: 0 };
+    if (now - entry.lastLoggedAt < LOG_THROTTLE_MS) {
+      entry.suppressed++;
+      state.set(message, entry);
+      return;
+    }
+    logger[level](message, entry.suppressed ? { ...meta, suppressed: entry.suppressed } : meta);
+    state.set(message, { lastLoggedAt: now, suppressed: 0 });
   };
 };
 
@@ -60,14 +86,15 @@ export const getRedis = () => {
   connection.on('ready', () => {
     logger.info('Redis ready', { url: redactUrl(url) });
   });
+  const throttled = makeThrottledLogger();
   connection.on('error', (err) => {
-    logger.error('Redis error', { error: err.message });
+    throttled('error', 'Redis error', { error: err.message });
   });
   connection.on('end', () => {
     logger.warn('Redis connection closed');
   });
   connection.on('reconnecting', (delay) => {
-    logger.warn('Redis reconnecting', { delayMs: delay });
+    throttled('warn', 'Redis reconnecting', { delayMs: delay });
   });
 
   return connection;
@@ -88,8 +115,9 @@ export const getWorkerRedis = () => {
     ...options,
     connectionName: `${options.connectionName}-worker`,
   });
+  const throttled = makeThrottledLogger();
   subscriberConnection.on('error', (err) => {
-    logger.error('Redis worker connection error', { error: err.message });
+    throttled('error', 'Redis worker connection error', { error: err.message });
   });
   return subscriberConnection;
 };

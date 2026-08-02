@@ -90,31 +90,64 @@ export const getQueueEvents = (name) => {
  */
 export const getQueueDefaults = (name) => QUEUE_DEFAULTS[name];
 
-export class EnqueueTimeoutError extends Error {
+export class QueueTimeoutError extends Error {
   constructor(queueName, timeoutMs) {
-    super(`Enqueue to "${queueName}" timed out after ${timeoutMs}ms`);
-    this.name = 'EnqueueTimeoutError';
-    this.code = 'ENQUEUE_TIMEOUT';
+    super(`Redis operation on "${queueName}" timed out after ${timeoutMs}ms`);
+    this.name = 'QueueTimeoutError';
+    this.code = 'QUEUE_TIMEOUT';
   }
 }
 
-const enqueueTimeoutMs = () => Number(process.env.QUEUE_ENQUEUE_TIMEOUT_MS || 8000);
+const queueTimeoutMs = () => Number(process.env.QUEUE_OP_TIMEOUT_MS || 8000);
 
 /**
- * Was the job possibly written to Redis despite the error?
+ * Was the operation possibly applied in Redis despite the error?
  *
  * A caller that wants to fall back to a synchronous dispatch needs to know
  * this: re-sending a job that actually landed means double delivery.
  *
  *   connection not ready  → BullMQ was still awaiting `waitUntilReady()` and
- *                           never issued a command. Definitively not written.
+ *                           never issued a command. Definitively not applied.
  *   command timed out     → the command was on the wire. Unknown.
  *   anything else         → a real rejection from Redis (or ioredis refusing
- *                           to buffer). Not written.
+ *                           to buffer). Not applied.
  */
 const mayHaveLanded = (err) => {
   if (getRedis().status !== 'ready') return false;
-  return err.code === 'ENQUEUE_TIMEOUT' || /timed out/i.test(err.message || '');
+  return err.code === 'QUEUE_TIMEOUT' || /timed out/i.test(err.message || '');
+};
+
+/**
+ * Run a queue operation under a hard timeout so it can never hang.
+ *
+ * The fail-fast client options in redis.js are not sufficient on their own:
+ * every BullMQ queue method awaits `waitUntilReady()` first, so with Redis
+ * unreachable it parks on the connection promise and no command is ever issued
+ * to reject. Without this wrapper the caller's own try/catch is unreachable and
+ * the HTTP handler hangs until the client gives up.
+ *
+ * Rejections carry `err.mayHaveLanded` so callers can decide whether a
+ * fallback path is safe or would risk double delivery.
+ *
+ * @param {string}   queueName - one of QUEUE_NAMES
+ * @param {Function} fn        - receives the Queue, returns a promise
+ * @param {number}   [timeoutMs]
+ */
+export const withQueue = async (queueName, fn, timeoutMs = queueTimeoutMs()) => {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => fn(getQueue(queueName))),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new QueueTimeoutError(queueName, timeoutMs)), timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    err.mayHaveLanded = mayHaveLanded(err);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 /**
@@ -129,7 +162,6 @@ const mayHaveLanded = (err) => {
  * @param {object} [opts]    - per-job options: jobId, delay, priority
  */
 export const enqueue = async (queueName, jobName, payload, opts = {}) => {
-  const queue = getQueue(queueName);
   // BullMQ rejects custom jobIds containing ':' (it collides with internal
   // Redis key namespacing). Sanitize defensively so callers can build ids
   // from arbitrary strings (titles, recipient ids, etc.) without crashing.
@@ -137,28 +169,7 @@ export const enqueue = async (queueName, jobName, payload, opts = {}) => {
     ? { ...opts, jobId: String(opts.jobId).replace(/:/g, '-') }
     : opts;
 
-  // Backstop so a producer in an HTTP handler can never hang indefinitely.
-  // The fail-fast client options in redis.js are not sufficient on their own:
-  // `Queue.add` awaits `waitUntilReady()` first, so with Redis unreachable it
-  // parks on the connection promise and no command is ever issued to reject.
-  //
-  // Every rejection carries `err.mayHaveLanded` so callers can decide whether
-  // a synchronous fallback is safe or would risk double delivery.
-  const timeoutMs = enqueueTimeoutMs();
-  let timer;
-  try {
-    return await Promise.race([
-      queue.add(jobName, payload, safeOpts),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new EnqueueTimeoutError(queueName, timeoutMs)), timeoutMs);
-      }),
-    ]);
-  } catch (err) {
-    err.mayHaveLanded = mayHaveLanded(err);
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+  return withQueue(queueName, (queue) => queue.add(jobName, payload, safeOpts));
 };
 
 /**

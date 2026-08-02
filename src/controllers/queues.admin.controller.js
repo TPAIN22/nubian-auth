@@ -1,4 +1,4 @@
-import { getQueue } from '../lib/queue/queues.js';
+import { withQueue } from '../lib/queue/queues.js';
 import { QUEUE_NAMES } from '../lib/queue/queueNames.js';
 import { sendSuccess, sendError } from '../lib/response.js';
 import logger from '../lib/logger.js';
@@ -26,24 +26,34 @@ const resolveQueueName = (param) => {
 
 const COUNT_STATES = ['waiting', 'active', 'delayed', 'failed', 'completed', 'paused'];
 
+// Bulk retry/drain walk many jobs, so they get a longer budget than the
+// per-operation default — still bounded so an unreachable Redis can't hang the
+// request (see withQueue).
+const BULK_OP_TIMEOUT_MS = Number(process.env.QUEUE_BULK_OP_TIMEOUT_MS || 60000);
+
 /**
  * GET /api/admin/queues/stats
  * Per-queue job counts. Useful as a single dashboard panel.
  */
 export const getQueueStats = async (req, res) => {
   try {
-    const stats = {};
-    for (const [shortName, fullName] of Object.entries(SHORT_TO_FULL)) {
-      try {
-        const queue = getQueue(fullName);
-        const counts = await queue.getJobCounts(...COUNT_STATES);
-        stats[shortName] = { name: fullName, counts };
-      } catch (err) {
-        // One unreachable queue shouldn't black-hole the whole stats call.
-        stats[shortName] = { name: fullName, error: err.message };
-      }
-    }
-    return sendSuccess(res, { data: stats, message: 'Queue stats retrieved' });
+    // Queried in parallel: sequentially, a Redis outage would cost one timeout
+    // per queue and blow past the dashboard's own request timeout.
+    const entries = await Promise.all(
+      Object.entries(SHORT_TO_FULL).map(async ([shortName, fullName]) => {
+        try {
+          const counts = await withQueue(fullName, (queue) => queue.getJobCounts(...COUNT_STATES));
+          return [shortName, { name: fullName, counts }];
+        } catch (err) {
+          // One unreachable queue shouldn't black-hole the whole stats call.
+          return [shortName, { name: fullName, error: err.message }];
+        }
+      })
+    );
+    return sendSuccess(res, {
+      data: Object.fromEntries(entries),
+      message: 'Queue stats retrieved',
+    });
   } catch (error) {
     logger.error('Failed to fetch queue stats', { error: error.message });
     return sendError(res, {
@@ -72,10 +82,13 @@ export const listFailedJobs = async (req, res) => {
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
   try {
-    const queue = getQueue(queueName);
-    // BullMQ getFailed(start, end) is inclusive on both ends, newest first.
-    const jobs = await queue.getFailed(offset, offset + limit - 1);
-    const total = await queue.getJobCountByTypes('failed');
+    const [jobs, total] = await withQueue(queueName, (queue) =>
+      Promise.all([
+        // BullMQ getFailed(start, end) is inclusive on both ends, newest first.
+        queue.getFailed(offset, offset + limit - 1),
+        queue.getJobCountByTypes('failed'),
+      ])
+    );
 
     const data = jobs.map((j) => ({
       id: j.id,
@@ -128,20 +141,21 @@ export const retryFailedJobs = async (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : null;
 
   try {
-    const queue = getQueue(queueName);
     let retried = 0;
     const errors = [];
 
     if (ids?.length) {
       for (const id of ids) {
         try {
-          const job = await queue.getJob(id);
-          if (!job) {
-            errors.push({ id, error: 'not_found' });
-            continue;
-          }
-          await job.retry();
-          retried++;
+          await withQueue(queueName, async (queue) => {
+            const job = await queue.getJob(id);
+            if (!job) {
+              errors.push({ id, error: 'not_found' });
+              return;
+            }
+            await job.retry();
+            retried++;
+          });
         } catch (err) {
           errors.push({ id, error: err.message });
         }
@@ -149,7 +163,11 @@ export const retryFailedJobs = async (req, res) => {
     } else {
       // Retry the entire failed set. BullMQ provides this as a one-shot.
       // Returns the count it actually moved back.
-      retried = await queue.retryJobs({ state: 'failed', count: 1000 });
+      retried = await withQueue(
+        queueName,
+        (queue) => queue.retryJobs({ state: 'failed', count: 1000 }),
+        BULK_OP_TIMEOUT_MS
+      );
     }
 
     logger.info('Retried failed jobs', { queue: queueName, retried, errors: errors.length });
@@ -191,39 +209,46 @@ export const drainFailedJobs = async (req, res) => {
   const cutoff = Date.now() - days * 24 * 3600 * 1000;
 
   try {
-    const queue = getQueue(queueName);
     let removed = 0;
     let scanned = 0;
     const pageSize = 100;
-    // Walk the failed set in pages until we run out of jobs older than cutoff.
-    // Newest jobs come first, so once we hit a job younger than the cutoff in a
-    // page we keep scanning the remainder of the page (failed list isn't
-    // strictly age-ordered post-retry) but stop after the first all-young page.
-    for (let offset = 0; ; offset += pageSize) {
-      const jobs = await queue.getFailed(offset, offset + pageSize - 1);
-      if (!jobs.length) break;
-      scanned += jobs.length;
+    // The whole walk runs under one (generous) timeout — paging through a large
+    // failed set legitimately takes a while, but it must still be bounded.
+    await withQueue(
+      queueName,
+      async (queue) => {
+        // Walk the failed set in pages until we run out of jobs older than cutoff.
+        // Newest jobs come first, so once we hit a job younger than the cutoff in a
+        // page we keep scanning the remainder of the page (failed list isn't
+        // strictly age-ordered post-retry) but stop after the first all-young page.
+        for (let offset = 0; ; offset += pageSize) {
+          const jobs = await queue.getFailed(offset, offset + pageSize - 1);
+          if (!jobs.length) break;
+          scanned += jobs.length;
 
-      let pageHadOldJobs = false;
-      for (const j of jobs) {
-        const ts = j.finishedOn || j.timestamp;
-        if (ts && ts < cutoff) {
-          try {
-            await j.remove();
-            removed++;
-            pageHadOldJobs = true;
-          } catch (err) {
-            logger.warn('Failed to remove drained job', {
-              queue: queueName,
-              jobId: j.id,
-              error: err.message,
-            });
+          let pageHadOldJobs = false;
+          for (const j of jobs) {
+            const ts = j.finishedOn || j.timestamp;
+            if (ts && ts < cutoff) {
+              try {
+                await j.remove();
+                removed++;
+                pageHadOldJobs = true;
+              } catch (err) {
+                logger.warn('Failed to remove drained job', {
+                  queue: queueName,
+                  jobId: j.id,
+                  error: err.message,
+                });
+              }
+            }
           }
+          // Page was all-young → safe to stop walking.
+          if (!pageHadOldJobs) break;
         }
-      }
-      // Page was all-young → safe to stop walking.
-      if (!pageHadOldJobs) break;
-    }
+      },
+      BULK_OP_TIMEOUT_MS
+    );
 
     logger.info('Drained failed jobs', { queue: queueName, removed, scanned, days });
     return sendSuccess(res, {
