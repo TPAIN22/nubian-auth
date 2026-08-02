@@ -1,6 +1,37 @@
 import { body } from "express-validator";
 import { handleValidationErrors } from "../validation.middleware.js";
 
+/**
+ * The admin dashboard speaks a wider, uppercase payment vocabulary than the
+ * Order model stores. `status` has been mapped that way since the start (see
+ * below); `paymentStatus` was not, so the dashboard's "PAID" 400'd on
+ * PATCH /orders/:id/payment/status. Collapsing is lossy on purpose — BANKAK
+ * confirmation/rejection has its own approve/reject endpoints that record the
+ * detail; this manual path only needs the model's three states.
+ */
+const PAYMENT_STATUS_MAP = {
+  UNPAID: "pending",
+  PENDING_CONFIRMATION: "pending",
+  PAID: "paid",
+  REJECTED: "failed",
+  FAILED: "failed",
+  pending: "pending",
+  paid: "paid",
+  failed: "failed",
+};
+
+const normalizePaymentStatus = (value) =>
+  PAYMENT_STATUS_MAP[value] ?? PAYMENT_STATUS_MAP[String(value).toUpperCase()];
+
+const assertPaymentStatus = (value) => {
+  if (!normalizePaymentStatus(value)) {
+    throw new Error(
+      `paymentStatus must be one of: ${Object.keys(PAYMENT_STATUS_MAP).join(", ")}`
+    );
+  }
+  return true;
+};
+
 export const validateOrderStatusUpdate = [
   body("status")
     .optional()
@@ -32,8 +63,8 @@ export const validateOrderStatusUpdate = [
     }),
   body("paymentStatus")
     .optional()
-    .isIn(["pending", "paid", "failed"])
-    .withMessage("Payment status must be one of: pending, paid, failed"),
+    .custom((value) => (value ? assertPaymentStatus(value) : true))
+    .customSanitizer((value) => (value ? normalizePaymentStatus(value) : value)),
   handleValidationErrors,
 ];
 
@@ -41,8 +72,9 @@ export const validatePaymentStatusUpdate = [
   body("paymentStatus")
     .notEmpty()
     .withMessage("paymentStatus is required")
-    .isIn(["pending", "paid", "failed"])
-    .withMessage("paymentStatus must be one of: pending, paid, failed"),
+    .bail()
+    .custom(assertPaymentStatus)
+    .customSanitizer(normalizePaymentStatus),
   handleValidationErrors,
 ];
 
