@@ -19,6 +19,7 @@ const buildOptions = () => {
       // Reconnect with capped exponential backoff. Returning a number tells
       // ioredis to retry after that many ms; returning null stops retries.
       retryStrategy: (times) => Math.min(times * 200, 5000),
+      connectTimeout: Number(process.env.REDIS_CONNECT_TIMEOUT_MS || 10000),
       // Tag the client so it shows up identifiable in `CLIENT LIST`.
       connectionName: process.env.REDIS_CLIENT_NAME || 'nubian-api',
     },
@@ -34,7 +35,24 @@ export const getRedis = () => {
   if (connection) return connection;
 
   const { url, options } = buildOptions();
-  connection = new IORedis(url, options);
+  // Producer connection: fail fast, never buffer.
+  //
+  // `maxRetriesPerRequest: null` (required by BullMQ) means ioredis never gives
+  // up on a command. Combined with the default offline queue, a command issued
+  // while Redis is unreachable sits buffered *forever* — the promise neither
+  // resolves nor rejects. That turned `queue.add()` inside an HTTP handler into
+  // an infinite hang (the client eventually aborts with ECONNABORTED) and meant
+  // the "Redis down → sync fallback" path could never trigger.
+  //
+  // `enableOfflineQueue: false` makes those commands reject immediately and,
+  // crucially, guarantees they never execute later — so a caller that falls
+  // back to a sync dispatch can't be double-delivered by a late-landing job.
+  // `commandTimeout` covers the other half: socket connected but server stalled.
+  connection = new IORedis(url, {
+    ...options,
+    enableOfflineQueue: false,
+    commandTimeout: Number(process.env.REDIS_COMMAND_TIMEOUT_MS || 5000),
+  });
 
   connection.on('connect', () => {
     logger.info('Redis connecting', { url: redactUrl(url) });
@@ -63,6 +81,9 @@ export const getRedis = () => {
 export const getWorkerRedis = () => {
   if (subscriberConnection) return subscriberConnection;
   const { url, options } = buildOptions();
+  // Deliberately keeps the offline queue and has no commandTimeout: workers
+  // hold blocking commands (BRPOPLPUSH) open for minutes at a time, so the
+  // fail-fast settings applied to the producer connection would kill them.
   subscriberConnection = new IORedis(url, {
     ...options,
     connectionName: `${options.connectionName}-worker`,

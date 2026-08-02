@@ -900,7 +900,7 @@ export const sendBroadcast = async (req, res) => {
     // producer never holds millions of IDs in memory.
     let dispatchPath = 'sync';
     if (process.env.ENABLE_QUEUE === 'true') {
-      const enqueued = await notificationService.enqueueBroadcast({
+      const { ok, indeterminate } = await notificationService.enqueueBroadcast({
         type,
         title,
         body,
@@ -909,12 +909,26 @@ export const sendBroadcast = async (req, res) => {
         target,
         campaignId,
       });
-      if (enqueued) {
+      if (ok) {
         dispatchPath = 'queue';
         logger.info('Broadcast enqueued for fanout', {
           type,
           target,
           estimatedRecipients: totalRecipients,
+        });
+      } else if (indeterminate) {
+        // The enqueue timed out, so the fanout job may still land. Dispatching
+        // synchronously here would broadcast to every recipient twice — refuse
+        // instead and let the admin retry once Redis is healthy.
+        logger.error('Broadcast enqueue timed out — refusing sync fallback', {
+          type,
+          target,
+        });
+        return sendError(res, {
+          message:
+            'Notification queue is unreachable. The broadcast was not sent — please retry shortly.',
+          code: 'QUEUE_UNAVAILABLE',
+          statusCode: 503,
         });
       } else {
         logger.warn('Broadcast enqueue failed — falling back to sync dispatch', {
@@ -1018,7 +1032,7 @@ export const sendMarketingNotification = async (req, res) => {
 
     // Queue path: enqueue a fanout marketing job and return immediately.
     if (process.env.ENABLE_QUEUE === 'true') {
-      const enqueued = await notificationService.enqueueMarketing({
+      const { ok, indeterminate } = await notificationService.enqueueMarketing({
         type,
         title,
         body,
@@ -1027,10 +1041,21 @@ export const sendMarketingNotification = async (req, res) => {
         targetRecipients,
         campaignId,
       });
-      if (enqueued) {
+      if (ok) {
         return sendSuccess(res, {
           data: { status: 'processing' },
           message: 'Marketing notification is being processed in the background',
+        });
+      }
+      if (indeterminate) {
+        // Same reasoning as sendBroadcast: a timed-out enqueue may still land,
+        // so a sync send here could double-deliver the whole campaign.
+        logger.error('Marketing enqueue timed out — refusing sync fallback', { type });
+        return sendError(res, {
+          message:
+            'Notification queue is unreachable. The campaign was not sent — please retry shortly.',
+          code: 'QUEUE_UNAVAILABLE',
+          statusCode: 503,
         });
       }
       logger.warn('Marketing enqueue failed — falling back to sync dispatch', { type });

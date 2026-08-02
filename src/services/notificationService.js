@@ -101,17 +101,28 @@ const buildCampaignJobId = (mode, { type, title, target, campaignId }) => {
   return `fanout-${mode}-${type}${audience}-${title}-${bucket}`;
 };
 
+/**
+ * Enqueue a job, translating failures into a decision the caller can act on.
+ *
+ *   { ok: true }                        → job is on the queue
+ *   { ok: false, indeterminate: false } → definitively not enqueued; the caller
+ *                                         may safely dispatch synchronously
+ *   { ok: false, indeterminate: true }  → timed out; the job may still land, so
+ *                                         a sync fallback risks double delivery
+ */
 const enqueueOrFallback = async (queueName, jobName, payload, opts = {}) => {
   try {
     await enqueue(queueName, jobName, wrap(payload), opts);
-    return true;
+    return { ok: true, indeterminate: false };
   } catch (err) {
+    const indeterminate = err.mayHaveLanded === true;
     logger.error('Enqueue failed — leaving notification for DLQ sweep', {
       queue: queueName,
       jobName,
       error: err.message,
+      indeterminate,
     });
-    return false;
+    return { ok: false, indeterminate };
   }
 };
 
@@ -393,7 +404,7 @@ class NotificationService {
     notification.channel = 'push';
     await notification.save();
 
-    const enqueued = await enqueueOrFallback(
+    const { ok: enqueued } = await enqueueOrFallback(
       QUEUE_NAMES.PUSH,
       JOB_NAMES.PUSH_SEND,
       { notificationId: notification._id.toString(), bypassQuietHours: bypassPrefs },

@@ -90,10 +90,38 @@ export const getQueueEvents = (name) => {
  */
 export const getQueueDefaults = (name) => QUEUE_DEFAULTS[name];
 
+export class EnqueueTimeoutError extends Error {
+  constructor(queueName, timeoutMs) {
+    super(`Enqueue to "${queueName}" timed out after ${timeoutMs}ms`);
+    this.name = 'EnqueueTimeoutError';
+    this.code = 'ENQUEUE_TIMEOUT';
+  }
+}
+
+const enqueueTimeoutMs = () => Number(process.env.QUEUE_ENQUEUE_TIMEOUT_MS || 8000);
+
+/**
+ * Was the job possibly written to Redis despite the error?
+ *
+ * A caller that wants to fall back to a synchronous dispatch needs to know
+ * this: re-sending a job that actually landed means double delivery.
+ *
+ *   connection not ready  → BullMQ was still awaiting `waitUntilReady()` and
+ *                           never issued a command. Definitively not written.
+ *   command timed out     → the command was on the wire. Unknown.
+ *   anything else         → a real rejection from Redis (or ioredis refusing
+ *                           to buffer). Not written.
+ */
+const mayHaveLanded = (err) => {
+  if (getRedis().status !== 'ready') return false;
+  return err.code === 'ENQUEUE_TIMEOUT' || /timed out/i.test(err.message || '');
+};
+
 /**
  * Convenience: enqueue a job with sensible per-job overrides applied on top
- * of the queue defaults. Throws if Redis is unreachable — callers must catch
- * (notificationService.enqueueOrFallback handles that).
+ * of the queue defaults. Rejects (never hangs) if Redis is unreachable —
+ * callers must catch (notificationService.enqueueOrFallback handles that) and
+ * may consult `err.mayHaveLanded` before re-dispatching by another route.
  *
  * @param {string} queueName - one of QUEUE_NAMES
  * @param {string} jobName   - one of JOB_NAMES
@@ -108,7 +136,29 @@ export const enqueue = async (queueName, jobName, payload, opts = {}) => {
   const safeOpts = opts.jobId
     ? { ...opts, jobId: String(opts.jobId).replace(/:/g, '-') }
     : opts;
-  return queue.add(jobName, payload, safeOpts);
+
+  // Backstop so a producer in an HTTP handler can never hang indefinitely.
+  // The fail-fast client options in redis.js are not sufficient on their own:
+  // `Queue.add` awaits `waitUntilReady()` first, so with Redis unreachable it
+  // parks on the connection promise and no command is ever issued to reject.
+  //
+  // Every rejection carries `err.mayHaveLanded` so callers can decide whether
+  // a synchronous fallback is safe or would risk double delivery.
+  const timeoutMs = enqueueTimeoutMs();
+  let timer;
+  try {
+    return await Promise.race([
+      queue.add(jobName, payload, safeOpts),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new EnqueueTimeoutError(queueName, timeoutMs)), timeoutMs);
+      }),
+    ]);
+  } catch (err) {
+    err.mayHaveLanded = mayHaveLanded(err);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 /**
