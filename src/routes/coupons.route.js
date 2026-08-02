@@ -12,7 +12,9 @@ import {
   deactivateCoupon,
   getCouponAnalytics,
   getAvailableCoupons,
+  getMerchantCoupons,
 } from '../controllers/coupon.controller.js';
+import { isApprovedMerchant } from '../middleware/merchant.middleware.js';
 
 const router = express.Router();
 
@@ -27,6 +29,9 @@ const couponValidateLimiter = rateLimit({
 
 // Authenticated-only routes — prevents unauthenticated enumeration of active codes
 router.get('/available',  isAuthenticated, getAvailableCoupons);
+
+// Merchant-scoped listing. Declared before '/:id' so the literal path wins.
+router.get('/merchant/mine', isAuthenticated, isApprovedMerchant, getMerchantCoupons);
 router.get('/code/:code', isAuthenticated, getCouponByCode);
 router.post('/validate',  couponValidateLimiter, isAuthenticated, validateCoupon);
 

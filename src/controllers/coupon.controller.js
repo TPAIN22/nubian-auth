@@ -3,7 +3,7 @@ import CouponUsage from '../models/couponUsage.model.js';
 import Order from '../models/orders.model.js';
 import couponService from '../services/coupon.service.js';
 import Product from '../models/product.model.js';
-import { sendSuccess, sendError, sendCreated, sendNotFound } from '../lib/response.js';
+import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated } from '../lib/response.js';
 import { getCurrencyContext, convertAmount } from '../services/currency.service.js';
 import logger from '../lib/logger.js';
 import { getAuth } from '@clerk/express';
@@ -616,6 +616,80 @@ export const getCouponAnalytics = async (req, res) => {
       message: 'Failed to retrieve coupon analytics',
       error: error.message,
     }, 500);
+  }
+};
+
+/**
+ * Coupons that apply to the signed-in merchant's catalogue.
+ * GET /api/coupons/merchant/mine
+ *
+ * Merchants do not create coupons — the platform does — but they need to see
+ * which ones are discounting their products and what those discounts have cost.
+ * `GET /coupons` is admin-only, and `/coupons/available` is a shopper-facing
+ * recommender (active-only, capped at 10), so neither answers this question.
+ *
+ * A coupon touches a merchant's catalogue when it targets the merchant
+ * directly, targets one of their products or categories, or targets nothing at
+ * all — an unscoped coupon is global and therefore applies to everyone.
+ */
+export const getMerchantCoupons = async (req, res) => {
+  try {
+    // isApprovedMerchant has already resolved and attached this.
+    const merchantId = req.merchant._id;
+
+    // Only ids are needed for the match, so this stays a covered-ish query
+    // rather than pulling whole product documents into memory.
+    const products = await Product.find({ merchant: merchantId, deletedAt: null })
+      .select('_id category')
+      .lean();
+
+    const productIds = products.map((p) => p._id);
+    const categoryIds = [
+      ...new Set(products.filter((p) => p.category).map((p) => String(p.category))),
+    ].map((id) => mongoose.Types.ObjectId.createFromHexString(id));
+
+    const query = {
+      $or: [
+        { applicableMerchants: merchantId },
+        { applicableProducts: { $in: productIds } },
+        { applicableCategories: { $in: categoryIds } },
+        {
+          applicableMerchants: { $size: 0 },
+          applicableProducts: { $size: 0 },
+          applicableCategories: { $size: 0 },
+        },
+      ],
+    };
+
+    const MAX_LIMIT = 100;
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, MAX_LIMIT));
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+
+    const [coupons, total] = await Promise.all([
+      Coupon.find(query)
+        .select(
+          'code type value minOrderAmount maxDiscount startDate endDate ' +
+            'usageLimitPerUser usageLimitGlobal usageCount totalDiscountGiven ' +
+            'totalOrders isActive',
+        )
+        .sort({ endDate: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Coupon.countDocuments(query),
+    ]);
+
+    return sendPaginated(res, { data: coupons, page, limit, total });
+  } catch (error) {
+    logger.error('Failed to list merchant coupons', {
+      requestId: req.requestId,
+      error: error.message,
+    });
+    return sendError(res, {
+      message: 'Failed to retrieve coupons',
+      code: 'COUPON_LIST_FAILED',
+      statusCode: 500,
+    });
   }
 };
 
