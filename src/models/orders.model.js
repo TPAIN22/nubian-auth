@@ -3,9 +3,13 @@ import mongoose from "mongoose";
 const bankakApprovalSchema = new mongoose.Schema({
   status:     { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   approvedAt: { type: Date },
-  approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Clerk user id of the admin who acted — a string like "user_2ab…", never a
+  // Mongo ObjectId. Typing these as ObjectId made every BANKAK approve/reject
+  // throw a CastError inside order.save(), surfacing as a 500. Same convention
+  // as merchant.model.js `approvedBy`.
+  approvedBy: { type: String, default: null },
   rejectedAt: { type: Date },
-  rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  rejectedBy: { type: String, default: null },
   reason:     { type: String },
 }, { _id: false });
 
