@@ -180,6 +180,18 @@ export const validateEnv = () => {
     });
   }
 
+  // Queue enabled but no consumer configured in this process. Not fatal — a
+  // separate `npm run worker` dyno is a valid topology — but if that dyno also
+  // isn't running, producers enqueue into a queue nothing ever drains and every
+  // notification silently parks in BullMQ 'waiting'. Say so loudly at boot.
+  if (process.env.ENABLE_QUEUE === 'true' && process.env.RUN_WORKERS_INPROCESS !== 'true') {
+    logger.warn(
+      'ENABLE_QUEUE=true but RUN_WORKERS_INPROCESS is not true — this process will ' +
+        'enqueue notifications without consuming them. Confirm a separate worker ' +
+        '(npm run worker) is running, or set RUN_WORKERS_INPROCESS=true.'
+    );
+  }
+
   // Build error message
   let errorMessage = '';
 
