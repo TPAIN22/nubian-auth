@@ -557,21 +557,62 @@ class OrderService {
     await Cart.findOneAndDelete({ user: user._id });
 
     // 12. Build email payload BEFORE returning (cart is now cleared)
+    // The confirmation email must show the prices the shopper actually saw at
+    // checkout, not the USD base the order is stored in. Only claim the
+    // selected currency when the conversion genuinely succeeded — if
+    // resolveCurrencyConversions fell back to nulls (FX lookup failed), the
+    // amounts below are still USD and must be labelled USD, otherwise the mail
+    // shows dollar figures under a SAR/SDG symbol.
+    const conversionUsable =
+      selectedCurrency.toUpperCase() !== 'USD' &&
+      currencyConversions.finalAmountConverted !== null;
+
+    // Read prices off orderProducts, not off the cart: line 194 charges
+    // `calculateFinalPrice().finalPrice`, so re-deriving getProductPrice()
+    // here reported the undiscounted price whenever a promotion applied.
+    // buildOrderItems() iterates cart.products and either pushes or throws,
+    // so the two arrays stay index-aligned.
+    const usdLines = orderProducts.map((line, i) => ({
+      name:     cart.products[i]?.product?.name || '',
+      quantity: line.quantity,
+      price:    line.price,
+    }));
+
+    // Currency label and amounts are chosen together and never independently:
+    // a partial failure must not leave USD figures under a SAR/SDG symbol.
+    //
+    // Unit prices are converted individually, the same way convertLineTotals
+    // builds the order total, so line prices and the total are computed on an
+    // identical basis. Note the emailed total is the FINAL amount (discount
+    // applied) while the lines are pre-discount, so they only sum to the total
+    // on orders without a coupon — the template has no discount row yet.
+    const emailMoney = (() => {
+      const usd = { currencyCode: 'USD', totalAmount: finalAmount, products: usdLines };
+      if (!conversionUsable) return usd;
+      try {
+        return {
+          currencyCode: selectedCurrency.toUpperCase(),
+          totalAmount:  currencyConversions.finalAmountConverted,
+          products:     usdLines.map((l) => ({
+            ...l,
+            price: convertAmount(l.price, currencyContext),
+          })),
+        };
+      } catch (err) {
+        logger.warn('Email price conversion failed — sending USD amounts', {
+          orderNumber,
+          currency: selectedCurrency,
+          error: err.message,
+        });
+        return usd;
+      }
+    })();
+
     const emailPayload = {
       to:          user.emailAddress,
       userName:    user.fullName || '',
       orderNumber,
-      totalAmount: finalAmount,
-      products:    cart.products.map(item => {
-        let attrs = {};
-        if (item.attributes instanceof Map) attrs = mapToObject(item.attributes);
-        else if (item.size) attrs = { size: item.size };
-        return {
-          name:     item.product.name,
-          quantity: item.quantity,
-          price:    getProductPrice(item.product, attrs),
-        };
-      }),
+      ...emailMoney,
     };
 
     return { order, emailPayload };

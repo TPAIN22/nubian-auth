@@ -34,6 +34,36 @@ const send = async ({ to, subject, html }) => {
 };
 
 /**
+ * Format a money amount in the currency the shopper actually checked out in.
+ *
+ * Order line items and totals are stored in the BASE currency (USD) with the
+ * selected-currency values alongside them; callers must pass the amounts and
+ * the `currencyCode` that belong together. The previous template hardcoded
+ * «جنيه» on every amount, so an order paid in SAR or USD was still labelled in
+ * Sudanese pounds.
+ *
+ * Latin digits are forced: the surrounding template is RTL Arabic, but prices
+ * in Arabic-Indic numerals are harder to reconcile against a bank statement.
+ */
+const formatMoney = (amount, currencyCode) => {
+  const value = Number(amount);
+  const code = String(currencyCode || 'USD').toUpperCase();
+
+  if (!Number.isFinite(value)) return `0 ${code}`;
+
+  try {
+    return new Intl.NumberFormat('ar', {
+      style: 'currency',
+      currency: code,
+      numberingSystem: 'latn',
+    }).format(value);
+  } catch {
+    // Unknown/invalid ISO code — never let a formatting problem drop the mail.
+    return `${value.toLocaleString('en-US')} ${code}`;
+  }
+};
+
+/**
  * Send welcome email to newly registered user
  * @param {Object} params
  * @param {string} params.to - User email address
@@ -227,17 +257,17 @@ export async function sendWelcomeEmail({ to, userName }) {
  * @param {number} params.totalAmount - Total order amount
  * @param {Array} params.products - Array of products {name, quantity, price}
  */
-export async function sendOrderEmail({ to, userName, orderNumber, status, totalAmount, products }) {
+export async function sendOrderEmail({ to, userName, orderNumber, status, totalAmount, products, currencyCode = 'USD' }) {
   const html = `
     <div dir="rtl" style="font-family: Arial, sans-serif;">
       <h2>مرحباً ${userName} 👋</h2>
       <p>تم إنشاء طلبك بنجاح!</p>
       <p>رقم الطلب: <b>${orderNumber}</b></p>
       <p>الحالة: <b>${status}</b></p>
-      <p>المبلغ الإجمالي: <b>${totalAmount.toLocaleString()} جنيه</b></p>
+      <p>المبلغ الإجمالي: <b>${formatMoney(totalAmount, currencyCode)}</b></p>
       <h3>تفاصيل المنتجات:</h3>
       <ul>
-        ${products.map(p => `<li>${p.name} × ${p.quantity} - ${p.price.toLocaleString()} جنيه</li>`).join('')}
+        ${(products || []).map(p => `<li>${p.name} × ${p.quantity} - ${formatMoney(p.price, currencyCode)}</li>`).join('')}
       </ul>
       <p>شكراً لثقتك بنا!</p>
     </div>
@@ -245,6 +275,93 @@ export async function sendOrderEmail({ to, userName, orderNumber, status, totalA
   return send({
     to,
     subject: `تم إنشاء طلبك رقم #${orderNumber}`,
+    html,
+  });
+}
+
+/**
+ * Per-status copy for order update emails. Keyed by the backend order status
+ * so the caller passes the raw status and never has to build display strings.
+ * Adding a new status here is all that's needed to support emailing it.
+ */
+const ORDER_STATUS_EMAIL_COPY = {
+  shipped: {
+    subject: (orderNumber) => `تم شحن طلبك رقم #${orderNumber} 🚚`,
+    icon: '🚚',
+    accent: '#2196F3',
+    background: '#e7f3ff',
+    heading: 'طلبك في الطريق إليك',
+    lead: 'يسعدنا إبلاغك بأنه تم شحن طلبك وهو الآن في طريقه إليك.',
+    note: 'سنعلمك فور وصول الطلب. إذا كان لديك أي استفسار بخصوص الشحنة، يمكنك التواصل معنا في أي وقت.',
+  },
+  delivered: {
+    subject: (orderNumber) => `تم تسليم طلبك رقم #${orderNumber} ✅`,
+    icon: '✅',
+    accent: '#28a745',
+    background: '#d4edda',
+    heading: 'تم تسليم طلبك بنجاح',
+    lead: 'نتمنى أن ينال طلبك إعجابك! تم تسليم الطلب بنجاح.',
+    note: 'إذا واجهت أي مشكلة في طلبك، يرجى التواصل معنا خلال 48 ساعة وسنكون سعداء بمساعدتك.',
+  },
+};
+
+/**
+ * Send an order status update email (shipped / delivered).
+ *
+ * Deliberately separate from sendOrderEmail: that template is hardcoded to the
+ * "order created" wording and is on the critical checkout path, so status
+ * updates get their own copy rather than overloading it.
+ *
+ * @param {Object} params
+ * @param {string} params.to - Customer email address
+ * @param {string} params.userName - Customer full name
+ * @param {string} params.orderNumber - Order number
+ * @param {'shipped'|'delivered'} params.status - Backend order status
+ */
+export async function sendOrderStatusEmail({ to, userName, orderNumber, status }) {
+  const copy = ORDER_STATUS_EMAIL_COPY[status];
+  if (!copy) {
+    // Guard rather than sending a blank email: an unmapped status is a caller
+    // bug, and retrying it will never succeed.
+    const err = new Error(`No order status email template for status: ${status}`);
+    err.unrecoverable = true;
+    throw err;
+  }
+
+  const appUrl = 'https://nubian-sd.com';
+
+  const html = `
+    <div dir="rtl" style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background-color: ${copy.background}; border: 1px solid ${copy.accent}; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+        <h2 style="color: #18181b; margin: 0;">${copy.icon} ${copy.heading}</h2>
+      </div>
+
+      <p>مرحباً <b>${userName || 'عميلنا العزيز'}</b>,</p>
+
+      <p>${copy.lead}</p>
+
+      <div style="background-color: #f8f9fa; border-right: 4px solid ${copy.accent}; padding: 15px; margin: 20px 0;">
+        <p style="margin: 0;">رقم الطلب: <b>#${orderNumber}</b></p>
+      </div>
+
+      <p>${copy.note}</p>
+
+      <div style="text-align: center; margin: 32px 0;">
+        <a href="${appUrl}" target="_blank" style="display: inline-block; padding: 14px 36px; font-size: 16px; font-weight: 600; color: #ffffff; background-color: ${copy.accent}; text-decoration: none; border-radius: 10px;">
+          تصفح نوبيان
+        </a>
+      </div>
+
+      <p>شكراً لثقتك بنا،<br>فريق نوبيان</p>
+
+      <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+      <p style="color: #666; font-size: 12px;">هذه رسالة تلقائية، يرجى عدم الرد على هذا البريد الإلكتروني.</p>
+    </div>
+  `;
+
+  return send({
+    to,
+    subject: copy.subject(orderNumber),
     html,
   });
 }

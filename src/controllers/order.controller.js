@@ -2,13 +2,56 @@ import Order from "../models/orders.model.js";
 import Merchant from "../models/merchant.model.js";
 import { getAuth } from "@clerk/express";
 import User from "../models/user.model.js";
-import { queueOrderEmail } from "../services/mailService.js";
+import { queueOrderEmail, queueOrderStatusEmail } from "../services/mailService.js";
 import CommissionService from "../services/commission.service.js";
 import logger from "../lib/logger.js";
 import { sendSuccess, sendError, sendNotFound, sendForbidden, sendPaginated, sendCreated } from "../lib/response.js";
 import { handleOrderCreated, handleOrderStatusChanged } from "../services/notificationEventHandlers.js";
 import orderService from "../services/order.service.js";
 import { ServiceError } from "../lib/errors.js";
+
+// Order statuses that trigger a customer email. Kept narrow on purpose:
+// pending/confirmed/cancelled either aren't worth an email or are already
+// covered by the order-created mail.
+const EMAILED_ORDER_STATUSES = new Set(["shipped", "delivered"]);
+
+/**
+ * Fire-and-forget the customer's order status email.
+ *
+ * Both the admin (updateOrderStatus) and merchant (updateMerchantOrderStatus)
+ * endpoints can move an order to "shipped", so both call this. The queue jobId
+ * dedups on (orderNumber, status), so overlapping calls send exactly one mail.
+ *
+ * Never awaited and never throws — a mail problem must not fail the status
+ * update that already committed to the database.
+ */
+function dispatchOrderStatusEmail(order, newStatus) {
+  if (!EMAILED_ORDER_STATUSES.has(newStatus)) return;
+
+  const to = order?.user?.emailAddress;
+  if (!to) {
+    logger.warn("Order status email skipped — no recipient address", {
+      orderId: order?._id?.toString(),
+      orderNumber: order?.orderNumber,
+      status: newStatus,
+    });
+    return;
+  }
+
+  queueOrderStatusEmail({
+    to,
+    userName: order.user.fullName || "",
+    orderNumber: order.orderNumber,
+    status: newStatus,
+  }).catch((err) => {
+    logger.error("Failed to dispatch order status email", {
+      error: err.message,
+      orderId: order?._id?.toString(),
+      orderNumber: order?.orderNumber,
+      status: newStatus,
+    });
+  });
+}
 
 // Shared display formatter used by getUserOrders, getOrders, and getOrderById.
 // Always reads from the price snapshot stored on the order item — never the
@@ -174,6 +217,9 @@ export const updateOrderStatus = async (req, res) => {
           newStatus: status,
         });
       });
+
+      // `order` here is the post-update doc, populated with the customer.
+      dispatchOrderStatusEmail(order, updateData.status);
     }
 
     return sendSuccess(res, { data: order, message: "Order status updated successfully" });
@@ -610,7 +656,9 @@ export const updateMerchantOrderStatus = async (req, res) => {
 
     const updatedOrder = await Order.findByIdAndUpdate(id, updateData, { new: true })
       .populate("products.product", "merchant")
-      .populate("merchants");
+      .populate("merchants")
+      // Needed for the status email — merchants can move an order to "shipped".
+      .populate("user", "fullName emailAddress");
 
     // Send status change notification
     if (status && status !== oldStatus) {
@@ -622,6 +670,8 @@ export const updateMerchantOrderStatus = async (req, res) => {
           newStatus: status,
         });
       });
+
+      dispatchOrderStatusEmail(updatedOrder, updateData.status);
     }
 
     return sendSuccess(res, { data: updatedOrder, message: "Order status updated successfully" });

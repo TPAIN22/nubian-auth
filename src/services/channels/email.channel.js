@@ -2,6 +2,7 @@ import logger from '../../lib/logger.js';
 import {
   sendWelcomeEmail,
   sendOrderEmail,
+  sendOrderStatusEmail,
   sendMerchantSuspensionEmail,
   sendMerchantUnsuspensionEmail,
 } from '../../lib/mail.js';
@@ -20,6 +21,8 @@ export const deliverEmail = async (jobName, payload) => {
       return wrapResend(jobName, () => sendWelcomeEmail(payload));
     case JOB_NAMES.EMAIL_ORDER:
       return wrapResend(jobName, () => sendOrderEmail(payload));
+    case JOB_NAMES.EMAIL_ORDER_STATUS:
+      return wrapResend(jobName, () => sendOrderStatusEmail(payload));
     case JOB_NAMES.EMAIL_MERCHANT_SUSPENSION:
       return wrapResend(jobName, () => sendMerchantSuspensionEmail(payload));
     case JOB_NAMES.EMAIL_MERCHANT_UNSUSPENSION:

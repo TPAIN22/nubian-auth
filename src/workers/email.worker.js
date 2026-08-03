@@ -21,6 +21,7 @@ export const createEmailWorker = () => {
       const knownEmailJobs = new Set([
         JOB_NAMES.EMAIL_WELCOME,
         JOB_NAMES.EMAIL_ORDER,
+        JOB_NAMES.EMAIL_ORDER_STATUS,
         JOB_NAMES.EMAIL_MERCHANT_SUSPENSION,
         JOB_NAMES.EMAIL_MERCHANT_UNSUSPENSION,
       ]);

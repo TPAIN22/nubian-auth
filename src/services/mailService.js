@@ -5,6 +5,7 @@ import { wrap } from '../lib/queue/jobShapes.js';
 import {
   sendWelcomeEmail,
   sendOrderEmail,
+  sendOrderStatusEmail,
   sendMerchantSuspensionEmail,
   sendMerchantUnsuspensionEmail,
 } from '../lib/mail.js';
@@ -31,6 +32,7 @@ const DEFAULT_PRIORITY = 10;
 const directSenders = {
   [JOB_NAMES.EMAIL_WELCOME]: sendWelcomeEmail,
   [JOB_NAMES.EMAIL_ORDER]: sendOrderEmail,
+  [JOB_NAMES.EMAIL_ORDER_STATUS]: sendOrderStatusEmail,
   [JOB_NAMES.EMAIL_MERCHANT_SUSPENSION]: sendMerchantSuspensionEmail,
   [JOB_NAMES.EMAIL_MERCHANT_UNSUSPENSION]: sendMerchantUnsuspensionEmail,
 };
@@ -87,6 +89,23 @@ export const queueOrderEmail = (payload) =>
     jobId:
       payload?.orderNumber && payload?.status
         ? `email-order-${payload.orderNumber}-${payload.status}`
+        : undefined,
+  });
+
+/**
+ * Order status update email (shipped / delivered). Critical priority — a
+ * customer waiting on a delivery notices a missing one.
+ *
+ * Dedup by (orderNumber, status) so the admin and merchant status endpoints
+ * can both fire without double-emailing, and so a retried PATCH is a no-op —
+ * but a later transition (shipped → delivered) still sends.
+ */
+export const queueOrderStatusEmail = (payload) =>
+  sendOrEnqueue(JOB_NAMES.EMAIL_ORDER_STATUS, payload, {
+    critical: true,
+    jobId:
+      payload?.orderNumber && payload?.status
+        ? `email-order-status-${payload.orderNumber}-${payload.status}`
         : undefined,
   });
 
