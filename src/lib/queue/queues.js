@@ -162,14 +162,41 @@ export const withQueue = async (queueName, fn, timeoutMs = queueTimeoutMs()) => 
  * @param {object} [opts]    - per-job options: jobId, delay, priority
  */
 export const enqueue = async (queueName, jobName, payload, opts = {}) => {
-  // BullMQ rejects custom jobIds containing ':' (it collides with internal
-  // Redis key namespacing). Sanitize defensively so callers can build ids
-  // from arbitrary strings (titles, recipient ids, etc.) without crashing.
-  const safeOpts = opts.jobId
-    ? { ...opts, jobId: String(opts.jobId).replace(/:/g, '-') }
-    : opts;
+  return withQueue(queueName, (queue) => queue.add(jobName, payload, sanitizeOpts(opts)));
+};
 
-  return withQueue(queueName, (queue) => queue.add(jobName, payload, safeOpts));
+/**
+ * BullMQ rejects custom jobIds containing ':' (it collides with internal Redis
+ * key namespacing). Sanitize defensively so callers can build ids from
+ * arbitrary strings — titles, dedup keys carrying JSON metadata, ISO
+ * timestamps — without crashing.
+ *
+ * Exported so every enqueue path shares one rule. Calling `queue.add` /
+ * `queue.addBulk` directly skips this and will throw on the first colon.
+ */
+export const sanitizeJobId = (jobId) => String(jobId).replace(/:/g, '-');
+
+const sanitizeOpts = (opts = {}) =>
+  opts.jobId ? { ...opts, jobId: sanitizeJobId(opts.jobId) } : opts;
+
+/**
+ * Bulk sibling of `enqueue`. Applies the same jobId sanitizing and the same
+ * hang protection — a raw `queue.addBulk()` has neither, and one bad jobId
+ * rejects the entire batch (BullMQ validates every job before writing any).
+ *
+ * The timeout scales with batch size: a 1000-job bulk is a long Redis pipeline
+ * and should not be judged against the single-add budget.
+ *
+ * @param {string} queueName - one of QUEUE_NAMES
+ * @param {Array<{name: string, data: object, opts?: object}>} jobs
+ */
+export const enqueueBulk = async (queueName, jobs) => {
+  if (!Array.isArray(jobs) || jobs.length === 0) return [];
+
+  const safeJobs = jobs.map((job) => ({ ...job, opts: sanitizeOpts(job.opts) }));
+  const timeoutMs = Math.min(Math.max(queueTimeoutMs(), jobs.length * 20), 60_000);
+
+  return withQueue(queueName, (queue) => queue.addBulk(safeJobs), timeoutMs);
 };
 
 /**

@@ -2,7 +2,7 @@ import { Worker, UnrecoverableError } from 'bullmq';
 import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
 import { assertVersion, wrap } from '../lib/queue/jobShapes.js';
 import { getWorkerRedis } from '../lib/queue/redis.js';
-import { getQueue } from '../lib/queue/queues.js';
+import { enqueueBulk } from '../lib/queue/queues.js';
 import notificationService from '../services/notificationService.js';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';
@@ -240,18 +240,20 @@ const persistAndEnqueueChunk = async ({
     return { persisted: 0, enqueued: 0 };
   }
 
-  const pushQueue = getQueue(QUEUE_NAMES.PUSH);
   const jobs = inserted.map((n) => ({
     name: JOB_NAMES.PUSH_SEND,
     data: wrap({ notificationId: n._id.toString() }),
     opts: {
       // Use the dedup key as the BullMQ jobId so retries / accidental
-      // double-fanouts don't double-deliver to the same recipient.
+      // double-fanouts don't double-deliver to the same recipient. Dedup keys
+      // embed JSON metadata (and ISO timestamps), so they routinely contain
+      // colons — enqueueBulk strips them. A raw addBulk() throws "Custom Id
+      // cannot contain :" and takes the whole broadcast down with it.
       jobId: `push-${n.deduplicationKey || n._id.toString()}`,
     },
   }));
 
-  await pushQueue.addBulk(jobs);
+  await enqueueBulk(QUEUE_NAMES.PUSH, jobs);
 
   return { persisted: inserted.length, enqueued: jobs.length };
 };
