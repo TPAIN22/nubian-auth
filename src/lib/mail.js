@@ -3,6 +3,36 @@ import dotenv from "dotenv"
 dotenv.config()
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+// Must be an address on a domain verified in the Resend account, otherwise
+// every send is rejected with 403. The verified domain is nubian-sd.com —
+// the same domain the CORS allowlist and affiliate links use.
+const FROM_ADDRESS = process.env.MAIL_FROM || 'Nubian <nubiang@nubian-sd.com>';
+
+/**
+ * Single send path for every template.
+ *
+ * The Resend v4 SDK does NOT throw on API errors — it resolves with
+ * `{ data: null, error: {...} }`. A plain try/catch around `emails.send()`
+ * therefore never fires, and a rejected send looks exactly like a successful
+ * one: the queue job completes, the log says "Email sent", and nothing is
+ * delivered. Converting `error` into a thrown Error is what makes failures
+ * visible to the worker (and lets it classify 4xx as unrecoverable).
+ */
+const send = async ({ to, subject, html }) => {
+  const { data, error } = await resend.emails.send({ from: FROM_ADDRESS, to, subject, html });
+
+  if (error) {
+    const err = new Error(error.message || 'Resend rejected the message');
+    err.name = error.name || 'resend_error';
+    // email.channel.js maps 4xx → unrecoverable so we don't retry a bad
+    // recipient or an unverified sender domain five times.
+    err.statusCode = error.statusCode;
+    throw err;
+  }
+
+  return data;
+};
+
 /**
  * Send welcome email to newly registered user
  * @param {Object} params
@@ -12,7 +42,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 export async function sendWelcomeEmail({ to, userName }) {
   const currentYear = new Date().getFullYear();
   const appName = 'Nubian';
-  const appUrl = 'https://nubian-sd.info';
+  const appUrl = 'https://nubian-sd.com';
   
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -180,17 +210,11 @@ export async function sendWelcomeEmail({ to, userName }) {
 </body>
 </html>`;
 
-  try {
-    return await resend.emails.send({
-      from: 'Nubian <nubiang@nubian-sd.info>',
-      to,
-      subject: `Welcome to Nubian, ${userName}! 🎉`,
-      html,
-    });
-  } catch (error) {
-    console.error('Error sending welcome email:', error);
-    throw error;
-  }
+  return send({
+    to,
+    subject: `Welcome to Nubian, ${userName}! 🎉`,
+    html,
+  });
 }
 
 /**
@@ -218,8 +242,7 @@ export async function sendOrderEmail({ to, userName, orderNumber, status, totalA
       <p>شكراً لثقتك بنا!</p>
     </div>
   `;
-  return resend.emails.send({
-    from: 'Nubian <nubiang@nubian-sd.info>',
+  return send({
     to,
     subject: `تم إنشاء طلبك رقم #${orderNumber}`,
     html,
@@ -276,17 +299,11 @@ export async function sendMerchantSuspensionEmail({ to, businessName, suspension
     </div>
   `;
   
-  try {
-    return await resend.emails.send({
-      from: 'Nubian <nubiang@nubian-sd.info>',
-      to,
-      subject: `تم تعليق حسابك التجاري - ${businessName}`,
-      html,
-    });
-  } catch (error) {
-    console.error('Error sending suspension email:', error);
-    throw error;
-  }
+  return send({
+    to,
+    subject: `تم تعليق حسابك التجاري - ${businessName}`,
+    html,
+  });
 }
 
 /**
@@ -324,15 +341,9 @@ export async function sendMerchantUnsuspensionEmail({ to, businessName }) {
     </div>
   `;
   
-  try {
-    return await resend.emails.send({
-      from: 'Nubian <nubiang@nubian-sd.info>',
-      to,
-      subject: `تم إلغاء تعليق حسابك التجاري - ${businessName}`,
-      html,
-    });
-  } catch (error) {
-    console.error('Error sending unsuspension email:', error);
-    throw error;
-  }
+  return send({
+    to,
+    subject: `تم إلغاء تعليق حسابك التجاري - ${businessName}`,
+    html,
+  });
 } 
