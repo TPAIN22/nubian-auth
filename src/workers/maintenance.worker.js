@@ -1,7 +1,7 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
 import { assertVersion } from '../lib/queue/jobShapes.js';
-import { getRedis, getWorkerRedis } from '../lib/queue/redis.js';
+import { getRedis, getWorkerRedis, workerTuning } from '../lib/queue/redis.js';
 import { getQueue } from '../lib/queue/queues.js';
 import logger from '../lib/logger.js';
 import PushToken from '../models/pushToken.model.js';
@@ -36,7 +36,7 @@ export const createMaintenanceWorker = () => {
           throw new UnrecoverableError(`Unknown maintenance job: ${job.name}`);
       }
     },
-    { connection: getWorkerRedis(), prefix, concurrency }
+    { connection: getWorkerRedis(), prefix, concurrency, ...workerTuning() }
   );
 
   worker.on('completed', (job, result) => {

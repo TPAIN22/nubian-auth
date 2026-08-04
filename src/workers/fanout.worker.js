@@ -1,7 +1,7 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
 import { assertVersion, wrap } from '../lib/queue/jobShapes.js';
-import { getWorkerRedis } from '../lib/queue/redis.js';
+import { getWorkerRedis, workerTuning } from '../lib/queue/redis.js';
 import { enqueueBulk } from '../lib/queue/queues.js';
 import notificationService from '../services/notificationService.js';
 import User from '../models/user.model.js';
@@ -37,7 +37,7 @@ export const createFanoutWorker = () => {
           throw new UnrecoverableError(`Unknown fanout job: ${job.name}`);
       }
     },
-    { connection: getWorkerRedis(), prefix, concurrency }
+    { connection: getWorkerRedis(), prefix, concurrency, ...workerTuning() }
   );
 
   worker.on('completed', (job, result) => {

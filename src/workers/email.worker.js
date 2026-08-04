@@ -1,7 +1,7 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
 import { assertVersion } from '../lib/queue/jobShapes.js';
-import { getWorkerRedis } from '../lib/queue/redis.js';
+import { getWorkerRedis, workerTuning } from '../lib/queue/redis.js';
 import { deliverEmail } from '../services/channels/email.channel.js';
 import logger from '../lib/logger.js';
 
@@ -39,7 +39,7 @@ export const createEmailWorker = () => {
         throw err;
       }
     },
-    { connection: getWorkerRedis(), prefix, concurrency }
+    { connection: getWorkerRedis(), prefix, concurrency, ...workerTuning() }
   );
 
   worker.on('completed', (job) => {

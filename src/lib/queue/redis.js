@@ -123,6 +123,42 @@ export const getWorkerRedis = () => {
 };
 
 /**
+ * Polling tuning shared by every Worker.
+ *
+ * An *idle* BullMQ worker is not free. Its loop is:
+ *   BZPOPMIN <marker> <drainDelay>   → times out, 1 command
+ *   moveToActive (EVALSHA)           → returns nothing, 1 command
+ * At the library default of drainDelay=5s that is 34,560 commands/day per
+ * worker before a single job exists. With four roles (push, email, fanout,
+ * maintenance) hosted in one process, ~150k commands/day of pure idle chatter —
+ * which on a per-command plan like Upstash is the entire bill.
+ *
+ * Raising drainDelay is close to free: `queue.add()` writes the marker key,
+ * which wakes the blocking BZPOPMIN immediately. drainDelay is only the
+ * *fallback* timeout for when nothing is enqueued, so a longer value costs no
+ * job latency on the normal path — it only slows the recovery case where a
+ * marker write was missed. Delayed jobs (retry backoff, cron schedulers) are
+ * unaffected too: their marker carries the due timestamp, and BullMQ blocks
+ * until then rather than for drainDelay.
+ *
+ * 120s is deliberately not higher. BullMQ arms a watchdog that force-reconnects
+ * the blocking client at `drainDelay + 1s` (worker.js waitForJob), because a
+ * blocking read can silently die without the client noticing. Past a couple of
+ * minutes, a dropped connection stays undetected long enough to matter, and
+ * managed Redis (Upstash) reaps idle-looking connections anyway — so the
+ * savings curve flattens right where the reliability risk starts.
+ *
+ * stalledInterval is the sweep that reclaims jobs from a worker that died
+ * mid-processing. Longer = fewer commands, but a crashed worker's job sits
+ * unowned for that much longer. 10 minutes is fine for push/email; lower it via
+ * env if a role ever handles something latency-critical.
+ */
+export const workerTuning = () => ({
+  drainDelay: Number(process.env.WORKER_DRAIN_DELAY_S || 120),
+  stalledInterval: Number(process.env.WORKER_STALLED_INTERVAL_MS || 600_000),
+});
+
+/**
  * Close all Redis connections. Called from graceful-shutdown hooks.
  */
 export const closeRedis = async () => {

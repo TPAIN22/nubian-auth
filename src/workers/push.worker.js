@@ -1,7 +1,7 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
 import { assertVersion } from '../lib/queue/jobShapes.js';
-import { getWorkerRedis } from '../lib/queue/redis.js';
+import { getWorkerRedis, workerTuning } from '../lib/queue/redis.js';
 import { deliverPushNotification } from '../services/channels/push.channel.js';
 import logger from '../lib/logger.js';
 
@@ -32,7 +32,7 @@ export const createPushWorker = () => {
           throw new UnrecoverableError(`Unknown job name on push queue: ${job.name}`);
       }
     },
-    { connection: getWorkerRedis(), prefix, concurrency }
+    { connection: getWorkerRedis(), prefix, concurrency, ...workerTuning() }
   );
 
   attachWorkerLogging(worker, QUEUE_NAMES.PUSH);
