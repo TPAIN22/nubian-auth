@@ -675,14 +675,14 @@ const validateVariants = (variants) => {
 };
 
 // ===== Helper: Explain an E11000 on the variants.sku index =====
-// SKUs are unique across the whole catalogue, and soft-deleted products keep
-// theirs reserved — so the owner of the conflicting SKU is often a product the
-// caller can't even see. Naming the value is the difference between a dead end
-// and a one-line fix on their side.
+// Naming the value is the difference between a dead end and a one-line fix on
+// the caller's side. Since variants_sku_live_unique is scoped to live products
+// (see product.model.js), the conflict is always with a product the caller can
+// actually find and edit — deleted products no longer reserve their SKUs.
 const duplicateSkuMessage = (error) => {
   const sku = error?.keyValue?.['variants.sku'];
   return sku
-    ? `SKU "${sku}" is already used by another product. SKUs must be unique across the whole catalogue, including deleted products.`
+    ? `SKU "${sku}" is already used by another active product. Change this variant's SKU, or free it up by deleting the product that holds it.`
     : 'Duplicate SKU detected at DB level';
 };
 
