@@ -9,6 +9,7 @@ import { sendSuccess, sendError, sendNotFound, sendForbidden, sendPaginated, sen
 import { handleOrderCreated, handleOrderStatusChanged } from "../services/notificationEventHandlers.js";
 import orderService from "../services/order.service.js";
 import { ServiceError } from "../lib/errors.js";
+import { DEFAULT_NUBIAN_MARKUP } from "../lib/pricing.config.js";
 
 // Order statuses that trigger a customer email. Kept narrow on purpose:
 // pending/confirmed/cancelled either aren't worth an email or are already
@@ -71,7 +72,7 @@ function formatOrderProduct(item, order) {
 
   const snapshotFinalPrice    = toDisplay(item.price);
   const snapshotMerchantPrice = toDisplay(item.merchantPrice);
-  const snapshotMarkup        = item.nubianMarkup || 10;
+  const snapshotMarkup        = item.nubianMarkup || DEFAULT_NUBIAN_MARKUP;
   const snapshotDynamic       = item.dynamicMarkup || 0;
 
   // Prefer the stored snapshot fields. Fall back for orders placed before the

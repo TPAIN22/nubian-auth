@@ -1,12 +1,17 @@
 /**
- * Migration: Set nubianMarkup to 30% on all existing products
+ * Migration: back-fill every existing product with the platform default markup.
+ *
+ * The target is NUBIAN_MARKUP from .env (see lib/pricing.config.js) — the same
+ * knob the running app uses. Changing that env var only affects NEW variants and
+ * fallback paths; existing rows keep whatever markup they were stored with.
+ * Run this after changing it to bring the catalogue in line.
  *
  * Run with:
- *   node src/scripts/migrate_nubianMarkup_30.js
+ *   node src/scripts/migrate_nubian_markup.js
  *
  * What it does:
- *   1. Finds all products whose variants have nubianMarkup != 30 (or null/undefined)
- *   2. Sets all variant nubianMarkup values to 30
+ *   1. Finds all products whose variants have a markup != the target (or null)
+ *   2. Sets all variant nubianMarkup values to the target
  *   3. Recomputes each variant's finalPrice with the new markup
  *   4. Sets dynamicPricingEnabled: true if not already set
  *   5. Writes changes via bulk updateOne operations (no pre-save triggers)
@@ -16,11 +21,14 @@
 
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
-import Product from '../models/product.model.js';
 
 dotenv.config();
 
-const TARGET_MARKUP = 30;
+// Imported after dotenv.config() so pricing.config.js reads a populated .env.
+const { default: Product } = await import('../models/product.model.js');
+const { DEFAULT_NUBIAN_MARKUP } = await import('../lib/pricing.config.js');
+
+const TARGET_MARKUP = DEFAULT_NUBIAN_MARKUP;
 
 async function run() {
   const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
@@ -39,7 +47,7 @@ async function run() {
   let errors = 0;
   const bulkOps = [];
 
-  console.log('🔄  Scanning products...');
+  console.log(`🔄  Scanning products (target markup: ${TARGET_MARKUP}%)...`);
 
   for await (const product of cursor) {
     const variantUpdates = {};
@@ -119,7 +127,7 @@ async function run() {
 
   console.log('\n\n✅  Migration complete!');
   console.log(`   Updated : ${updated} products`);
-  console.log(`   Skipped : ${skipped} products (already at 30%)`);
+  console.log(`   Skipped : ${skipped} products (already at ${TARGET_MARKUP}%)`);
   console.log(`   Errors  : ${errors}`);
 
   await mongoose.disconnect();

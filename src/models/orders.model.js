@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { DEFAULT_NUBIAN_MARKUP } from "../lib/pricing.config.js";
 
 const bankakApprovalSchema = new mongoose.Schema({
   status:     { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
@@ -26,7 +27,7 @@ const orderProductSchema = new mongoose.Schema(
     // pricing snapshot at time of order
     price: { type: Number, required: true }, // final unit price charged
     merchantPrice: { type: Number, default: 0 },
-    nubianMarkup: { type: Number, default: 10 },
+    nubianMarkup: { type: Number, default: () => DEFAULT_NUBIAN_MARKUP },
     dynamicMarkup: { type: Number, default: 0 },
     discountPrice: { type: Number, default: 0 }, // legacy display
     originalPrice: { type: Number, default: 0 },

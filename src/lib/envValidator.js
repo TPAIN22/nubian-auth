@@ -76,6 +76,15 @@ const optionalEnvVars = {
     default: 'false',
   },
 
+  // ── Pricing ────────────────────────────────────────────────────────────────
+  // Nubian's default margin on top of the merchant price. Single knob for the
+  // whole platform — see lib/pricing.config.js.
+  NUBIAN_MARKUP: {
+    value: process.env.NUBIAN_MARKUP || '30',
+    description: "Default Nubian markup %, applied when a variant has no explicit markup",
+    default: '30',
+  },
+
   // ── Geo / maps ─────────────────────────────────────────────────────────────
   // All map + geocoding traffic is proxied through /api/geo, so these keys stay
   // server-side. Provider is swappable without touching code — see
@@ -133,7 +142,9 @@ const validateFormat = (key, value) => {
     ENABLE_QUEUE: (val) => ['true', 'false'].includes(val),
     RUN_WORKERS_INPROCESS: (val) => ['true', 'false'].includes(val),
   };
-  // Note: only *required* vars are format-checked here. Geo config is validated
+  // Note: only *required* vars are format-checked here. NUBIAN_MARKUP validates
+  // itself in lib/pricing.config.js (warn + fall back to 30, never fatal — a
+  // typo'd margin shouldn't take the API down). Geo config is validated
   // at first use by GeoService, which logs and falls through to the next
   // provider rather than taking the process down over a map key.
 

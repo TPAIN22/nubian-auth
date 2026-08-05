@@ -6,6 +6,7 @@ import logger from '../lib/logger.js';
 import Product from '../models/product.model.js';
 import Order from '../models/orders.model.js';
 import mongoose from 'mongoose';
+import { DEFAULT_NUBIAN_MARKUP } from '../lib/pricing.config.js';
 
 /**
  * Get pricing analytics for admin dashboard
@@ -53,8 +54,8 @@ export const getPricingAnalytics = async (req, res) => {
     });
 
     const averageNubianMarkup = productsWithMarkup.length > 0
-      ? productsWithMarkup.reduce((sum, p) => sum + (p.nubianMarkup || 10), 0) / productsWithMarkup.length
-      : 10;
+      ? productsWithMarkup.reduce((sum, p) => sum + (p.nubianMarkup || DEFAULT_NUBIAN_MARKUP), 0) / productsWithMarkup.length
+      : DEFAULT_NUBIAN_MARKUP;
 
     const averageDynamicMarkup = productsWithMarkup.length > 0
       ? productsWithMarkup.reduce((sum, p) => sum + (p.dynamicMarkup || 0), 0) / productsWithMarkup.length

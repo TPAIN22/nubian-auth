@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { calculateFinalPrice } from '../lib/pricing.engine.js';
+import { DEFAULT_NUBIAN_MARKUP, NUBIAN_MARKUP_MIN, NUBIAN_MARKUP_MAX } from '../lib/pricing.config.js';
 
 const variantSchema = new mongoose.Schema(
   {
@@ -11,8 +12,14 @@ const variantSchema = new mongoose.Schema(
 
     merchantPrice: { type: Number, required: true, min: 1 },
 
-    // Nubian's fixed margin on top of merchant price (admin-set, default 30%)
-    nubianMarkup: { type: Number, default: 30, min: 0, max: 200 },
+    // Nubian's fixed margin on top of merchant price (admin-set; the default
+    // comes from NUBIAN_MARKUP — see lib/pricing.config.js)
+    nubianMarkup: {
+      type: Number,
+      default: () => DEFAULT_NUBIAN_MARKUP,
+      min: NUBIAN_MARKUP_MIN,
+      max: NUBIAN_MARKUP_MAX,
+    },
     // System-computed demand & scarcity adjustment (-20% to +50%)
     dynamicMarkup: { type: Number, default: 0, min: -20, max: 50 },
     // One-off absolute discount the merchant provides (₩ amount, not %)
@@ -151,7 +158,24 @@ productSchema.index({ status: 1, deletedAt: 1, createdAt: -1 });
 productSchema.index({ merchant: 1, deletedAt: 1 });
 productSchema.index({ 'ranking.visibilityScore': -1 });
 productSchema.index({ 'ranking.trendingScore': -1 });
-productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
+// SKUs are unique across LIVE products only — a soft-deleted product must not
+// keep its SKUs reserved forever (re-adding a deleted product then fails with
+// E11000 against a document the UI can't even show).
+//
+// `sparse` cannot be combined with `partialFilterExpression`, so the $exists
+// clause does that job: without it, every live product with no variants.sku
+// would index as null and the second one would collide.
+//
+// Changing this spec alone does NOT replace the deployed index — Mongoose never
+// drops an existing one. Run: node src/scripts/migrate_sku_index_partial.js
+productSchema.index(
+  { 'variants.sku': 1 },
+  {
+    name: 'variants_sku_live_unique',
+    unique: true,
+    partialFilterExpression: { deletedAt: null, 'variants.sku': { $exists: true } },
+  }
+);
 // Bulk-import upsert key — one importSku per merchant.
 productSchema.index({ merchant: 1, importSku: 1 }, { unique: true, sparse: true });
 productSchema.index({ isActive: 1, deletedAt: 1, priorityScore: -1, featured: -1 });

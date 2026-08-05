@@ -33,6 +33,7 @@
 import Product from '../models/product.model.js';
 import logger from '../lib/logger.js';
 import { calculateFinalPrice } from '../lib/pricing.engine.js';
+import { DEFAULT_NUBIAN_MARKUP } from '../lib/pricing.config.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ import { calculateFinalPrice } from '../lib/pricing.engine.js';
  */
 export function computeFinalPrice({
   merchantPrice,
-  nubianMarkup = 30,
+  nubianMarkup = DEFAULT_NUBIAN_MARKUP,
   dynamicMarkup = 0,
   merchantDiscount = 0,
   product = null,
@@ -136,7 +137,7 @@ export async function runDynamicPricingCron() {
           product,
           variant: {
             merchantPrice:    variant.merchantPrice,
-            nubianMarkup:     variant.nubianMarkup ?? 30,
+            nubianMarkup:     variant.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP,
             dynamicMarkup:    nextDynamic,
             merchantDiscount: variant.merchantDiscount ?? 0,
           },

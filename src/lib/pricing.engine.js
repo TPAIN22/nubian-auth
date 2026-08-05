@@ -21,6 +21,8 @@
  * merchant explicitly sets a discount, below-cost is allowed (minimum 1).
  */
 
+import { DEFAULT_NUBIAN_MARKUP } from './pricing.config.js';
+
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 /**
@@ -76,7 +78,7 @@ export function calculateFinalPrice({ product, variant }) {
   }
 
   const merchantPrice = Math.max(0, Number(v.merchantPrice) || 0);
-  const nubianMarkup  = Math.max(0, Number(v.nubianMarkup ?? 30));
+  const nubianMarkup  = Math.max(0, Number(v.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP));
   const allowDynamic  = product?.dynamicPricingEnabled !== false;
   const dynamicMarkup = allowDynamic ? Number(v.dynamicMarkup || 0) : 0;
 

@@ -3,6 +3,7 @@ import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendNotFound } from "../lib/response.js";
 import logger from "../lib/logger.js";
 import { convertProductPrices } from "../services/currency.service.js";
+import { DEFAULT_NUBIAN_MARKUP } from "../lib/pricing.config.js";
 import {
   getHomeRecommendations,
   getProductRecommendations,
@@ -126,7 +127,7 @@ function enrichProducts(products) {
 
     const discount = calcDiscountPercent(originalPrice, sellingPrice);
 
-    const nubianMarkup = toNumber(product?.nubianMarkup, 10);
+    const nubianMarkup = toNumber(product?.nubianMarkup, DEFAULT_NUBIAN_MARKUP);
     const dynamicMarkup = toNumber(product?.dynamicMarkup, 0);
 
     // If variant selected, prefer variant markup values if provided

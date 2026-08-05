@@ -15,6 +15,11 @@ import {
   calculateProductPricing,
   isProductDiscountActive,
 } from '../lib/pricing.engine.js'
+import {
+  DEFAULT_NUBIAN_MARKUP,
+  NUBIAN_MARKUP_MIN,
+  NUBIAN_MARKUP_MAX,
+} from '../lib/pricing.config.js'
 
 /**
  * Enrich product with pricing breakdown for API responses.
@@ -130,7 +135,7 @@ export function enrichProductWithPricing(product) {
       ...p,
       merchantPrice: rootPricing.basePrice,
       price:         rootPricing.basePrice,
-      nubianMarkup:  cheapest?.nubianMarkup ?? p.nubianMarkup ?? 30,
+      nubianMarkup:  cheapest?.nubianMarkup ?? p.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP,
       ...buildBlock(rootPricing, 'product'),
       variants: enrichedVariants,
     };
@@ -669,6 +674,18 @@ const validateVariants = (variants) => {
   }
 };
 
+// ===== Helper: Explain an E11000 on the variants.sku index =====
+// SKUs are unique across the whole catalogue, and soft-deleted products keep
+// theirs reserved — so the owner of the conflicting SKU is often a product the
+// caller can't even see. Naming the value is the difference between a dead end
+// and a one-line fix on their side.
+const duplicateSkuMessage = (error) => {
+  const sku = error?.keyValue?.['variants.sku'];
+  return sku
+    ? `SKU "${sku}" is already used by another product. SKUs must be unique across the whole catalogue, including deleted products.`
+    : 'Duplicate SKU detected at DB level';
+};
+
 // ===== Helper: Validate ObjectId =====
 const validateObjectId = (id, type) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -746,7 +763,7 @@ export const createProduct = async (req, res) => {
   } catch (error) {
     logger.error('Error creating product', { error: error.message });
     if (error.code === 11000 && error.keyPattern?.['variants.sku']) {
-      return sendError(res, { message: `Duplicate SKU detected at DB level`, statusCode: 400, code: 'VALIDATION_ERROR' });
+      return sendError(res, { message: duplicateSkuMessage(error), statusCode: 400, code: 'VALIDATION_ERROR' });
     }
     return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR' });
   }
@@ -806,7 +823,7 @@ export const updateProduct = async (req, res) => {
   } catch (error) {
     logger.error('Error updating product', { error: error.message });
     if (error.code === 11000 && error.keyPattern?.['variants.sku']) {
-      return sendError(res, { message: `Duplicate SKU detected at DB level`, statusCode: 400, code: 'VALIDATION_ERROR' });
+      return sendError(res, { message: duplicateSkuMessage(error), statusCode: 400, code: 'VALIDATION_ERROR' });
     }
     return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR' });
   }
@@ -1362,9 +1379,9 @@ export const toggleDynamicPricing = async (req, res) => {
 
     if (nubianMarkup !== undefined) {
       const nm = Number(nubianMarkup);
-      if (!Number.isFinite(nm) || nm < 0 || nm > 200) {
+      if (!Number.isFinite(nm) || nm < NUBIAN_MARKUP_MIN || nm > NUBIAN_MARKUP_MAX) {
         return sendError(res, {
-          message: 'nubianMarkup must be a number between 0 and 200',
+          message: `nubianMarkup must be a number between ${NUBIAN_MARKUP_MIN} and ${NUBIAN_MARKUP_MAX}`,
           statusCode: 400,
           code: 'VALIDATION_ERROR',
         });
@@ -1402,7 +1419,7 @@ export const toggleDynamicPricing = async (req, res) => {
         dynamicPricingEnabled: enabled,
       };
       product.variants.forEach((v, idx) => {
-        const nm = nubianMarkup !== undefined ? Number(nubianMarkup) : (v.nubianMarkup ?? 30);
+        const nm = nubianMarkup !== undefined ? Number(nubianMarkup) : (v.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP);
         const dm = enabled ? (v.dynamicMarkup ?? 0) : 0;
         const { finalPrice: newFinal } = calculateFinalPrice({
           product: ctx,
@@ -1557,7 +1574,7 @@ export const bulkImportProducts = async (req, res) => {
           sku: String(v.sku).trim().toUpperCase(),
           attributes: v.attributes,
           merchantPrice: Number(v.merchantPrice),
-          nubianMarkup: v.nubianMarkup ?? 30,
+          nubianMarkup: v.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP,
           dynamicMarkup: v.dynamicMarkup ?? 0,
           merchantDiscount: v.merchantDiscount ?? 0,
           stock: Number(v.stock),
