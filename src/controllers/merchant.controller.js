@@ -1588,13 +1588,29 @@ export const createStoreForMerchant = async (req, res) => {
 };
 
 /**
- * Edit an unclaimed store (Admin only)
+ * Edit a store (Admin only)
  *
- * Restricted to stores with no owner. Once a real user claims a store, its data
- * belongs to them and is edited through the merchant's own profile endpoint —
- * an admin silently rewriting a live merchant's payout details is a different
- * (and far more sensitive) capability than fixing a typo on a store nobody owns.
+ * Works on claimed stores as well as unclaimed ones — admins need to fix a
+ * logo, a typo or a wrong city on a live merchant without waiting for the owner.
+ *
+ * Editing a CLAIMED store is the more sensitive half of this endpoint: the data
+ * belongs to a real merchant, and `iban` / `nationalId` / `crNumber` decide
+ * where money goes. There is no schema-level guard against that — the store
+ * owner cannot see an admin edit — so accountability is provided by the audit
+ * log below, which records the admin, the store, and the before/after of every
+ * payout or identity field touched on a claimed store. Keep that logging intact
+ * if you extend this handler.
+ *
+ * Ownership itself is NOT editable here: `userId` and `claimStatus` are never
+ * read from the body, so no edit can hand a store to a different account.
+ * Re-pointing a claim goes through link-user / unlink, which is audited
+ * separately.
  */
+
+// Fields that move money or prove identity. Changing one of these on a store
+// somebody actually owns is worth a dedicated log line.
+const SENSITIVE_MERCHANT_FIELDS = ['iban', 'nationalId', 'crNumber', 'email'];
+
 export const updateStoreForMerchant = async (req, res) => {
   try {
     const { userId: adminId } = getAuth(req);
@@ -1603,14 +1619,13 @@ export const updateStoreForMerchant = async (req, res) => {
     const merchant = await Merchant.findById(id);
     if (!merchant) return sendNotFound(res, "Merchant");
 
-    if (merchant.claimStatus !== 'unclaimed') {
-      return sendError(res, {
-        message: 'This store is owned by a registered merchant and can no longer be edited here',
-        code: 'STORE_ALREADY_CLAIMED',
-        statusCode: 400,
-        details: { userId: merchant.userId },
-      });
-    }
+    const isClaimed = merchant.claimStatus !== 'unclaimed';
+
+    // Snapshot before mutation so the audit log can report what actually changed.
+    const before = SENSITIVE_MERCHANT_FIELDS.reduce((acc, field) => {
+      acc[field] = merchant[field];
+      return acc;
+    }, {});
 
     const {
       storeName, ownerName, email, phone, merchantType,
@@ -1618,8 +1633,10 @@ export const updateStoreForMerchant = async (req, res) => {
       categories, city, productSamples,
     } = req.body;
 
-    // Email is the claim key, so a change has to stay unique across every store —
-    // otherwise two stores would compete for the same signup.
+    // Email is the claim key for an unclaimed store, so a change has to stay
+    // unique across every store — otherwise two stores would compete for the
+    // same signup. On a claimed store it is only contact info (ownership lives
+    // in userId), but uniqueness still has to hold for the same reason.
     if (email !== undefined) {
       const normalizedEmail = email.toLowerCase().trim();
 
@@ -1676,11 +1693,32 @@ export const updateStoreForMerchant = async (req, res) => {
 
     await merchant.save();
 
-    logger.info('Unclaimed store updated by admin', {
+    logger.info('Store updated by admin', {
       requestId: req.requestId,
       merchantId: merchant._id.toString(),
+      claimStatus: merchant.claimStatus,
       adminId,
     });
+
+    // Audit trail for the case the old "unclaimed only" restriction used to
+    // prevent outright: an admin rewriting payout or identity details on a
+    // store a real merchant owns. Logged at warn so it surfaces without
+    // trawling info logs, and only when a value actually changed.
+    if (isClaimed) {
+      const changed = SENSITIVE_MERCHANT_FIELDS
+        .filter((field) => before[field] !== merchant[field])
+        .map((field) => ({ field, from: before[field] ?? null, to: merchant[field] ?? null }));
+
+      if (changed.length > 0) {
+        logger.warn('Admin changed sensitive fields on a CLAIMED store', {
+          requestId: req.requestId,
+          merchantId: merchant._id.toString(),
+          ownerUserId: merchant.userId,
+          adminId,
+          changed,
+        });
+      }
+    }
 
     return sendSuccess(res, { data: merchant, message: 'Store updated successfully' });
   } catch (error) {
