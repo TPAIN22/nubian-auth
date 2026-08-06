@@ -68,9 +68,15 @@ const productSchema = new mongoose.Schema(
       isActive:    { type: Boolean, default: false },
     },
 
+    // NOTE: intentionally has NO `ref`. There is no `Offer` model anywhere in
+    // the codebase, so `ref: 'Offer'` made any `.populate('appliedOfferId')`
+    // throw MissingSchemaError at runtime. The field itself is kept (rather
+    // than deleted) so that any value already written to a document survives —
+    // Mongoose's strict mode would silently drop an unknown path on the next
+    // save. Nothing reads or writes it today; add the ref back only together
+    // with a real Offer model.
     appliedOfferId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Offer',
       default: null,
     },
 
@@ -206,6 +212,16 @@ productSchema.pre('save', function (next) {
     }
   });
 
+  // `null` is the deliberate "no purchasable (active) variant" signal.
+  //
+  // Reviewed and left as-is: switching it to 0 would look tidier against the
+  // `min: 0` Number field, but 0 is indistinguishable from a real price and
+  // MongoDB's type bracketing is what currently saves us — `{ finalPrice:
+  // { $lte: X } }` does NOT match null, so an all-inactive product is excluded
+  // from the explore maxPrice filter. With 0 it would match every maxPrice
+  // query and sort first under `price_low`, surfacing "free" products to
+  // shoppers. Both null and 0 are equally excluded by the `$gte` minPrice
+  // filter, so there is nothing to gain. Callers must treat null as "no price".
   this.finalPrice = minFinal === Infinity ? null : minFinal;
 
   // Keep persisted stock field in sync with active variants

@@ -2,8 +2,8 @@
 import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendNotFound } from "../lib/response.js";
 import logger from "../lib/logger.js";
-import { convertProductPrices } from "../services/currency.service.js";
-import { DEFAULT_NUBIAN_MARKUP } from "../lib/pricing.config.js";
+import { convertProductPrices, getCurrencyContext } from "../services/currency.service.js";
+import { enrichProductsWithPricing } from "./products.controller.js";
 import {
   getHomeRecommendations,
   getProductRecommendations,
@@ -19,157 +19,82 @@ function toNumber(n, fallback = 0) {
   return Number.isFinite(x) ? x : fallback;
 }
 
-function isActiveFlag(x) {
-  // isActive undefined => treat as active (backward compatibility)
-  return x !== false;
-}
+/**
+ * Availability flag layered on top of the enriched product.
+ *
+ * This is the ONLY recommendation-specific field left here — pricing is owned
+ * end-to-end by lib/pricing.engine.js via enrichProductsWithPricing. (The old
+ * local `enrichProducts` re-implemented the pricing formula and used
+ * `merchantPrice` — the COST — as the strikethrough, which made
+ * `originalPrice === finalPrice` and `discount === 0` on literally every
+ * product. See PRICING_AUDIT_REPORT Issue #2.)
+ */
+function withStockFlag(product) {
+  if (!product) return product;
+  const variants = Array.isArray(product.variants) ? product.variants : [];
 
-function getVariantAttrsObject(v) {
-  if (!v) return {};
-  const attrs = v.attributes;
-  if (!attrs) return {};
-  if (attrs instanceof Map) return Object.fromEntries(attrs.entries());
-  if (typeof attrs === "object") return attrs;
-  return {};
-}
+  const hasStock = variants.length > 0
+    ? variants.some((v) => v?.isActive !== false && toNumber(v?.stock, 0) > 0)
+    : toNumber(product.stock, 0) > 0;
 
-function pickEligibleVariants(product) {
-  const variants = Array.isArray(product?.variants) ? product.variants : [];
-  const eligible = variants.filter((v) => isActiveFlag(v?.isActive) && toNumber(v?.stock, 0) > 0);
-  return { variants, eligible };
-}
-
-function getSellingPriceForSimple(product) {
-  // selling = dynamic finalPrice first
-  return (
-    toNumber(product?.finalPrice, 0) ||
-    toNumber(product?.merchantPrice, 0) ||
-    toNumber(product?.price, 0) ||
-    0
-  );
-}
-
-function getOriginalPriceForSimple(product) {
-  // original/compare-at = discountPrice (legacy) if exists, else merchantPrice/price
-  const discountPrice = toNumber(product?.discountPrice, 0);
-  if (discountPrice > 0) return discountPrice;
-
-  return toNumber(product?.merchantPrice, 0) || toNumber(product?.price, 0) || 0;
-}
-
-function getVariantSellingPrice(v) {
-  // selling = finalPrice first (dynamic), else merchantPrice/price
-  return toNumber(v?.finalPrice, 0) || toNumber(v?.merchantPrice, 0) || toNumber(v?.price, 0) || 0;
-}
-
-function getVariantOriginalPrice(v) {
-  // original = discountPrice if exists, else merchantPrice/price
-  const dp = toNumber(v?.discountPrice, 0);
-  if (dp > 0) return dp;
-  return toNumber(v?.merchantPrice, 0) || toNumber(v?.price, 0) || 0;
-}
-
-function calcDiscountPercent(original, selling) {
-  const o = toNumber(original, 0);
-  const s = toNumber(selling, 0);
-  if (o <= 0) return 0;
-  if (s <= 0) return 0;
-  if (s >= o) return 0;
-  return Math.round(((o - s) / o) * 100);
+  return { ...product, hasStock };
 }
 
 /**
- * Enrich products with calculated fields (hasStock, discount, finalPrice, merchantPrice, originalPrice)
- * NOTE:
- * - finalPrice here means SELLING price (dynamic pricing) that UI should display.
- * - discountPrice is treated as compare-at / old price (NOT selling).
- * - For variant products: use lowest eligible variant (active + in-stock).
+ * Canonical enrichment for every recommendation rail:
+ * engine pricing (identical to /api/home and /api/products) + hasStock.
  */
-function enrichProducts(products) {
+function enrichRecommendationProducts(products) {
   if (!Array.isArray(products)) return [];
+  return enrichProductsWithPricing(products).map(withStockFlag);
+}
 
-  return products.map((product) => {
-    const { variants, eligible } = pickEligibleVariants(product);
+/**
+ * Convert a flat list of already-enriched products.
+ * Resolves the Currency row + FX rate ONCE per request instead of once per
+ * product (convertProductPrices re-queries both when no context is supplied).
+ */
+async function convertList(products, currencyCode, label) {
+  if (currencyCode === "USD" || !Array.isArray(products)) return products;
+  try {
+    const ctx = await getCurrencyContext(currencyCode);
+    return await Promise.all(
+      products.map((p) => convertProductPrices(p, currencyCode, ctx))
+    );
+  } catch (err) {
+    logger.warn(`Currency conversion failed for ${label}`, {
+      currencyCode,
+      error: err.message,
+    });
+    // Graceful degradation: serve the USD payload rather than an empty rail.
+    return products;
+  }
+}
 
-    const hasVariants = variants.length > 0;
-    const hasStock = hasVariants
-      ? eligible.length > 0
-      : toNumber(product?.stock, 0) > 0;
-
-    // Pick a representative variant for pricing (lowest eligible; fallback to lowest overall)
-    let representativeVariant = null;
-    if (hasVariants) {
-      const list = eligible.length ? eligible : variants;
-      representativeVariant =
-        list
-          .slice()
-          .sort((a, b) => getVariantSellingPrice(a) - getVariantSellingPrice(b))[0] || null;
-    }
-
-    let sellingPrice = 0;
-    let originalPrice = 0;
-    let merchantPrice = 0;
-
-    if (representativeVariant) {
-      sellingPrice = getVariantSellingPrice(representativeVariant);
-      originalPrice = getVariantOriginalPrice(representativeVariant);
-      merchantPrice = toNumber(representativeVariant?.merchantPrice, 0) || toNumber(representativeVariant?.price, 0) || 0;
-    } else {
-      sellingPrice = getSellingPriceForSimple(product);
-      originalPrice = getOriginalPriceForSimple(product);
-      merchantPrice = toNumber(product?.merchantPrice, 0) || toNumber(product?.price, 0) || 0;
-    }
-
-    // Ensure originalPrice >= sellingPrice for display consistency
-    if (originalPrice > 0 && sellingPrice > 0) {
-      originalPrice = Math.max(originalPrice, sellingPrice);
-    }
-
-    const discount = calcDiscountPercent(originalPrice, sellingPrice);
-
-    const nubianMarkup = toNumber(product?.nubianMarkup, DEFAULT_NUBIAN_MARKUP);
-    const dynamicMarkup = toNumber(product?.dynamicMarkup, 0);
-
-    // If variant selected, prefer variant markup values if provided
-    const pricingBreakdown = representativeVariant
-      ? {
-          merchantPrice,
-          nubianMarkup: toNumber(representativeVariant?.nubianMarkup, nubianMarkup),
-          dynamicMarkup: toNumber(representativeVariant?.dynamicMarkup, dynamicMarkup),
-          finalPrice: sellingPrice,
-        }
-      : {
-          merchantPrice,
-          nubianMarkup,
-          dynamicMarkup,
-          finalPrice: sellingPrice,
-        };
-
-    return {
-      ...product,
-      hasStock,
-      discount,
-
-      // ✅ IMPORTANT: keep these names consistent for the app
-      finalPrice: sellingPrice,     // SELLING price (dynamic pricing)
-      merchantPrice,                // base merchant price
-      originalPrice,                // compare-at/old price for UI
-
-      pricingBreakdown,
-
-      // Optional: expose chosen variant preview for debugging/UI if you want
-      recommendedPricingVariant: representativeVariant
-        ? {
-            _id: representativeVariant._id,
-            stock: representativeVariant.stock,
-            isActive: representativeVariant.isActive,
-            attributes: getVariantAttrsObject(representativeVariant),
-            finalPrice: getVariantSellingPrice(representativeVariant),
-            originalPrice: getVariantOriginalPrice(representativeVariant),
-          }
-        : null,
-    };
-  });
+/**
+ * Convert a { railName: Product[] } map with a single currency context.
+ */
+async function convertRails(rails, keys, currencyCode, label) {
+  if (currencyCode === "USD") return rails;
+  try {
+    const ctx = await getCurrencyContext(currencyCode);
+    const out = { ...rails };
+    await Promise.all(
+      keys.map(async (key) => {
+        if (!Array.isArray(out[key])) return;
+        out[key] = await Promise.all(
+          out[key].map((p) => convertProductPrices(p, currencyCode, ctx))
+        );
+      })
+    );
+    return out;
+  } catch (err) {
+    logger.warn(`Currency conversion failed for ${label}`, {
+      currencyCode,
+      error: err.message,
+    });
+    return rails;
+  }
 }
 
 /**
@@ -182,34 +107,23 @@ export const getHomeRecommendationsController = async (req, res) => {
     const recommendations = await getHomeRecommendations(userId || null);
 
     const enrichedRecommendations = {
-      forYou: enrichProducts(recommendations.forYou),
-      trending: enrichProducts(recommendations.trending),
-      flashDeals: enrichProducts(recommendations.flashDeals),
-      newArrivals: enrichProducts(recommendations.newArrivals),
-      brandsYouLove: enrichProducts(recommendations.brandsYouLove),
+      forYou:        enrichRecommendationProducts(recommendations.forYou),
+      trending:      enrichRecommendationProducts(recommendations.trending),
+      flashDeals:    enrichRecommendationProducts(recommendations.flashDeals),
+      newArrivals:   enrichRecommendationProducts(recommendations.newArrivals),
+      brandsYouLove: enrichRecommendationProducts(recommendations.brandsYouLove),
     };
 
-    // Apply currency conversion
-    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
-    if (currencyCode !== 'USD') {
-      try {
-        const keys = ['forYou', 'trending', 'flashDeals', 'newArrivals', 'brandsYouLove'];
-        await Promise.all(
-          keys.map(async (key) => {
-            if (Array.isArray(enrichedRecommendations[key])) {
-              enrichedRecommendations[key] = await Promise.all(
-                enrichedRecommendations[key].map(p => convertProductPrices(p, currencyCode))
-              );
-            }
-          })
-        );
-      } catch (err) {
-        logger.warn('Currency conversion failed for home recommendations', { currencyCode, error: err.message });
-      }
-    }
+    const currencyCode = (req.currencyCode || "USD").toUpperCase();
+    const payload = await convertRails(
+      enrichedRecommendations,
+      ["forYou", "trending", "flashDeals", "newArrivals", "brandsYouLove"],
+      currencyCode,
+      "home recommendations"
+    );
 
     return sendSuccess(res, {
-      data: enrichedRecommendations,
+      data: payload,
       message: "Home recommendations retrieved successfully",
     });
   } catch (error) {
@@ -241,34 +155,29 @@ export const getProductRecommendationsController = async (req, res) => {
     const recommendations = await getProductRecommendations(productId, userId || null);
 
     const enrichedRecommendations = {
-      similarItems: enrichProducts(recommendations.similarItems),
-      frequentlyBoughtTogether: enrichProducts(recommendations.frequentlyBoughtTogether),
-      youMayAlsoLike: enrichProducts(recommendations.youMayAlsoLike),
-      cheaperAlternatives: enrichProducts(recommendations.cheaperAlternatives),
-      fromSameStore: enrichProducts(recommendations.fromSameStore),
+      similarItems:             enrichRecommendationProducts(recommendations.similarItems),
+      frequentlyBoughtTogether: enrichRecommendationProducts(recommendations.frequentlyBoughtTogether),
+      youMayAlsoLike:           enrichRecommendationProducts(recommendations.youMayAlsoLike),
+      cheaperAlternatives:      enrichRecommendationProducts(recommendations.cheaperAlternatives),
+      fromSameStore:            enrichRecommendationProducts(recommendations.fromSameStore),
     };
 
-    // Apply currency conversion
-    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
-    if (currencyCode !== 'USD') {
-      try {
-        const keys = ['similarItems', 'frequentlyBoughtTogether', 'youMayAlsoLike', 'cheaperAlternatives', 'fromSameStore'];
-        await Promise.all(
-          keys.map(async (key) => {
-            if (Array.isArray(enrichedRecommendations[key])) {
-              enrichedRecommendations[key] = await Promise.all(
-                enrichedRecommendations[key].map(p => convertProductPrices(p, currencyCode))
-              );
-            }
-          })
-        );
-      } catch (err) {
-        logger.warn('Currency conversion failed for product recommendations', { currencyCode, error: err.message });
-      }
-    }
+    const currencyCode = (req.currencyCode || "USD").toUpperCase();
+    const payload = await convertRails(
+      enrichedRecommendations,
+      [
+        "similarItems",
+        "frequentlyBoughtTogether",
+        "youMayAlsoLike",
+        "cheaperAlternatives",
+        "fromSameStore",
+      ],
+      currencyCode,
+      "product recommendations"
+    );
 
     return sendSuccess(res, {
-      data: enrichedRecommendations,
+      data: payload,
       message: "Product recommendations retrieved successfully",
     });
   } catch (error) {
@@ -303,22 +212,13 @@ export const getCartRecommendationsController = async (req, res) => {
     }
 
     const recommendations = await getCartRecommendations(userId);
-    let enrichedRecommendations = enrichProducts(recommendations);
+    const enriched = enrichRecommendationProducts(recommendations);
 
-    // Apply currency conversion
-    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
-    if (currencyCode !== 'USD') {
-      try {
-        enrichedRecommendations = await Promise.all(
-          enrichedRecommendations.map(p => convertProductPrices(p, currencyCode))
-        );
-      } catch (err) {
-        logger.warn('Currency conversion failed for cart recommendations', { currencyCode, error: err.message });
-      }
-    }
+    const currencyCode = (req.currencyCode || "USD").toUpperCase();
+    const payload = await convertList(enriched, currencyCode, "cart recommendations");
 
     return sendSuccess(res, {
-      data: enrichedRecommendations,
+      data: payload,
       message: "Cart recommendations retrieved successfully",
     });
   } catch (error) {
@@ -350,22 +250,13 @@ export const getUserRecommendationsController = async (req, res) => {
     }
 
     const recommendations = await getUserRecommendations(targetUserId);
-    let enrichedRecommendations = enrichProducts(recommendations);
+    const enriched = enrichRecommendationProducts(recommendations);
 
-    // Apply currency conversion
-    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
-    if (currencyCode !== 'USD') {
-      try {
-        enrichedRecommendations = await Promise.all(
-          enrichedRecommendations.map(p => convertProductPrices(p, currencyCode))
-        );
-      } catch (err) {
-        logger.warn('Currency conversion failed for user recommendations', { currencyCode, error: err.message });
-      }
-    }
+    const currencyCode = (req.currencyCode || "USD").toUpperCase();
+    const payload = await convertList(enriched, currencyCode, "user recommendations");
 
     return sendSuccess(res, {
-      data: enrichedRecommendations,
+      data: payload,
       message: "User recommendations retrieved successfully",
     });
   } catch (error) {

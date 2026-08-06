@@ -131,10 +131,14 @@ export function enrichProductWithPricing(product) {
         }
       : calculateFinalPrice({ product: p, variant: null });
 
+    // NOTE: do NOT add a numeric `price` here. `price` is the typed Money
+    // envelope object emitted by buildBlock() below ({ final, original, list,
+    // discountAmount, discountPercentage, hasDiscount }) and the spread would
+    // overwrite any scalar anyway. Read `merchantPrice` for cost and
+    // `finalPrice` / `price.final.amount` for the selling price.
     return {
       ...p,
       merchantPrice: rootPricing.basePrice,
-      price:         rootPricing.basePrice,
       nubianMarkup:  cheapest?.nubianMarkup ?? p.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP,
       ...buildBlock(rootPricing, 'product'),
       variants: enrichedVariants,
@@ -142,11 +146,11 @@ export function enrichProductWithPricing(product) {
   }
 
   // No variants (orphan): defensive — schema doesn't allow this, but keep it safe.
+  // Same rule as above: `price` is the Money envelope, not a number.
   const pricing = calculateFinalPrice({ product: p, variant: null });
   return {
     ...p,
     merchantPrice: pricing.basePrice,
-    price:         pricing.basePrice,
     ...buildBlock(pricing, 'product'),
   };
 }
@@ -611,20 +615,43 @@ export const getProductById = async (req, res) => {
   }
 }
 
+// ===== Helper: an explicitly cleared product-level discount =====
+// Every sub-field is named. Assigning this (rather than `null`) is what makes
+// "turn the sale off" reliable: `product.set({ discount: null })` on a NESTED
+// PATH — which `discount` is, not a subdocument — does not dependably clear the
+// individual sub-fields, so a stale `isActive: true` / `value: 20` can survive
+// and the engine keeps applying the discount. See Issue #16.
+const clearedDiscount = () => ({
+  type: null,
+  value: 0,
+  maxDiscount: null,
+  startsAt: null,
+  endsAt: null,
+  isActive: false,
+});
+
 // ===== Helper: Sanitize product-level discount input =====
 // Coerces dashboard input into the schema shape and rejects garbage.
-// Returns null when the block is empty or invalid (treat as "no discount").
+// NEVER returns null: anything that isn't a usable discount (missing type,
+// value <= 0, inverted date window, an explicit `{ isActive: false }`, or a
+// non-object) resolves to the fully-cleared block above, so the caller can
+// assign the result unconditionally and be sure the sale is off.
 const sanitizeDiscountInput = (input) => {
-  if (!input || typeof input !== 'object') return null;
+  if (!input || typeof input !== 'object') return clearedDiscount();
+
+  // Explicit deactivation. `{ discount: { isActive: false } }` is the natural
+  // "end the sale" payload and used to be silently dropped.
+  if (input.isActive === false) return clearedDiscount();
 
   const type = input.type === 'percentage' || input.type === 'fixed' ? input.type : null;
   const value = Number(input.value);
-  if (!type || !(value > 0)) return null;
+  if (!type || !(value > 0)) return clearedDiscount();
 
   const out = {
+    ...clearedDiscount(),
     type,
     value: type === 'percentage' ? Math.min(value, 100) : value,
-    isActive: input.isActive !== false,
+    isActive: true,
   };
   if (input.maxDiscount !== undefined && Number(input.maxDiscount) > 0) {
     out.maxDiscount = Number(input.maxDiscount);
@@ -637,7 +664,7 @@ const sanitizeDiscountInput = (input) => {
     const d = new Date(input.endsAt);
     if (!isNaN(d.getTime())) out.endsAt = d;
   }
-  if (out.startsAt && out.endsAt && out.startsAt > out.endsAt) return null;
+  if (out.startsAt && out.endsAt && out.startsAt > out.endsAt) return clearedDiscount();
   return out;
 };
 
@@ -742,7 +769,11 @@ export const createProduct = async (req, res) => {
     delete req.body.merchantPrice;
     delete req.body.discountPrice;
 
-    if (req.body.discount) req.body.discount = sanitizeDiscountInput(req.body.discount);
+    // Sanitize whenever the key is present at all (including `null` / `{}`),
+    // so an explicitly-cleared block is stored rather than half-applied.
+    if (req.body.discount !== undefined) {
+      req.body.discount = sanitizeDiscountInput(req.body.discount);
+    }
 
     // Validate Category & Merchant ObjectIds
     req.body.category = validateObjectId(req.body.category, 'category');
@@ -803,12 +834,19 @@ export const updateProduct = async (req, res) => {
     delete req.body.merchantPrice;
     delete req.body.discountPrice;
 
+    // sanitizeDiscountInput always yields a COMPLETE block (never null), so
+    // every sub-field is overwritten and a sale can actually be switched off.
+    // Issue #16: `product.set({ discount: null })` on a nested path left stale
+    // sub-fields behind and the sale stuck on.
     if (req.body.discount !== undefined) {
       req.body.discount = sanitizeDiscountInput(req.body.discount);
     }
 
     product.set(req.body);
     if (req.body.variants) product.markModified('variants');
+    // Nested-path writes are not always picked up by change tracking; be
+    // explicit so the pre-save hook definitely re-runs the engine.
+    if (req.body.discount !== undefined) product.markModified('discount');
 
     const updatedProduct = await product.save();
 
@@ -1451,8 +1489,11 @@ export const toggleDynamicPricing = async (req, res) => {
       .populate('merchant', 'storeName email logoUrl city status')
       .populate('category', 'name');
 
+    // Enrich before responding — a raw document carries no originalPrice /
+    // discountPercentage / `price` Money envelope, so the admin UI would render
+    // the toggled product with no pricing block at all. (Issue #19)
     return sendSuccess(res, {
-      data: populatedProduct,
+      data: enrichProductWithPricing(populatedProduct),
       message: `Dynamic pricing ${enabled ? 'enabled' : 'disabled'} for product`,
     });
   } catch (error) {
@@ -1481,7 +1522,9 @@ export const toggleDynamicPricing = async (req, res) => {
  *       description: string,
  *       category: string (ObjectId),
  *       images: string[],
- *       variants: Array<{ sku, attributes, merchantPrice, stock, images?, isActive? }>,
+ *       variants: Array<{ sku, attributes, merchantPrice, stock, images?, isActive?,
+ *                         nubianMarkup?, dynamicMarkup?, merchantDiscount? }>,
+ *       discount?: { type, value, maxDiscount?, startsAt?, endsAt?, isActive? },
  *       priorityScore?: number,
  *       featured?: boolean,
  *     }>
@@ -1564,13 +1607,32 @@ export const bulkImportProducts = async (req, res) => {
         }
       }
 
-      const update = {
-        name: row.name.trim(),
-        description: row.description?.trim() || row.name.trim(),
-        category: new mongoose.Types.ObjectId(row.category),
-        images: row.images,
-        merchant: merchantObjectId,
-        variants: row.variants.map((v) => ({
+      // Optional product-level discount block (Issue #25). Only honoured when
+      // the row actually carries the key — otherwise an import must not wipe a
+      // discount configured through the dashboard.
+      const discountBlock =
+        row.discount !== undefined && row.discount !== null
+          ? sanitizeDiscountInput(row.discount)
+          : null;
+
+      // bulkWrite + $set bypasses the model's pre('save') hook, so nothing
+      // computes finalPrice for us. Without this every imported variant lands
+      // with the schema default of 0 and the root finalPrice keeps a stale
+      // value, which breaks the explore minPrice/maxPrice filters, price
+      // sorting, and add-to-cart (cartUtils falls back to `finalPrice || 0`).
+      // Route through the engine — never re-derive the formula here. (Issue #8)
+      //
+      // Context caveat: `dynamicPricingEnabled` is not part of the import
+      // payload, so the schema default (true) is assumed. That only matters
+      // when a row supplies dynamicMarkup; with the usual dynamicMarkup 0 the
+      // flag has no effect on the result.
+      const pricingContext = {
+        dynamicPricingEnabled: true,
+        discount: discountBlock,
+      };
+
+      const variants = row.variants.map((v) => {
+        const variant = {
           sku: String(v.sku).trim().toUpperCase(),
           attributes: v.attributes,
           merchantPrice: Number(v.merchantPrice),
@@ -1580,9 +1642,37 @@ export const bulkImportProducts = async (req, res) => {
           stock: Number(v.stock),
           images: Array.isArray(v.images) ? v.images : [],
           isActive: v.isActive !== false,
-        })),
+        };
+        const { finalPrice } = calculateFinalPrice({ product: pricingContext, variant });
+        return { ...variant, finalPrice };
+      });
+
+      // Root finalPrice = cheapest ACTIVE variant, mirroring the pre-save hook.
+      // Unlike the hook this falls back to 0 rather than null, because null on
+      // a Number field never satisfies the `$gte` price-range filters.
+      const activeFinals = variants
+        .filter((v) => v.isActive && v.finalPrice > 0)
+        .map((v) => v.finalPrice);
+      const rootFinalPrice = activeFinals.length > 0 ? Math.min(...activeFinals) : 0;
+
+      // The pre-save hook also keeps the persisted root stock in sync; do the
+      // same here for the same reason.
+      const rootStock = variants
+        .filter((v) => v.isActive)
+        .reduce((sum, v) => sum + (v.stock || 0), 0);
+
+      const update = {
+        name: row.name.trim(),
+        description: row.description?.trim() || row.name.trim(),
+        category: new mongoose.Types.ObjectId(row.category),
+        images: row.images,
+        merchant: merchantObjectId,
+        variants,
+        finalPrice: rootFinalPrice,
+        stock: rootStock,
         isActive: true,
         deletedAt: null,
+        ...(discountBlock ? { discount: discountBlock } : {}),
         ...(row.priorityScore !== undefined ? { priorityScore: Number(row.priorityScore) } : {}),
         ...(row.featured !== undefined ? { featured: Boolean(row.featured) } : {}),
       };
@@ -1708,54 +1798,35 @@ export const exploreProducts = async (req, res) => {
       deletedAt: null,
     };
 
-    // Price range filter - filter by finalPrice (smart pricing)
-    // Use $or to match either finalPrice or legacy price/discountPrice
+    // Price range filter — ranges over the stored finalPrice, which the model
+    // pre-save hook, the dynamic-pricing cron and the bulk import (Issue #8)
+    // all keep current.
+    //
+    // The previous version wrapped this in an $or with a "legacy" branch that
+    // ranged over $discountPrice / $price. Neither exists as a schema field, so
+    // the branch could never match a document — and its $expr was malformed
+    // besides: `$cond` returned a QUERY document (`{ discountPrice: { $gte: n } }`)
+    // where an aggregation EXPRESSION was required, and `{ $gte: n }` is not a
+    // valid one ($gte takes exactly 2 arguments). Since $expr is parsed up
+    // front rather than per-document, the `finalPrice: { $exists: false }`
+    // guard in front of it would not have prevented a parse error. Removed
+    // outright: it cannot change which products match, because it never
+    // matched any. Do not reintroduce a `price`/`discountPrice` fallback.
     if (minPrice || maxPrice) {
-      const minPriceVal = minPrice ? parseFloat(minPrice) : null;
-      const maxPriceVal = maxPrice ? parseFloat(maxPrice) : null;
+      const minPriceVal = minPrice !== undefined && minPrice !== '' ? parseFloat(minPrice) : null;
+      const maxPriceVal = maxPrice !== undefined && maxPrice !== '' ? parseFloat(maxPrice) : null;
 
-      filter.$and = filter.$and || [];
-      filter.$and.push({
-        $or: [
-          // Smart pricing: finalPrice
-          ...(minPriceVal !== null || maxPriceVal !== null ? [{
-            finalPrice: {
-              ...(minPriceVal !== null ? { $gte: minPriceVal } : {}),
-              ...(maxPriceVal !== null ? { $lte: maxPriceVal } : {}),
-            }
-          }] : []),
-          // Legacy: discountPrice or price (if finalPrice not set)
-          {
-            $and: [
-              { finalPrice: { $exists: false } },
-              {
-                $or: [
-                  // Use discountPrice if exists, else price
-                  {
-                    $expr: {
-                      $cond: [
-                        { $gt: [{ $ifNull: ['$discountPrice', 0] }, 0] },
-                        {
-                          discountPrice: {
-                            ...(minPriceVal !== null ? { $gte: minPriceVal } : {}),
-                            ...(maxPriceVal !== null ? { $lte: maxPriceVal } : {}),
-                          }
-                        },
-                        {
-                          price: {
-                            ...(minPriceVal !== null ? { $gte: minPriceVal } : {}),
-                            ...(maxPriceVal !== null ? { $lte: maxPriceVal } : {}),
-                          }
-                        }
-                      ]
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      });
+      const range = {
+        ...(Number.isFinite(minPriceVal) ? { $gte: minPriceVal } : {}),
+        ...(Number.isFinite(maxPriceVal) ? { $lte: maxPriceVal } : {}),
+      };
+
+      // Unparseable bounds (?minPrice=abc) yield NaN — drop them rather than
+      // emitting `{ $gte: NaN }`, which silently matches nothing.
+      if (Object.keys(range).length > 0) {
+        filter.$and = filter.$and || [];
+        filter.$and.push({ finalPrice: range });
+      }
     }
 
     // Category filter - handle hierarchical categories recursively
@@ -1825,25 +1896,35 @@ export const exploreProducts = async (req, res) => {
       });
     }
 
-    // Discount filter - check for discounts (finalPrice < merchantPrice OR discountPrice exists)
+    // Discount filter — products that genuinely carry a discount.
+    //
+    // The previous implementation compared $finalPrice against $merchantPrice /
+    // $price, neither of which exists as a top-level product field, and against
+    // the dead $discountPrice / $variants.discountPrice — so it matched nothing
+    // at all. (Issue #11a)
+    //
+    // Two real sources of a discount, matching the engine exactly:
+    //   a) any variant with an absolute merchantDiscount, or
+    //   b) an active product-level discount block — same predicate as
+    //      isProductDiscountActive() in lib/pricing.engine.js.
+    // Note: `{ field: null }` in Mongo matches both an explicit null and a
+    // missing field, which is exactly the "no bound set" semantics we want.
     if (discount === 'true') {
+      const discountNow = new Date();
       filter.$and = filter.$and || [];
       filter.$and.push({
         $or: [
-          // Smart pricing: finalPrice less than merchantPrice (discount)
+          { 'variants.merchantDiscount': { $gt: 0 } },
           {
-            $expr: {
-              $and: [
-                { $gt: [{ $ifNull: ['$finalPrice', 0] }, 0] },
-                { $gt: [{ $ifNull: ['$merchantPrice', '$price', 0] }, 0] },
-                { $lt: ['$finalPrice', { $ifNull: ['$merchantPrice', '$price'] }] }
-              ]
-            }
+            $and: [
+              { 'discount.isActive': true },
+              { 'discount.value': { $gt: 0 } },
+              { 'discount.type': { $in: ['percentage', 'fixed'] } },
+              { $or: [{ 'discount.startsAt': null }, { 'discount.startsAt': { $lte: discountNow } }] },
+              { $or: [{ 'discount.endsAt': null }, { 'discount.endsAt': { $gte: discountNow } }] },
+            ],
           },
-          // Legacy: discountPrice exists
-          { discountPrice: { $gt: 0 } },
-          { 'variants.discountPrice': { $gt: 0 } }
-        ]
+        ],
       });
     }
 
@@ -1974,23 +2055,83 @@ export const exploreProducts = async (req, res) => {
           // Trending boost (precomputed by productScoring cron)
           trendingBoost: { $ifNull: ['$ranking.visibilityScore', 0] },
 
-          // Discount boost
+          // Discount boost — derived from REAL discount data.
+          // The old version read $discountPrice / $price, neither of which
+          // exists in the schema, so this was always 0. (Issue #15)
+          //
+          // variantRatio: the deepest per-variant merchantDiscount expressed as
+          //   a fraction of that variant's merchantPrice.
+          // productRatio: the product-level discount as a fraction — `value/100`
+          //   for percentage, `value / finalPrice` for fixed — gated by the same
+          //   predicate as isProductDiscountActive() in the pricing engine.
+          // The sum is clamped to 1 and scaled by 50, preserving the original
+          // 0–50 output range so exploreScore weighting is unchanged.
           discountBoost: {
-            $cond: [
-              { $gt: [{ $ifNull: ['$discountPrice', 0] }, 0] },
-              {
+            $let: {
+              vars: {
+                variantRatio: {
+                  $ifNull: [
+                    {
+                      $max: {
+                        $map: {
+                          input: { $ifNull: ['$variants', []] },
+                          as: 'v',
+                          in: {
+                            $divide: [
+                              { $max: [{ $ifNull: ['$$v.merchantDiscount', 0] }, 0] },
+                              { $max: [{ $ifNull: ['$$v.merchantPrice', 0] }, 1] },
+                            ],
+                          },
+                        },
+                      },
+                    },
+                    0,
+                  ],
+                },
+                productRatio: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $eq: [{ $ifNull: ['$discount.isActive', false] }, true] },
+                        { $gt: [{ $ifNull: ['$discount.value', 0] }, 0] },
+                        { $in: [{ $ifNull: ['$discount.type', null] }, ['percentage', 'fixed']] },
+                        {
+                          $or: [
+                            { $eq: [{ $ifNull: ['$discount.startsAt', null] }, null] },
+                            { $lte: ['$discount.startsAt', now] },
+                          ],
+                        },
+                        {
+                          $or: [
+                            { $eq: [{ $ifNull: ['$discount.endsAt', null] }, null] },
+                            { $gte: ['$discount.endsAt', now] },
+                          ],
+                        },
+                      ],
+                    },
+                    {
+                      $cond: [
+                        { $eq: ['$discount.type', 'percentage'] },
+                        { $divide: [{ $min: [{ $ifNull: ['$discount.value', 0] }, 100] }, 100] },
+                        {
+                          $divide: [
+                            { $ifNull: ['$discount.value', 0] },
+                            { $max: [{ $ifNull: ['$finalPrice', 0] }, 1] },
+                          ],
+                        },
+                      ],
+                    },
+                    0,
+                  ],
+                },
+              },
+              in: {
                 $multiply: [
-                  {
-                    $divide: [
-                      { $subtract: ['$price', { $ifNull: ['$discountPrice', '$price'] }] },
-                      { $max: ['$price', 1] },
-                    ],
-                  },
+                  { $min: [{ $add: ['$$variantRatio', '$$productRatio'] }, 1] },
                   50, // Max 50 points for discount
                 ],
               },
-              0,
-            ],
+            },
           },
 
           // Personalization boost (preferred categories)
@@ -2085,16 +2226,24 @@ export const exploreProducts = async (req, res) => {
       {
         $sort: (() => {
           switch (sort) {
+            // `price` is not a schema field — sorting on it was a silent no-op.
+            // finalPrice is the stored selling price. (Issue #11b)
             case 'price_low':
-              return { price: 1, exploreScore: -1 };
+              return { finalPrice: 1, exploreScore: -1 };
             case 'price_high':
-              return { price: -1, exploreScore: -1 };
+              return { finalPrice: -1, exploreScore: -1 };
             case 'rating':
               return { averageRating: -1, exploreScore: -1 };
             case 'new':
               return { createdAt: -1, exploreScore: -1 };
             case 'trending':
               return { trendingBoost: -1, exploreScore: -1 };
+            // FIXME (out of scope for the pricing audit, flagged not fixed):
+            // `orderCount` is not a Product schema field either, so this sort is
+            // still a no-op and `best_sellers` degrades to exploreScore order.
+            // The nearest real signal is `trackingFields.sales24h`, but that is a
+            // 24-hour window rather than an all-time best-seller count — picking
+            // the replacement is a product decision, not a mechanical fix.
             case 'best_sellers':
               return { orderCount: -1, exploreScore: -1 };
             case 'recommended':

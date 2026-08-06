@@ -7,6 +7,36 @@ import Product from '../models/product.model.js';
 import Order from '../models/orders.model.js';
 import mongoose from 'mongoose';
 import { DEFAULT_NUBIAN_MARKUP } from '../lib/pricing.config.js';
+import { calculateProductPricing } from '../lib/pricing.engine.js';
+
+// Every product-serving surface reads pricing from the engine. Analytics used
+// to read `finalPrice || discountPrice || price` off the raw document instead:
+// `discountPrice` and `price` are dead schema fields, and the stored
+// `finalPrice` is 0 on bulk-imported products until the hourly cron runs.
+// See PRICING_AUDIT_REPORT Issue #23.
+//
+// Returns [{ product, pricing }] where `pricing` is the engine's root block
+// (cheapest ACTIVE variant): basePrice (= merchant cost), listPrice,
+// originalPrice, finalPrice, discountAmount, discountPercentage, hasDiscount
+// and a `breakdown` carrying the real nubianMarkup / dynamicMarkup.
+function priceProducts(products) {
+  return (products || []).map((product) => ({
+    product,
+    pricing: calculateProductPricing(product).root,
+  }));
+}
+
+/** Effective markup % actually charged over merchant cost, discounts included. */
+function effectiveMarkupPercentage(pricing) {
+  const cost = pricing?.basePrice || 0;
+  if (!(cost > 0)) return 0;
+  return ((pricing.finalPrice - cost) / cost) * 100;
+}
+
+// Fields calculateProductPricing() reads, plus the identity fields the
+// responses below surface. Keep in sync with lib/pricing.engine.js.
+const PRICING_PROJECTION =
+  'name variants discount dynamicPricingEnabled stock';
 
 /**
  * Get pricing analytics for admin dashboard
@@ -33,32 +63,36 @@ export const getPricingAnalytics = async (req, res) => {
       return sendForbidden(res, 'Only admins can access pricing analytics');
     }
 
-    // Get all products with pricing data
+    // Get all products with the fields the pricing engine reads
     const products = await Product.find({
       deletedAt: null,
       isActive: true,
-    }).select('merchantPrice nubianMarkup dynamicMarkup finalPrice price discountPrice').lean();
+    }).select(PRICING_PROJECTION).lean();
+
+    // Live pricing, computed the same way every storefront endpoint computes it
+    const priced = priceProducts(products);
 
     // Calculate revenue from markup
-    const totalRevenueFromMarkup = products.reduce((sum, product) => {
-      const merchantPrice = product.merchantPrice || product.price || 0;
-      const finalPrice = product.finalPrice || product.discountPrice || product.price || 0;
-      const markupRevenue = finalPrice - merchantPrice;
+    const totalRevenueFromMarkup = priced.reduce((sum, { pricing }) => {
+      const markupRevenue = pricing.finalPrice - pricing.basePrice;
       return sum + Math.max(0, markupRevenue);
     }, 0);
 
     // Calculate average markup percentage
-    const productsWithMarkup = products.filter(p => {
-      const merchantPrice = p.merchantPrice || p.price || 0;
-      return merchantPrice > 0;
-    });
+    const productsWithMarkup = priced.filter(({ pricing }) => pricing.basePrice > 0);
 
     const averageNubianMarkup = productsWithMarkup.length > 0
-      ? productsWithMarkup.reduce((sum, p) => sum + (p.nubianMarkup || DEFAULT_NUBIAN_MARKUP), 0) / productsWithMarkup.length
+      ? productsWithMarkup.reduce(
+          (sum, { pricing }) => sum + (pricing.breakdown?.nubianMarkup ?? DEFAULT_NUBIAN_MARKUP),
+          0
+        ) / productsWithMarkup.length
       : DEFAULT_NUBIAN_MARKUP;
 
     const averageDynamicMarkup = productsWithMarkup.length > 0
-      ? productsWithMarkup.reduce((sum, p) => sum + (p.dynamicMarkup || 0), 0) / productsWithMarkup.length
+      ? productsWithMarkup.reduce(
+          (sum, { pricing }) => sum + (pricing.breakdown?.dynamicMarkup || 0),
+          0
+        ) / productsWithMarkup.length
       : 0;
 
     // Get orders with pricing breakdown
@@ -88,30 +122,20 @@ export const getPricingAnalytics = async (req, res) => {
     });
 
     // Product performance metrics
-    const productsWithHighMarkup = products.filter(p => {
-      const dynamicMarkup = p.dynamicMarkup || 0;
-      return dynamicMarkup > 20; // High dynamic markup (>20%)
-    });
+    const productsWithHighMarkup = priced.filter(
+      ({ pricing }) => (pricing.breakdown?.dynamicMarkup || 0) > 20 // High dynamic markup (>20%)
+    );
 
     const productsWithLowStock = products.filter(p => {
       const stock = p.stock || 0;
       return stock > 0 && stock <= 10;
     });
 
-    // Pricing distribution
+    // Pricing distribution — on the LIVE final price, not the stored one
     const pricingDistribution = {
-      low: products.filter(p => {
-        const finalPrice = p.finalPrice || p.discountPrice || p.price || 0;
-        return finalPrice > 0 && finalPrice < 100;
-      }).length,
-      medium: products.filter(p => {
-        const finalPrice = p.finalPrice || p.discountPrice || p.price || 0;
-        return finalPrice >= 100 && finalPrice < 500;
-      }).length,
-      high: products.filter(p => {
-        const finalPrice = p.finalPrice || p.discountPrice || p.price || 0;
-        return finalPrice >= 500;
-      }).length,
+      low:    priced.filter(({ pricing }) => pricing.finalPrice > 0 && pricing.finalPrice < 100).length,
+      medium: priced.filter(({ pricing }) => pricing.finalPrice >= 100 && pricing.finalPrice < 500).length,
+      high:   priced.filter(({ pricing }) => pricing.finalPrice >= 500).length,
     };
 
     return sendSuccess(res, {
@@ -182,7 +206,10 @@ export const getMerchantPricingAnalytics = async (req, res) => {
       merchant: merchant._id,
       deletedAt: null,
       isActive: true,
-    }).select('merchantPrice nubianMarkup dynamicMarkup finalPrice price discountPrice stock').lean();
+    }).select(PRICING_PROJECTION).lean();
+
+    // Live pricing via the engine (see priceProducts).
+    const priced = priceProducts(products);
 
     // Get merchant's orders
     const orders = await Order.find({
@@ -217,31 +244,31 @@ export const getMerchantPricingAnalytics = async (req, res) => {
     });
 
     // Calculate average pricing
-    const productsWithPricing = products.filter(p => {
-      const merchantPrice = p.merchantPrice || p.price || 0;
-      return merchantPrice > 0;
-    });
+    const productsWithPricing = priced.filter(({ pricing }) => pricing.basePrice > 0);
 
     const averageFinalPrice = productsWithPricing.length > 0
-      ? productsWithPricing.reduce((sum, p) => {
-          const finalPrice = p.finalPrice || p.discountPrice || p.price || 0;
-          return sum + finalPrice;
-        }, 0) / productsWithPricing.length
+      ? productsWithPricing.reduce((sum, { pricing }) => sum + pricing.finalPrice, 0) /
+        productsWithPricing.length
       : 0;
 
     const averageMerchantPrice = productsWithPricing.length > 0
-      ? productsWithPricing.reduce((sum, p) => sum + (p.merchantPrice || p.price || 0), 0) / productsWithPricing.length
+      ? productsWithPricing.reduce((sum, { pricing }) => sum + pricing.basePrice, 0) /
+        productsWithPricing.length
       : 0;
 
-    // Alert: products where finalPrice exceeds merchantPrice + X%
+    // Alert: products where the live finalPrice exceeds merchant cost + X%.
+    // The markup percentage is computed once by effectiveMarkupPercentage
+    // rather than hand-rolled here and again in the response payload.
     const ALERT_THRESHOLD = 50; // 50% markup threshold
-    const productsWithHighMarkup = products.filter(p => {
-      const merchantPrice = p.merchantPrice || p.price || 0;
-      const finalPrice = p.finalPrice || p.discountPrice || p.price || 0;
-      if (merchantPrice === 0) return false;
-      const markupPercentage = ((finalPrice - merchantPrice) / merchantPrice) * 100;
-      return markupPercentage > ALERT_THRESHOLD;
-    });
+    const productsWithHighMarkup = priced
+      .map(({ product, pricing }) => ({
+        product,
+        pricing,
+        markupPercentage: effectiveMarkupPercentage(pricing),
+      }))
+      .filter(({ pricing, markupPercentage }) =>
+        pricing.basePrice > 0 && markupPercentage > ALERT_THRESHOLD
+      );
 
     return sendSuccess(res, {
       data: {
@@ -259,13 +286,15 @@ export const getMerchantPricingAnalytics = async (req, res) => {
         },
         alerts: {
           productsWithHighMarkup: productsWithHighMarkup.length,
-          productsWithHighMarkupList: productsWithHighMarkup.map(p => ({
-            _id: p._id,
-            name: p.name || 'Unknown',
-            merchantPrice: p.merchantPrice || p.price || 0,
-            finalPrice: p.finalPrice || p.discountPrice || p.price || 0,
-            markupPercentage: ((p.finalPrice || p.discountPrice || p.price || 0) - (p.merchantPrice || p.price || 0)) / (p.merchantPrice || p.price || 1) * 100,
-          })),
+          productsWithHighMarkupList: productsWithHighMarkup.map(
+            ({ product, pricing, markupPercentage }) => ({
+              _id: product._id,
+              name: product.name || 'Unknown',
+              merchantPrice: pricing.basePrice,
+              finalPrice: pricing.finalPrice,
+              markupPercentage: Math.round(markupPercentage * 100) / 100,
+            })
+          ),
         },
       },
       message: 'Merchant pricing analytics retrieved successfully',

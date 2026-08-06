@@ -85,8 +85,72 @@ const validateVariants = body('variants')
       if (typeof variant.stock !== 'number' || variant.stock < 0 || !Number.isInteger(variant.stock)) {
         throw new Error('Each variant must have a non-negative integer stock value');
       }
+
+      // Absolute per-variant discount (currency amount, not a percentage).
+      // Optional — schema default is 0.
+      if (variant.merchantDiscount !== undefined && variant.merchantDiscount !== null) {
+        const md = Number(variant.merchantDiscount);
+        if (!Number.isFinite(md) || md < 0) {
+          throw new Error('Each variant merchantDiscount must be a number >= 0');
+        }
+      }
     }
-    
+
+    return true;
+  });
+
+// Custom validator for the product-level discount block (product.model.js:58).
+// Optional object: { type: 'percentage'|'fixed'|null, value >= 0,
+// maxDiscount? >= 0, startsAt?/endsAt? ISO dates, isActive? boolean }.
+// The controller's sanitizeDiscountInput does the coercion — this only rejects
+// input that is structurally wrong so a bad payload fails loudly.
+const validateDiscountBlock = body('discount')
+  .optional({ nullable: true })
+  .custom((discount) => {
+    if (discount === null) return true; // explicit "no discount"
+    if (typeof discount !== 'object' || Array.isArray(discount)) {
+      throw new Error('discount must be an object');
+    }
+
+    const { type, value, maxDiscount, startsAt, endsAt, isActive } = discount;
+
+    if (type !== undefined && type !== null && type !== 'percentage' && type !== 'fixed') {
+      throw new Error('discount.type must be one of: percentage, fixed, null');
+    }
+
+    if (value !== undefined && value !== null) {
+      const v = Number(value);
+      if (!Number.isFinite(v) || v < 0) {
+        throw new Error('discount.value must be a number >= 0');
+      }
+      if (type === 'percentage' && v > 100) {
+        throw new Error('discount.value must be <= 100 when discount.type is percentage');
+      }
+    }
+
+    if (maxDiscount !== undefined && maxDiscount !== null) {
+      const m = Number(maxDiscount);
+      if (!Number.isFinite(m) || m < 0) {
+        throw new Error('discount.maxDiscount must be a number >= 0');
+      }
+    }
+
+    for (const [field, raw] of [['startsAt', startsAt], ['endsAt', endsAt]]) {
+      if (raw === undefined || raw === null) continue;
+      const d = new Date(raw);
+      if (isNaN(d.getTime())) {
+        throw new Error(`discount.${field} must be a valid ISO date`);
+      }
+    }
+
+    if (startsAt && endsAt && new Date(startsAt) > new Date(endsAt)) {
+      throw new Error('discount.startsAt must be before discount.endsAt');
+    }
+
+    if (isActive !== undefined && typeof isActive !== 'boolean') {
+      throw new Error('discount.isActive must be a boolean');
+    }
+
     return true;
   });
 
@@ -117,9 +181,12 @@ export const validateProductCreate = [
   
   // Price and stock are conditionally required (required if no variants, optional if variants exist)
   validateNumber('price', { min: 0.01, max: 1000000, optional: true }),
-  validateNumber('discountPrice', { min: 0, max: 1000000, optional: true }),
   validateInteger('stock', { min: 0, max: 100000, optional: true }),
-  
+
+  // Product-level discount block (replaces the dead `discountPrice` field,
+  // which has never existed in the schema). See Issue #24.
+  validateDiscountBlock,
+
   // Use custom validator for images to avoid conflicts between array and item validation
   validateImagesArray,
   
@@ -166,8 +233,9 @@ export const validateProductUpdate = [
   sanitizeString('name', { min: 2, max: 200, optional: true }),
   sanitizeString('description', { min: 0, max: 5000, optional: true }),
   validateNumber('price', { min: 0, max: 1000000, optional: true }),
-  validateNumber('discountPrice', { min: 0, max: 1000000, optional: true }),
   validateInteger('stock', { min: 0, max: 100000, optional: true }),
+  // Product-level discount block — see Issue #24.
+  validateDiscountBlock,
   // Images are optional on update — a patch to name/description shouldn't require re-uploading all images
   validateImagesArrayOptional,
   validateArray('sizes', { min: 0, max: 20, optional: true }),

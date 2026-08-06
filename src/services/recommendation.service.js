@@ -58,16 +58,47 @@ async function getTrendingProducts(baseFilter, limit = 20) {
 }
 
 /**
+ * Mongo clause matching a product-level discount block that is live right now.
+ *
+ * Mirrors isProductDiscountActive() in lib/pricing.engine.js exactly:
+ *   isActive === true, value > 0, type ∈ {percentage, fixed},
+ *   startsAt null-or-past, endsAt null-or-future.
+ * If the engine's gate changes, change this with it.
+ */
+function activeProductDiscountClause(now = new Date()) {
+  return {
+    'discount.isActive': true,
+    'discount.value': { $gt: 0 },
+    'discount.type': { $in: ['percentage', 'fixed'] },
+    $and: [
+      { $or: [{ 'discount.startsAt': null }, { 'discount.startsAt': { $lte: now } }] },
+      { $or: [{ 'discount.endsAt': null },   { 'discount.endsAt':   { $gte: now } }] },
+    ],
+  };
+}
+
+/**
  * Flash deals: products with an active discount, sorted by visibility score.
  * discountBoost is already baked into ranking.visibilityScore by productScoring cron,
  * so the highest-discount products naturally float to the top.
+ *
+ * The discount predicate is nested under `$and` — NOT a sibling `$or` — because
+ * withMerchantFilter() sets its own top-level `$or` and would otherwise
+ * overwrite it via the object spread, silently turning this rail into "all
+ * products". See PRICING_AUDIT_REPORT Issue #10.
  */
 async function getFlashDeals(baseFilter, limit = 20) {
   const filter = await withMerchantFilter({
     ...baseFilter,
-    $or: [
-      { 'variants.merchantDiscount': { $gt: 0 } },
-      { discountPrice: { $gt: 0 } },  // legacy field — kept for backward compat
+    $and: [
+      {
+        $or: [
+          // Per-variant absolute discount set by the merchant.
+          { 'variants.merchantDiscount': { $gt: 0 } },
+          // Product-level discount block — the primary discount knob in the schema.
+          activeProductDiscountClause(),
+        ],
+      },
     ],
   });
   return Product.find(filter)

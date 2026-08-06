@@ -120,17 +120,27 @@ export async function runDynamicPricingCron() {
       };
 
       // Build variant-level updates
-      const variantUpdates = {};    // { "variants.0.dynamicMarkup": x, "variants.0.finalPrice": y }
+      const updates = {};           // { "variants.0.dynamicMarkup": x, "variants.0.finalPrice": y }
       let hasChanges = false;
       let minFinalPrice = Infinity;
 
       product.variants.forEach((variant, idx) => {
-        if (!variant.isActive) return;
+        // Match the engine's convention: an undefined isActive means active.
+        const isActive = variant.isActive !== false;
 
-        // If dynamic pricing is disabled for this product, force dynamicMarkup to 0
-        const nextDynamic = product.dynamicPricingEnabled
-          ? computeDynamicMarkup({ stock: variant.stock, ...signals })
-          : 0;
+        // Demand/scarcity signals only drive SELLABLE variants. An inactive
+        // variant keeps its stored markup, but we still recompute its
+        // finalPrice below so the persisted value can't rot indefinitely
+        // (it is excluded from the root minimum either way).
+        let nextDynamic;
+        if (!isActive) {
+          nextDynamic = Number(variant.dynamicMarkup) || 0;
+        } else if (product.dynamicPricingEnabled) {
+          nextDynamic = computeDynamicMarkup({ stock: variant.stock, ...signals });
+        } else {
+          // Dynamic pricing disabled for this product — force dynamicMarkup to 0.
+          nextDynamic = 0;
+        }
 
         // Run through the engine so the product-level discount is honored.
         const { finalPrice: nextFinal } = calculateFinalPrice({
@@ -144,35 +154,40 @@ export async function runDynamicPricingCron() {
         });
 
         // Only record changes (skip if identical — avoids spurious writes)
-        if (variant.dynamicMarkup !== nextDynamic) {
-          variantUpdates[`variants.${idx}.dynamicMarkup`] = nextDynamic;
+        if (isActive && variant.dynamicMarkup !== nextDynamic) {
+          updates[`variants.${idx}.dynamicMarkup`] = nextDynamic;
           hasChanges = true;
         }
         if (Math.abs((variant.finalPrice || 0) - nextFinal) > 0.01) {
-          variantUpdates[`variants.${idx}.finalPrice`] = nextFinal;
+          updates[`variants.${idx}.finalPrice`] = nextFinal;
           hasChanges = true;
         }
 
-        if (nextFinal > 0 && nextFinal < minFinalPrice) {
+        if (isActive && nextFinal > 0 && nextFinal < minFinalPrice) {
           minFinalPrice = nextFinal;
         }
       });
+
+      // Sync root-level finalPrice (lowest active variant).
+      // Computed BEFORE the skip guard: a product whose variants are all
+      // unchanged can still carry a stale or zero root finalPrice (bulk import
+      // writes 0 — see Issue #8), and that must be repairable on its own.
+      // A root drift is therefore itself a reason to write.
+      const newRootFinal = minFinalPrice === Infinity ? null : minFinalPrice;
+      if (Math.abs((product.finalPrice || 0) - (newRootFinal || 0)) > 0.01) {
+        updates.finalPrice = newRootFinal;
+        hasChanges = true;
+      }
 
       if (!hasChanges) {
         skipped++;
         continue;
       }
 
-      // Sync root-level finalPrice (lowest active variant)
-      const newRootFinal = minFinalPrice === Infinity ? null : minFinalPrice;
-      if (Math.abs((product.finalPrice || 0) - (newRootFinal || 0)) > 0.01) {
-        variantUpdates.finalPrice = newRootFinal;
-      }
-
       // Single atomic write — no pre-save middleware triggered
       await Product.updateOne(
         { _id: product._id },
-        { $set: variantUpdates }
+        { $set: updates }
       );
 
       updated++;

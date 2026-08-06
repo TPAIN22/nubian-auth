@@ -282,6 +282,154 @@ export function convertLineTotals(lines, context) {
   return { lines: converted, total };
 }
 
+/** Plain decimal rounding to a currency's precision. */
+function roundTo(amount, decimals = 2) {
+  const d = Math.max(0, Number(decimals) || 0);
+  const f = 10 ** d;
+  return Math.round(((Number(amount) || 0) + Number.EPSILON) * f) / f;
+}
+
+/**
+ * Convert a USD amount for use as a REFERENCE price (strikethrough / MSRP).
+ *
+ * Identical to convertAndFormatPriceSync — FX rate, then
+ * `marketMarkupAdjustment` — EXCEPT the last step is a plain round to the
+ * currency's decimals instead of applyPsychologicalPricing.
+ *
+ * Psychological pricing exists to make the price the shopper PAYS attractive.
+ * A strikethrough is a reference number, not a price on sale, so there is no
+ * reason to snap it to the same coarse grid — and doing so is what made the
+ * pair collide (see convertedPricePair below).
+ */
+function convertReferenceSync(amountUSD, currencyCode, rateInfo, currencyConfig) {
+  const upperCode = currencyCode?.toUpperCase() || "USD";
+  const config = currencyConfig || getDefaultCurrencyConfig(upperCode);
+
+  let amount = Number(amountUSD) || 0;
+  let rate = 1;
+  let rateUnavailable = false;
+
+  if (upperCode !== "USD") {
+    if (!rateInfo || rateInfo.rateUnavailable || rateInfo.rate === null) {
+      rateUnavailable = true;
+    } else {
+      rate = rateInfo.rate;
+      amount = amount * rate;
+    }
+  }
+
+  if (!rateUnavailable) {
+    const markup = config.marketMarkupAdjustment || 0;
+    if (markup !== 0) amount += (amount * markup) / 100;
+    amount = roundTo(amount, config.decimals ?? 2);
+  }
+
+  return {
+    priceConverted: amount,
+    priceDisplay: formatPrice(amount, config),
+    currencyCode: upperCode,
+    rate,
+    rateDate: rateInfo?.date,
+    rateProvider: rateInfo?.provider,
+    rateUnavailable,
+  };
+}
+
+/**
+ * Produce the CONSISTENT converted { original, discountAmount } pair for a
+ * product or variant (PRICING_AUDIT_REPORT Issue #9).
+ *
+ * ── The problem ────────────────────────────────────────────────────────────
+ * applyPsychologicalPricing runs per amount. Rounding `finalPrice` and
+ * `originalPrice` through it independently can collapse a real discount to the
+ * SAME converted value, or invert the pair, so a client comparing the two
+ * numbers silently drops the strikethrough.
+ *
+ * ── What we must never do ──────────────────────────────────────────────────
+ * The obvious fix — `original = final + convert(discountAmount)` — runs the
+ * DISCOUNT through psychological rounding too, which INFLATES it (a $26
+ * discount becomes 29.99 under ENDING_9). Overstating a saving is an
+ * advertising claim about money, not a cosmetic bug. A missing strikethrough
+ * is strictly preferable.
+ *
+ * ── The rules this function guarantees ─────────────────────────────────────
+ *   1. The displayed saving NEVER exceeds the true converted discount.
+ *      Understating is acceptable; overstating is not.
+ *   2. `convertedFinal + discountAmount === convertedOriginal` exactly —
+ *      discountAmount is DERIVED from the rounded pair, never rounded
+ *      independently.
+ *   3. `convertedOriginal >= convertedFinal` always. When rounding collapses
+ *      or inverts the pair we return original === final and discountAmount
+ *      === 0. We never fabricate a larger original to force a visible
+ *      strikethrough.
+ *
+ * `final` keeps full psychological rounding (it is the price being sold);
+ * `original` uses convertReferenceSync (plain decimal rounding). The gap is
+ * then clamped to the true converted discount, because a psychological rule
+ * that rounds `final` DOWN (e.g. NEAREST_10 on 104 → 100) would otherwise
+ * widen the apparent saving beyond the real one.
+ *
+ * ── DISPLAY CONTRACT for client authors ────────────────────────────────────
+ *   • Render the strikethrough IFF `original > final` (equivalently
+ *     `discountAmount > 0`). Never key it on `hasDiscount`: in the collapse
+ *     case hasDiscount is legitimately true while original === final, and
+ *     keying on it renders a degenerate strikethrough equal to the price.
+ *   • Render the discount BADGE iff `discountPercentage > 0`. That value is
+ *     currency-invariant truth from the pricing engine and stays correct even
+ *     when the converted money pair has collapsed.
+ *
+ * NOTE: this deliberately does NOT touch convertAmount / convertLineTotals —
+ * order and checkout surfaces round per unit then multiply, and that contract
+ * is load-bearing (see the comments on those functions).
+ *
+ * @param {object} source  product or variant carrying USD amounts
+ * @param {Function} convert  memoized convertAndFormatPriceSync wrapper (final)
+ * @param {Function} convertReference  memoized convertReferenceSync wrapper
+ * @param {number} decimals  target currency decimals
+ * @returns {{original: number|undefined, discountAmount: number|undefined}}
+ */
+function convertedPricePair(source, convert, convertReference, decimals = 2) {
+  const originalUSD = source?.originalPrice;
+  if (originalUSD === undefined || originalUSD === null) {
+    return { original: undefined, discountAmount: undefined };
+  }
+
+  const finalUSD = source?.finalPrice;
+  // No final price to anchor against — convert as a plain reference price.
+  if (finalUSD === undefined || finalUSD === null) {
+    return {
+      original: convertReference(originalUSD)?.priceConverted,
+      discountAmount: undefined,
+    };
+  }
+
+  const convertedFinal = convert(finalUSD)?.priceConverted ?? 0;
+  const referenceOriginal = convertReference(originalUSD)?.priceConverted ?? convertedFinal;
+
+  // The true discount in this currency: rate + market markup, plainly rounded.
+  // Never psychological-rounded — that is what inflated the saving.
+  const discountUSD =
+    source?.discountAmount !== undefined && source?.discountAmount !== null
+      ? Math.max(0, Number(source.discountAmount) || 0)
+      : Math.max(0, (Number(originalUSD) || 0) - (Number(finalUSD) || 0));
+  const trueDiscount = discountUSD > 0
+    ? Math.max(0, convertReference(discountUSD)?.priceConverted ?? 0)
+    : 0;
+
+  // Rule 1 + rule 3: clamp the gap to [0, trueDiscount].
+  const gap = roundTo(referenceOriginal - convertedFinal, decimals);
+  const discountAmount = Math.max(0, Math.min(gap, trueDiscount));
+
+  // Rule 2: original is defined AS final + discountAmount, so the identity is
+  // exact by construction rather than by luck. The Math.max is belt-and-braces
+  // for rule 3 — with a `convert` that normalizes to `decimals` it can never
+  // bind, but it makes the invariant hold unconditionally.
+  return {
+    original: Math.max(convertedFinal, roundTo(convertedFinal + discountAmount, decimals)),
+    discountAmount: roundTo(discountAmount, decimals),
+  };
+}
+
 /**
  * Convert Product Prices (OPTIMIZED)
  */
@@ -302,6 +450,8 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
 
   config = config || getDefaultCurrencyConfig(upperCode);
 
+  const decimals = config?.decimals ?? 2;
+
   // ✅ MEMOIZATION (performance boost)
   const cache = new Map();
 
@@ -309,8 +459,30 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
     if (val === undefined || val === null) return val;
     if (cache.has(val)) return cache.get(val);
 
-    const result = convertAndFormatPriceSync(val, upperCode, rate, config);
+    const raw = convertAndFormatPriceSync(val, upperCode, rate, config);
+    // Psychological strategies emit sub-minor-unit float noise — ENDING_9
+    // returns `floored + 0.99` which is 29.990000000000002, not 29.99. Left
+    // alone that noise makes `original >= final` fail by ~3e-15 in the
+    // collapse case and breaks the exact identity in convertedPricePair.
+    // Normalizing to the currency's precision changes no displayed value
+    // (both format to "29.99") and makes downstream arithmetic exact.
+    // NOTE: scoped to this function's payload only — convertAmount /
+    // convertLineTotals call convertAndFormatPriceSync directly and are
+    // deliberately untouched.
+    const result = { ...raw, priceConverted: roundTo(raw.priceConverted, decimals) };
     cache.set(val, result);
+    return result;
+  };
+
+  // Reference conversions (strikethrough / discount amounts) skip
+  // psychological rounding — see convertReferenceSync and convertedPricePair.
+  const referenceCache = new Map();
+  const convertReference = (val) => {
+    if (val === undefined || val === null) return val;
+    if (referenceCache.has(val)) return referenceCache.get(val);
+
+    const result = convertReferenceSync(val, upperCode, rate, config);
+    referenceCache.set(val, result);
     return result;
   };
 
@@ -323,14 +495,57 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
     result.priceDisplay = c.priceDisplay;
   }
 
+  // The strikethrough and the saving are produced together so they cannot
+  // disagree — see convertedPricePair (Issue #9).
+  const rootPair = convertedPricePair(product, convert, convertReference, decimals);
+
   if (product.originalPrice !== undefined) {
-    result.originalPrice = convert(product.originalPrice).priceConverted;
+    result.originalPrice = rootPair.original;
   }
 
   if (product.discountPrice > 0) {
     const c = convert(product.discountPrice);
     result.discountPrice = c.priceConverted;
     result.discountPriceDisplay = c.priceDisplay;
+  }
+
+  // Root discountAmount / listPrice were previously left in USD while every
+  // field around them (and the `price` envelope) was converted, so the flat
+  // aliases and the envelope disagreed in any non-USD currency.
+  // See PRICING_AUDIT_REPORT Issue #18.
+  //
+  // discountAmount is the DERIVED saving (original − final), never the
+  // independently rounded discount, so `final + discountAmount === original`
+  // holds exactly and the displayed saving can never exceed the real one.
+  if (product.discountAmount !== undefined) {
+    result.discountAmount = rootPair.discountAmount !== undefined
+      ? rootPair.discountAmount
+      : convertReference(product.discountAmount).priceConverted;
+  }
+  // listPrice is a reference price (MSRP), not a price being sold.
+  if (product.listPrice !== undefined) {
+    result.listPrice = convertReference(product.listPrice).priceConverted;
+  }
+
+  // Currency-INVARIANT fields. The engine computes these correctly in USD and
+  // a percentage / boolean does not change under an FX rate, so they pass
+  // through untouched (Issue #9). Assigned explicitly so a future refactor of
+  // the spread above can't quietly start rewriting them.
+  //
+  // DISPLAY CONTRACT (see convertedPricePair): the BADGE is driven by
+  // `discountPercentage > 0`; the STRIKETHROUGH is driven by the money pair
+  // (`originalPrice > finalPrice`), NOT by `hasDiscount`. In a currency whose
+  // rounding collapses the pair, hasDiscount stays true while original ===
+  // final — gating the strikethrough on it would render a strikethrough equal
+  // to the price.
+  if (product.hasDiscount !== undefined) {
+    result.hasDiscount = !!product.hasDiscount;
+  }
+  if (product.discountPercentage !== undefined) {
+    result.discountPercentage = product.discountPercentage;
+  }
+  if (product.displayDiscountPercentage !== undefined) {
+    result.displayDiscountPercentage = product.displayDiscountPercentage;
   }
 
   // displayFinalPrice / displayOriginalPrice are aliases written by
@@ -340,7 +555,16 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
     result.displayFinalPrice = convert(product.displayFinalPrice).priceConverted;
   }
   if (product.displayOriginalPrice !== undefined) {
-    result.displayOriginalPrice = convert(product.displayOriginalPrice).priceConverted;
+    result.displayOriginalPrice = convertedPricePair(
+      {
+        originalPrice:  product.displayOriginalPrice,
+        finalPrice:     product.displayFinalPrice ?? product.finalPrice,
+        discountAmount: product.discountAmount,
+      },
+      convert,
+      convertReference,
+      decimals,
+    ).original;
   }
 
   // VARIANTS — convert every per-variant price field set by the pricing engine
@@ -353,22 +577,45 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
         vr.finalPrice = c.priceConverted;
         vr.priceDisplay = c.priceDisplay;
       }
+      // Strikethrough + saving produced together — see convertedPricePair (Issue #9).
+      const vPair = convertedPricePair(v, convert, convertReference, decimals);
       if (v.originalPrice !== undefined) {
-        vr.originalPrice = convert(v.originalPrice).priceConverted;
+        vr.originalPrice = vPair.original;
       }
       if (v.listPrice !== undefined) {
-        vr.listPrice = convert(v.listPrice).priceConverted;
+        vr.listPrice = convertReference(v.listPrice).priceConverted;
       }
       if (v.discountAmount !== undefined) {
-        vr.discountAmount = convert(v.discountAmount).priceConverted;
+        vr.discountAmount = vPair.discountAmount !== undefined
+          ? vPair.discountAmount
+          : convertReference(v.discountAmount).priceConverted;
+      }
+      // Currency-invariant — carried through untouched (see root block).
+      if (v.hasDiscount !== undefined) {
+        vr.hasDiscount = !!v.hasDiscount;
+      }
+      if (v.discountPercentage !== undefined) {
+        vr.discountPercentage = v.discountPercentage;
+      }
+      if (v.displayDiscountPercentage !== undefined) {
+        vr.displayDiscountPercentage = v.displayDiscountPercentage;
       }
       if (v.displayFinalPrice !== undefined) {
         vr.displayFinalPrice = convert(v.displayFinalPrice).priceConverted;
       }
       if (v.displayOriginalPrice !== undefined) {
-        vr.displayOriginalPrice = convert(v.displayOriginalPrice).priceConverted;
+        vr.displayOriginalPrice = convertedPricePair(
+          {
+            originalPrice:  v.displayOriginalPrice,
+            finalPrice:     v.displayFinalPrice ?? v.finalPrice,
+            discountAmount: v.discountAmount,
+          },
+          convert,
+          convertReference,
+          decimals,
+        ).original;
       }
-      vr.price = buildPriceEnvelope(v, convert, config);
+      vr.price = buildPriceEnvelope(v, convert, convertReference, config);
       return vr;
     });
   }
@@ -376,7 +623,7 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
   // Typed Money envelope — the new canonical price surface.
   // Existing aliases (finalPrice/originalPrice/displayFinalPrice/...) stay
   // in place so legacy consumers keep working during migration.
-  result.price = buildPriceEnvelope(product, convert, config);
+  result.price = buildPriceEnvelope(product, convert, convertReference, config);
   result.currency = {
     code: upperCode,
     symbol: config.symbol,
@@ -390,20 +637,26 @@ export async function convertProductPrices(product, currencyCode, context = {}) 
 /**
  * Build the canonical { final, original, list, discount } Money envelope
  * for a product or variant. `convert(usdAmount)` returns the memoized
- * convertAndFormatPriceSync result; pass undefined for fields that don't
- * exist on the source object.
+ * convertAndFormatPriceSync result (psychological rounding — prices being
+ * sold); `convertReference(usdAmount)` the memoized convertReferenceSync
+ * result (plain rounding — reference amounts). Pass undefined for fields that
+ * don't exist on the source object.
+ *
+ * DISPLAY CONTRACT: strikethrough iff `original.amount > final.amount`
+ * (equivalently `discountAmount.amount > 0`); badge iff
+ * `discountPercentage > 0`. Do NOT gate the strikethrough on `hasDiscount` —
+ * see convertedPricePair.
  */
-function buildPriceEnvelope(source, convert, config) {
+function buildPriceEnvelope(source, convert, convertReference, config) {
   const decimals = config?.decimals ?? 2;
 
-  const toMoney = (usd) => {
-    if (usd === undefined || usd === null) return undefined;
-    const c = convert(usd);
+  const money = (c, amountOverride) => {
     if (!c) return undefined;
+    const amount = amountOverride === undefined ? c.priceConverted : amountOverride;
     return {
-      amount: c.priceConverted,
+      amount,
       currency: c.currencyCode,
-      formatted: c.priceDisplay,
+      formatted: amountOverride === undefined ? c.priceDisplay : formatPrice(amount, config),
       decimals,
       rate: c.rate,
       rateProvider: c.rateProvider,
@@ -412,12 +665,41 @@ function buildPriceEnvelope(source, convert, config) {
     };
   };
 
+  const toMoney = (usd) =>
+    usd === undefined || usd === null ? undefined : money(convert(usd));
+
+  // `original` and `discountAmount` come from the SAME clamped pair, so
+  // `final + discountAmount === original` holds exactly inside this envelope
+  // in every currency, and the saving never overstates the real one.
+  // Meta (rate/provider/date) is reused from the anchor conversion.
+  const pair = convertedPricePair(source, convert, convertReference, decimals);
+  const meta = convert(source.finalPrice ?? source.originalPrice);
+
+  const originalMoney =
+    pair.original === undefined || pair.original === null
+      ? undefined
+      : money(meta, pair.original);
+
+  const discountMoney =
+    source.discountAmount === undefined || source.discountAmount === null
+      ? undefined
+      : money(
+          meta,
+          pair.discountAmount !== undefined
+            ? pair.discountAmount
+            : convertReference(source.discountAmount)?.priceConverted,
+        );
+
   return {
     final:    toMoney(source.finalPrice),
-    original: toMoney(source.originalPrice),
-    list:     toMoney(source.listPrice),
+    original: originalMoney,
+    // listPrice is a reference (MSRP) amount — plainly rounded, not snapped.
+    list: source.listPrice === undefined || source.listPrice === null
+      ? undefined
+      : money(convertReference(source.listPrice)),
+    // Currency-invariant — never recomputed from converted amounts.
     discountPercentage: Number(source.discountPercentage) || 0,
-    discountAmount: source.discountAmount !== undefined ? toMoney(source.discountAmount) : undefined,
+    discountAmount: discountMoney,
     hasDiscount: !!source.hasDiscount,
   };
 }

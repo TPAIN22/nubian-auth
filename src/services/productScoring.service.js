@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Product from '../models/product.model.js';
 import UserActivity from '../models/userActivity.model.js';
 import logger from '../lib/logger.js';
+import { calculateProductPricing } from '../lib/pricing.engine.js';
 
 // ─── Score weights ──────────────────────────────────────────────────────────
 const W = {
@@ -46,14 +47,20 @@ function computeScores(product, stats = {}) {
     ? Math.max(0, W.maxFreshness * (1 - daysSinceCreation / 30))
     : 0;
 
-  // Discount boost: use the largest merchantDiscount across active variants
-  const maxDiscount = (product.variants || []).reduce((max, v) => {
-    if (v.isActive === false) return max;
-    const pct = v.merchantPrice > 0
-      ? ((v.merchantDiscount || 0) / v.merchantPrice) * 100
-      : 0;
-    return Math.max(max, pct);
+  // Discount boost: largest real discount percentage across active variants.
+  //
+  // Routed through the pricing engine so BOTH discount sources count — the
+  // per-variant merchantDiscount AND product.discount (the primary knob in the
+  // schema, which the old merchantDiscount/merchantPrice ratio ignored
+  // entirely). The engine's discountPercentage is measured against
+  // originalPrice, i.e. the same number the shopper sees on the badge.
+  // See PRICING_AUDIT_REPORT Issue #15.
+  const { variants: pricedVariants } = calculateProductPricing(product);
+  const maxDiscount = pricedVariants.reduce((max, { variant, pricing }) => {
+    if (variant.isActive === false) return max;
+    return Math.max(max, pricing.discountPercentage || 0);
   }, 0);
+  // Cap unchanged (W.maxDiscount) so the overall score weighting is untouched.
   const discountBoost = Math.min(W.maxDiscount, maxDiscount * 2);
 
   const featuredBoost  = product.featured ? W.featuredBoost : 0;
@@ -175,9 +182,14 @@ export async function calculateProductScores() {
       averageRating: 1,
       featured: 1,
       createdAt: 1,
+      // Fields the pricing engine reads (discountBoost routes through it).
+      discount: 1,
+      dynamicPricingEnabled: 1,
       'variants.isActive':         1,
       'variants.merchantPrice':    1,
       'variants.merchantDiscount': 1,
+      'variants.nubianMarkup':     1,
+      'variants.dynamicMarkup':    1,
     }
   ).lean();
 
@@ -253,6 +265,9 @@ export async function calculateSingleProductScore(productId) {
       isActive: 1,
       deletedAt: 1,
       variants: 1,
+      // Fields the pricing engine reads (discountBoost routes through it).
+      discount: 1,
+      dynamicPricingEnabled: 1,
     }).lean(),
 
     UserActivity.aggregate([

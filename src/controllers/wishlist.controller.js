@@ -2,6 +2,8 @@ import User from '../models/user.model.js';
 import Wishlist from '../models/wishlist.model.js';
 import { getAuth } from '@clerk/express';
 import logger from '../lib/logger.js';
+import { convertProductPrices, getCurrencyContext } from '../services/currency.service.js';
+import { enrichProductsWithPricing } from './products.controller.js';
 
 export const getWishlist = async (req, res) => {
   try {
@@ -21,33 +23,34 @@ export const getWishlist = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    let products = wishlist.products || [];
+    // Same two-stage treatment every other product surface gets (see
+    // merchant.controller.js:getStoreProducts). Previously this returned raw
+    // Mongoose documents: no originalPrice / discountPercentage / hasDiscount /
+    // price envelope, so the wishlist grid could never render a discount, and
+    // on the USD path nothing ran at all. See PRICING_AUDIT_REPORT Issue #3.
+    const enrichedProducts = enrichProductsWithPricing(wishlist.products || []);
 
-    // Apply currency conversion if currencyCode is provided
-    const currencyCode = req.currencyCode;
-    if (currencyCode && currencyCode.toUpperCase() !== 'USD') {
+    const currencyCode = (req.currencyCode || 'USD').toUpperCase();
+    let products = enrichedProducts;
+
+    if (currencyCode !== 'USD') {
       try {
-        const upperCode = currencyCode.toUpperCase();
-        
-        const CurrencyModel = (await import('../models/currency.model.js')).default;
-        const { getLatestRate } = await import('../services/fx.service.js');
-        const { convertProductPrices } = await import('../services/currency.service.js');
-
-        const [currencyConfig, rateInfo] = await Promise.all([
-             CurrencyModel.findOne({ code: upperCode }).lean(),
-             getLatestRate(upperCode)
-        ]);
-        
-        const currencyContext = {
-            config: currencyConfig,
-            rate: rateInfo
-        };
+        // Resolve config + rate ONCE for the request rather than per product.
+        const currencyContext = await getCurrencyContext(currencyCode);
 
         products = await Promise.all(
-          products.map(product => convertProductPrices(product.toObject ? product.toObject() : product, currencyCode, currencyContext))
+          enrichedProducts.map((product) =>
+            convertProductPrices(product, currencyCode, currencyContext)
+          )
         );
       } catch (error) {
-        logger.warn('Currency conversion failed for wishlist', { error: error.message });
+        // A missing rate must not empty the wishlist — fall back to USD prices.
+        logger.warn('Currency conversion failed for wishlist, returning USD prices', {
+          requestId: req.requestId,
+          currencyCode,
+          error: error.message,
+        });
+        products = enrichedProducts;
       }
     }
 
