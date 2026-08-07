@@ -450,7 +450,9 @@ export const getAllMerchants = async (req, res) => {
       query.claimStatus = claimStatus;
     }
 
-    const merchants = await Merchant.find(query).sort({ appliedAt: -1 });
+    // Sort on createdAt, not appliedAt: the schema has no `appliedAt`, so the
+    // old sort was a no-op and the admin list came back in natural order.
+    const merchants = await Merchant.find(query).sort({ createdAt: -1 });
 
     return sendSuccess(res, { data: merchants, message: "Merchants retrieved successfully" });
   } catch (error) {
