@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
+    "test": "node --test \"src/**/*.test.js\"",
     "worker": "node src/workers/index.js",
     "worker:dev": "nodemon src/workers/index.js",
     "seed:currencies": "node src/seeds/currencies.seed.js",

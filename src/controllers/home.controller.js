@@ -1,7 +1,9 @@
 import Banner from '../models/banners.model.js';
 import Category from '../models/categories.model.js';
+import Collection from '../models/collection.model.js';
 import Merchant from '../models/merchant.model.js';
 import Currency from '../models/currency.model.js';
+import { toCollectionSummary } from '../lib/collection.js';
 import { getLatestRate } from '../services/fx.service.js';
 import { getHomeRecommendations } from '../services/recommendation.service.js';
 import { sendSuccess } from '../lib/response.js';
@@ -26,9 +28,10 @@ const cacheKey = (currency, rateInfo) =>
   `${currency}:${rateInfo?.provider || 'na'}:${rateInfo?.date || 'na'}:${rateInfo?.rate ?? 'na'}`;
 
 async function buildUsdPayload(userId) {
-  const [banners, categories, recommendations, stores] = await Promise.all([
+  const [banners, categories, collections, recommendations, stores] = await Promise.all([
     Banner.find({ isActive: true }).sort({ order: 1 }).limit(10).lean(),
     Category.find({ isActive: true }).limit(12).lean(),
+    getCollectionHighlights(),
     getHomeRecommendations(userId || null),
     getStoreHighlights(),
   ]);
@@ -36,6 +39,7 @@ async function buildUsdPayload(userId) {
   return {
     banners,
     categories,
+    collections,
     trending:      enrichProductsWithPricing(recommendations.trending),
     flashDeals:    enrichProductsWithPricing(recommendations.flashDeals),
     newArrivals:   enrichProductsWithPricing(recommendations.newArrivals),
@@ -108,7 +112,28 @@ export const getHomeData = async (req, res) => {
   }
 };
 
-// ── Private helper ────────────────────────────────────────────────────────────
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Active collections for the home rail.
+ *
+ * Summaries only — no product ids, let alone product documents. The rail draws
+ * a cover and a title, and the collection screen fetches its own products when
+ * the shopper taps through. `getCollectionHighlights` deliberately mirrors
+ * `getStoreHighlights`: one small lean query, joined into the existing home
+ * Promise.all rather than added as a second round-trip from the client.
+ *
+ * Any collection write clears this cache — see `invalidateCollectionCache` in
+ * collection.controller.js.
+ */
+async function getCollectionHighlights() {
+  const collections = await Collection.find({ isActive: true })
+    .sort({ sortOrder: 1, createdAt: -1 })
+    .limit(12)
+    .lean();
+
+  return collections.map((c) => toCollectionSummary(c, c.products?.length ?? 0));
+}
 
 async function getStoreHighlights() {
   const stores = await Merchant.find({ status: 'approved' })
