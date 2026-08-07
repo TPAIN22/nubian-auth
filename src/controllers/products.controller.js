@@ -209,8 +209,11 @@ export const getProducts = async (req, res) => {
       queryParams: req.query,
     });
 
-    // Get user preferred categories for personalization (optional, safe fallback)
-    const preferredCategories = getUserPreferredCategories(req);
+    // Get user preferred categories for personalization (optional, safe fallback).
+    // The `await` is load-bearing: getUserPreferredCategories is async, so without
+    // it `preferredCategories` is a Promise and the `.map` below throws
+    // "preferredCategories.map is not a function" — 500ing every product listing.
+    const preferredCategories = await getUserPreferredCategories(getAuth(req)?.userId ?? null);
 
     // Build filter - values are already validated as MongoDB ObjectIds by middleware
     const filter = {

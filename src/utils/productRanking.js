@@ -195,7 +195,11 @@ export function rankAndSortProducts(products, options = {}) {
  *
  * Currently returns [] until the UserActivity aggregation query is implemented.
  *
- * @param {string} _userId - MongoDB User _id (unused until implemented)
+ * NOTE: async by design (the eventual implementation queries Mongo) — every
+ * caller must `await` it, or the returned Promise gets used as an array.
+ *
+ * @param {string|null} _userId - Clerk user id, matching UserActivity.userId
+ *                                (String, null for guests). Unused until implemented.
  * @returns {Promise<string[]>} Array of preferred category IDs
  */
 export async function getUserPreferredCategories(_userId) {
