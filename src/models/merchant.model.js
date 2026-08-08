@@ -30,6 +30,10 @@ const merchantSchema = new mongoose.Schema(
     nationalId:   { type: String },
     crNumber:     { type: String },
     iban:         { type: String },
+    // Storefront artwork, both ImageKit URLs and both optional. `banner` is the
+    // wide cover behind the store hero in the app; a store without one still
+    // renders — the app derives a cover from the logo, then from the store name
+    // — so never gate approval or listing on it.
     logoUrl:      { type: String },
     banner:       { type: String },
     description:  { type: String, required: true },

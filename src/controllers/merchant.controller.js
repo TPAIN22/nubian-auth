@@ -79,9 +79,13 @@ export const applyToBecomeMerchant = async (req, res) => {
       });
     }
 
+    // `banner` is the storefront cover image. Optional like `logoUrl` — the app
+    // falls back to generated artwork — but it has to be read here or an
+    // applicant who uploads one silently loses it: the validator allows the
+    // field, and only the fields destructured below reach the document.
     const {
       storeName, ownerName, phone, email, merchantType,
-      nationalId, crNumber, iban, logoUrl, description,
+      nationalId, crNumber, iban, logoUrl, banner, description,
       categories, city, productSamples,
     } = req.body;
 
@@ -100,7 +104,7 @@ export const applyToBecomeMerchant = async (req, res) => {
     if (existingMerchant) {
       Object.assign(existingMerchant, {
         storeName, ownerName, phone, email, merchantType,
-        nationalId, crNumber, iban, logoUrl, description,
+        nationalId, crNumber, iban, logoUrl, banner, description,
         categories: categories || [],
         city,
         productSamples: productSamples || [],
@@ -161,7 +165,7 @@ export const applyToBecomeMerchant = async (req, res) => {
       merchant = await Merchant.create({
         userId,
         storeName, ownerName, phone, email, merchantType,
-        nationalId, crNumber, iban, logoUrl, description,
+        nationalId, crNumber, iban, logoUrl, banner, description,
         categories: categories || [],
         city,
         productSamples: productSamples || [],
