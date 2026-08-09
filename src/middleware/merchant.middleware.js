@@ -375,6 +375,54 @@ export const isAdminOrApprovedMerchant = async (req, res, next) => {
 };
 
 /**
+ * Load the store named by `:id` so an admin can act on somebody else's team.
+ *
+ * Sets `req.merchant` to exactly what isApprovedMerchant would have set, which
+ * is what lets the team handlers be reused verbatim for both callers instead of
+ * growing an admin variant of each. `req.merchantIsAdmin` marks the caller as
+ * not a member, so requireMerchantPermission waves them through and the
+ * handlers can tell the two apart.
+ *
+ * Mount AFTER isAdmin — this does no authorization of its own.
+ */
+export const loadStoreForAdmin = async (req, res, next) => {
+  try {
+    const merchant = await Merchant.findById(req.params.id);
+
+    if (!merchant) {
+      return res.status(404).json({ message: 'Merchant not found', code: 'NOT_FOUND' });
+    }
+
+    req.merchant = merchant;
+    req.merchantIsAdmin = true;
+
+    // Audited here rather than in each handler: one place cannot be forgotten
+    // when a route is added later, and an admin changing who can reach a live
+    // store's orders and payouts is precisely the action that has to be
+    // reconstructable afterwards. Reads are logged too — "who looked at this
+    // team" is part of the same question.
+    logger.info('Admin acting on a store team', {
+      marker: 'adminStoreTeamAction',
+      requestId: req.requestId,
+      adminId: req.auth?.userId,
+      merchantId: merchant._id.toString(),
+      storeName: merchant.storeName,
+      method: req.method,
+      path: req.originalUrl,
+    });
+
+    next();
+  } catch (error) {
+    logger.error('Error loading store for admin', {
+      requestId: req.requestId,
+      merchantId: req.params?.id,
+      error: error.message,
+    });
+    res.status(500).json({ message: 'Server error', code: 'INTERNAL_ERROR' });
+  }
+};
+
+/**
  * Gate a route on a specific store permission. Runs after isApprovedMerchant /
  * isAdminOrApprovedMerchant, which is what puts the membership on the request.
  *

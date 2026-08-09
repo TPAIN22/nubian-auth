@@ -92,6 +92,51 @@ test('reading the team needs membership; changing it needs a permission gate too
   }
 });
 
+/* -------------------------------------------------------------------------- */
+/* admin team routes                                                          */
+/* -------------------------------------------------------------------------- */
+
+test('admin team routes are registered and are admin-gated', () => {
+  for (const [path, method] of [
+    ['/:id/members', 'get'],
+    ['/:id/members', 'post'],
+    ['/:id/members/:memberId', 'patch'],
+    ['/:id/members/:memberId', 'delete'],
+  ]) {
+    const route = routeAt(path, method);
+    assert.ok(route, `${method.toUpperCase()} ${path} is not registered`);
+    const handlers = route.stack.map((s) => s.handle.name);
+    assert.ok(handlers.includes('isAdmin'), `${path} must be admin-gated`);
+    assert.ok(
+      handlers.includes('loadStoreForAdmin'),
+      `${path} must load the store it is acting on`,
+    );
+    assert.ok(
+      !handlers.includes('isApprovedMerchant'),
+      `${path} must not require the admin to be a merchant`,
+    );
+  }
+});
+
+test("'/my-store/members' is declared before '/:id/members'", () => {
+  // Both patterns match the path /my-store/members. If the parameterised one
+  // won, a merchant reading their own team would be routed to the admin handler
+  // with id="my-store" and get a 400 from the ObjectId validator.
+  assert.ok(
+    indexOf('/my-store/members', 'get') < indexOf('/:id/members', 'get'),
+    "'/my-store/members' must be declared first or merchants hit the admin route",
+  );
+  assert.ok(
+    indexOf('/my-store/members', 'post') < indexOf('/:id/members', 'post'),
+  );
+});
+
+test('ownership transfer is not exposed to admins', () => {
+  // Transfer changes who owns the business. It stays with the owner, so there
+  // is deliberately no /:id/transfer-ownership counterpart.
+  assert.equal(indexOf('/:id/transfer-ownership', 'post'), -1);
+});
+
 test('deleting a member validates the id before the controller sees it', () => {
   // validateObjectId only queues the check — without handleValidationErrors a
   // malformed id reaches Mongoose and surfaces as a 500 CastError.

@@ -65,7 +65,14 @@ export const listMembers = async (req, res) => {
     return sendSuccess(res, {
       data: members.map(presentMember),
       message: 'Team retrieved successfully',
-      meta: { role: req.merchantRole, permissions: req.merchantPermissions },
+      // An admin viewing somebody else's team is not a member of it, so they
+      // have no role and no permissions here — `isAdmin` is what the dashboard
+      // reads to decide whether to render the controls anyway.
+      meta: {
+        role: req.merchantRole ?? null,
+        permissions: req.merchantPermissions ?? [],
+        isAdmin: Boolean(req.merchantIsAdmin),
+      },
     });
   } catch (error) {
     logger.error('Error listing store members', {

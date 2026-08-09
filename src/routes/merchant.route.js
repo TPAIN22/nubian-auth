@@ -36,7 +36,7 @@ import {
   transferOwnership,
 } from '../controllers/merchantTeam.controller.js';
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
-import { isMerchant, isApprovedMerchant, requireMerchantPermission } from '../middleware/merchant.middleware.js';
+import { isMerchant, isApprovedMerchant, requireMerchantPermission, loadStoreForAdmin } from '../middleware/merchant.middleware.js';
 import { PERMISSIONS } from '../lib/merchantPermissions.js';
 import { validateMerchantApplication, validateMerchantUpdate, validateMerchantStatusUpdate, validateMerchantSuspension, validateAdminStoreCreate, validateAdminStoreUpdate, validateStoreLink, validateTeamInvite, validateTeamRoleUpdate, validateOwnershipTransfer, validateInviteAccept } from '../middleware/validators/merchant.validator.js';
 import { validateObjectId, handleValidationErrors } from '../middleware/validation.middleware.js';
@@ -97,6 +97,18 @@ router.post('/admin/stores', isAuthenticated, isAdmin, validateAdminStoreCreate,
 router.patch('/admin/stores/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), validateAdminStoreUpdate, updateStoreForMerchant);
 
 router.get('/:id', isAuthenticated, isAdmin, ...validateObjectId('id'), getMerchantById);
+// Admin view of, and control over, any store's team. Reuses the merchant-facing
+// handlers verbatim — loadStoreForAdmin puts the same `req.merchant` on the
+// request that isApprovedMerchant would, and marks the caller as an admin so
+// the permission gate does not apply. Every call is audited by that middleware.
+//
+// Ownership transfer is deliberately NOT exposed here: it is the one team action
+// that changes who owns the business, and it stays with the owner.
+router.get('/:id/members', isAuthenticated, isAdmin, ...validateObjectId('id'), handleValidationErrors, loadStoreForAdmin, listMembers);
+router.post('/:id/members', isAuthenticated, isAdmin, ...validateObjectId('id'), validateTeamInvite, loadStoreForAdmin, inviteMember);
+router.patch('/:id/members/:memberId', isAuthenticated, isAdmin, ...validateObjectId('id'), ...validateObjectId('memberId'), validateTeamRoleUpdate, loadStoreForAdmin, updateMemberRole);
+router.delete('/:id/members/:memberId', isAuthenticated, isAdmin, ...validateObjectId('id'), ...validateObjectId('memberId'), handleValidationErrors, loadStoreForAdmin, removeMember);
+
 router.get('/:id/claim-candidates', isAuthenticated, isAdmin, ...validateObjectId('id'), getStoreClaimCandidates);
 router.post('/:id/link-user', isAuthenticated, isAdmin, ...validateObjectId('id'), validateStoreLink, linkStoreToUser);
 router.patch('/:id/approve', isAuthenticated, isAdmin, ...validateObjectId('id'), approveMerchant);
