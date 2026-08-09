@@ -23,6 +23,11 @@ const STATUS_RANK = {
 
 const rank = (status) => STATUS_RANK[status] ?? 0;
 
+// Roles that outrank 'merchant' and must never be overwritten by one. Clerk
+// stores a single role per user, so granting merchant access to one of these
+// accounts would cost them the console they actually need.
+const PRIVILEGED_ROLES = new Set(['admin', 'support']);
+
 /**
  * The single merchantStatus that represents a set of stores.
  *
@@ -251,6 +256,26 @@ export const syncMemberClerkMetadata = async (clerkUserId, { requestId } = {}) =
     const next = { ...existing };
 
     if (computed) {
+      // Clerk carries ONE role per user. Writing 'merchant' over 'admin' or
+      // 'support' would silently take away the admin console — a far bigger
+      // loss than the merchant console it grants — so a privileged role is
+      // kept and the membership simply does not translate into console access.
+      // The row still exists in Mongo and the store's team page still lists
+      // them; they just cannot operate the shop from this account.
+      //
+      // The mirror of this guard already existed on the clearing path below.
+      // Its absence here is what let an invitation demote an admin.
+      if (existing.role && PRIVILEGED_ROLES.has(existing.role)) {
+        logger.warn('Kept a privileged Clerk role instead of granting merchant access', {
+          marker: 'privilegedRoleKept',
+          requestId,
+          userId: clerkUserId,
+          role: existing.role,
+          wouldHaveBeen: computed.merchantStatus,
+        });
+        return false;
+      }
+
       next.role = computed.role;
       next.merchantStatus = computed.merchantStatus;
     } else {

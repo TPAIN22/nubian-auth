@@ -431,7 +431,10 @@ export const acceptInvite = async (req, res) => {
     }
 
     // Grants the Clerk role the dashboard middleware gates /merchant/* on.
-    await syncMemberClerkMetadata(userId, { requestId: req.requestId });
+    // Membership alone is not access: without this the person is on the team in
+    // Mongo and still bounced out of the console, which looks from the outside
+    // exactly like the invitation never worked.
+    const granted = await syncMemberClerkMetadata(userId, { requestId: req.requestId });
 
     logger.info('Store invitation accepted', {
       requestId: req.requestId,
@@ -439,15 +442,31 @@ export const acceptInvite = async (req, res) => {
       memberId: invite._id.toString(),
       userId,
       role: invite.role,
+      consoleAccessGranted: granted,
     });
 
+    const data = {
+      ...presentMember(invite),
+      merchantId: invite.merchant.toString(),
+      storeName: merchant.storeName,
+      storeStatus: merchant.status,
+      consoleAccessGranted: granted,
+    };
+
+    if (!granted) {
+      // Either Clerk rejected the write, or this account holds a privileged
+      // role that must not be overwritten. Say so rather than reporting a
+      // success the person is about to discover is not one.
+      return sendSuccess(res, {
+        data,
+        message:
+          `You have joined ${merchant.storeName}, but this account could not be given ` +
+          `merchant access. If you sign in here as an admin, use a separate account for the store.`,
+      });
+    }
+
     return sendSuccess(res, {
-      data: {
-        ...presentMember(invite),
-        merchantId: invite.merchant.toString(),
-        storeName: merchant.storeName,
-        storeStatus: merchant.status,
-      },
+      data,
       message: `You have joined ${merchant.storeName}`,
     });
   } catch (error) {
