@@ -9,6 +9,12 @@ import logger from '../lib/logger.js';
 import { getAuth } from "@clerk/express";
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendUnauthorized, sendForbidden, sendPaginated } from '../lib/response.js';
 import { queueMerchantSuspensionEmail, queueMerchantUnsuspensionEmail } from '../services/mailService.js';
+import {
+  ensureOwnerMembership,
+  syncStoreMembersClerkMetadata,
+  removeMembershipsForStore,
+  syncMemberClerkMetadata,
+} from '../services/merchantMembership.service.js';
 import { enrichProductsWithPricing } from './products.controller.js';
 import { convertProductPrices } from '../services/currency.service.js';
 import { getLatestRate } from '../services/fx.service.js';
@@ -113,6 +119,7 @@ export const applyToBecomeMerchant = async (req, res) => {
         revisionNotes: undefined,
       });
       merchant = await existingMerchant.save();
+      await ensureOwnerMembership(merchant, { requestId: req.requestId });
 
       logger.info('Merchant application resubmitted', {
         requestId: req.requestId,
@@ -233,6 +240,11 @@ export const applyToBecomeMerchant = async (req, res) => {
       throw createErr;
     }
 
+    // The applicant is the store's first member. Without this every new store
+    // would depend on the middleware's legacy owner fallback forever, and that
+    // fallback is meant to go away.
+    await ensureOwnerMembership(merchant, { requestId: req.requestId });
+
     logger.info('Merchant application submitted', {
       requestId: req.requestId,
       userId,
@@ -321,7 +333,18 @@ export const withdrawMyApplication = async (req, res) => {
       });
     }
 
+    // Drop the team with the store. A membership left pointing at a deleted
+    // store resolves to a 403 for everyone holding one.
+    const formerMembers = await removeMembershipsForStore(merchant._id, {
+      requestId: req.requestId,
+    });
+
     await Merchant.deleteOne({ _id: merchant._id });
+
+    // Recompute each former member's Clerk standing now the store is gone.
+    for (const memberId of formerMembers) {
+      await syncMemberClerkMetadata(memberId, { requestId: req.requestId });
+    }
 
     logger.info('Merchant application withdrawn by user', {
       requestId: req.requestId,
@@ -684,33 +707,20 @@ export const approveMerchant = async (req, res) => {
       return sendSuccess(res, { data: merchant, message: "Merchant approved successfully" });
     }
 
-    try {
-      // Get existing metadata to preserve other fields
-      const clerkUser = await clerkClient.users.getUser(merchant.userId);
-      const existingMetadata = clerkUser.publicMetadata || {};
+    // Make sure the owner has a membership before fanning out — an approval can
+    // land on a store created before memberships existed.
+    await ensureOwnerMembership(merchant, { requestId: req.requestId });
 
-      await clerkClient.users.updateUser(merchant.userId, {
-        publicMetadata: {
-          ...existingMetadata,
-          role: "merchant",
-          merchantStatus: "approved",
-        },
-      });
+    // Every member gets the new standing, not just the owner. Computed from the
+    // database (already saved above), so a member who also works at another
+    // store keeps whichever status grants them the most access.
+    await syncStoreMembersClerkMetadata(merchant, { requestId: req.requestId });
 
-      logger.info('Merchant approved and role updated in Clerk', {
-        requestId: req.requestId,
-        merchantId: merchant._id,
-        userId: merchant.userId,
-        approvedBy: adminId,
-      });
-    } catch (clerkError) {
-      logger.error('Error updating Clerk role', {
-        requestId: req.requestId,
-        error: clerkError.message,
-        userId: merchant.userId,
-      });
-      // Continue even if Clerk update fails - merchant is still approved in DB
-    }
+    logger.info('Merchant approved', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      approvedBy: adminId,
+    });
 
     return sendSuccess(res, { data: merchant, message: "Merchant approved successfully" });
   } catch (error) {
@@ -765,22 +775,7 @@ export const requestMerchantRevision = async (req, res) => {
     });
 
     // Sync to Clerk metadata so middleware can route the user to the apply page
-    try {
-      const clerkUser = await clerkClient.users.getUser(merchant.userId);
-      const existingMetadata = clerkUser.publicMetadata || {};
-      await clerkClient.users.updateUser(merchant.userId, {
-        publicMetadata: {
-          ...existingMetadata,
-          merchantStatus: 'needs_revision',
-        },
-      });
-    } catch (clerkError) {
-      logger.error('Failed to sync needs_revision to Clerk', {
-        requestId: req.requestId,
-        userId: merchant.userId,
-        error: clerkError.message,
-      });
-    }
+    await syncStoreMembersClerkMetadata(merchant, { requestId: req.requestId });
 
     return sendSuccess(res, {
       data: merchant,
@@ -833,32 +828,14 @@ export const rejectMerchant = async (req, res) => {
       reason: rejectionReason,
     });
 
-    // Update Clerk user's publicMetadata to set merchantStatus to rejected
-    try {
-      const clerkUser = await clerkClient.users.getUser(merchant.userId);
-      const existingMetadata = clerkUser.publicMetadata || {};
+    // Update Clerk metadata for every member, not just the owner
+    await syncStoreMembersClerkMetadata(merchant, { requestId: req.requestId });
 
-      await clerkClient.users.updateUser(merchant.userId, {
-        publicMetadata: {
-          ...existingMetadata,
-          merchantStatus: "rejected",
-        },
-      });
-
-      logger.info('Merchant rejected and Clerk metadata updated', {
-        requestId: req.requestId,
-        merchantId: merchant._id,
-        userId: merchant.userId,
-        rejectedBy: adminId,
-      });
-    } catch (clerkError) {
-      logger.error('Error updating Clerk metadata on rejection', {
-        requestId: req.requestId,
-        error: clerkError.message,
-        userId: merchant.userId,
-      });
-      // Continue even if Clerk update fails - merchant is still rejected in DB
-    }
+    logger.info('Merchant rejected', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      rejectedBy: adminId,
+    });
 
     return sendSuccess(res, { data: merchant, message: "Merchant application rejected" });
   } catch (error) {
@@ -876,19 +853,15 @@ export const rejectMerchant = async (req, res) => {
  */
 export const getMyMerchantProfile = async (req, res) => {
   try {
-    const { userId } = getAuth(req);
-    
-    if (!userId) {
-      return sendUnauthorized(res, "Authentication required");
-    }
+    // Resolved by isApprovedMerchant — the store the caller is acting for, which
+    // for a staff member is not a store keyed to their own userId.
+    const merchant = req.merchant;
 
-    const merchant = await Merchant.findOne({ userId });
-
-    if (!merchant) {
-      return sendNotFound(res, "Merchant profile");
-    }
-
-    return sendSuccess(res, { data: merchant, message: "Merchant profile retrieved successfully" });
+    return sendSuccess(res, {
+      data: merchant,
+      message: "Merchant profile retrieved successfully",
+      meta: { role: req.merchantRole, permissions: req.merchantPermissions },
+    });
   } catch (error) {
     logger.error('Error getting merchant profile', {
       requestId: req.requestId,
@@ -1016,32 +989,15 @@ export const suspendMerchant = async (req, res) => {
       // Don't fail the request if notification fails
     }
 
-    // Update Clerk user's publicMetadata to set merchantStatus to suspended
-    try {
-      const clerkUser = await clerkClient.users.getUser(merchant.userId);
-      const existingMetadata = clerkUser.publicMetadata || {};
+    // Suspension locks out the whole team, not just the owner — otherwise staff
+    // would keep working a store the platform has taken offline.
+    await syncStoreMembersClerkMetadata(merchant, { requestId: req.requestId });
 
-      await clerkClient.users.updateUser(merchant.userId, {
-        publicMetadata: {
-          ...existingMetadata,
-          merchantStatus: "suspended",
-        },
-      });
-
-      logger.info('Merchant suspended and Clerk metadata updated', {
-        requestId: req.requestId,
-        merchantId: merchant._id,
-        userId: merchant.userId,
-        suspendedBy: adminId,
-      });
-    } catch (clerkError) {
-      logger.error('Error updating Clerk metadata on suspension', {
-        requestId: req.requestId,
-        error: clerkError.message,
-        userId: merchant.userId,
-      });
-      // Continue even if Clerk update fails - merchant is still suspended in DB
-    }
+    logger.info('Merchant suspended', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      suspendedBy: adminId,
+    });
 
     return sendSuccess(res, { data: merchant, message: "Merchant suspended successfully" });
   } catch (error) {
@@ -1149,33 +1105,14 @@ export const unsuspendMerchant = async (req, res) => {
       // Don't fail the request if notification fails
     }
 
-    // Update Clerk user's publicMetadata to restore merchantStatus to approved
-    try {
-      const clerkUser = await clerkClient.users.getUser(merchant.userId);
-      const existingMetadata = clerkUser.publicMetadata || {};
+    // Restore access for the whole team
+    await syncStoreMembersClerkMetadata(merchant, { requestId: req.requestId });
 
-      await clerkClient.users.updateUser(merchant.userId, {
-        publicMetadata: {
-          ...existingMetadata,
-          role: "merchant",
-          merchantStatus: "approved",
-        },
-      });
-
-      logger.info('Merchant unsuspended and Clerk metadata updated', {
-        requestId: req.requestId,
-        merchantId: merchant._id,
-        userId: merchant.userId,
-        unsuspendedBy: adminId,
-      });
-    } catch (clerkError) {
-      logger.error('Error updating Clerk metadata on unsuspension', {
-        requestId: req.requestId,
-        error: clerkError.message,
-        userId: merchant.userId,
-      });
-      // Continue even if Clerk update fails - merchant is still unsuspended in DB
-    }
+    logger.info('Merchant unsuspended', {
+      requestId: req.requestId,
+      merchantId: merchant._id,
+      unsuspendedBy: adminId,
+    });
 
     return sendSuccess(res, { data: merchant, message: "Merchant unsuspended successfully" });
   } catch (error) {
@@ -1235,7 +1172,18 @@ export const deleteMerchant = async (req, res) => {
       // Don't block the delete — admin asked for it explicitly.
     }
 
+    // Drop the team with the store. A membership left pointing at a deleted
+    // store resolves to a 403 for everyone holding one.
+    const formerMembers = await removeMembershipsForStore(merchant._id, {
+      requestId: req.requestId,
+    });
+
     await Merchant.deleteOne({ _id: merchant._id });
+
+    // Recompute each former member's Clerk standing now the store is gone.
+    for (const memberId of formerMembers) {
+      await syncMemberClerkMetadata(memberId, { requestId: req.requestId });
+    }
 
     logger.info('Merchant deleted', {
       requestId: req.requestId,
@@ -1309,7 +1257,18 @@ export const purgeMerchantByClerkId = async (req, res) => {
       });
     }
 
+    // Drop the team with the store. A membership left pointing at a deleted
+    // store resolves to a 403 for everyone holding one.
+    const formerMembers = await removeMembershipsForStore(merchant._id, {
+      requestId: req.requestId,
+    });
+
     await Merchant.deleteOne({ _id: merchant._id });
+
+    // Recompute each former member's Clerk standing now the store is gone.
+    for (const memberId of formerMembers) {
+      await syncMemberClerkMetadata(memberId, { requestId: req.requestId });
+    }
 
     logger.info('Merchant purged by clerkId', {
       requestId: req.requestId,
@@ -1346,16 +1305,10 @@ export const purgeMerchantByClerkId = async (req, res) => {
 export const updateMerchantProfile = async (req, res) => {
   try {
     const { userId } = getAuth(req);
-    
-    if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
 
-    const merchant = await Merchant.findOne({ userId });
-
-    if (!merchant) {
-      return res.status(404).json({ message: "Merchant profile not found" });
-    }
+    // Resolved by isApprovedMerchant. The route is additionally gated on
+    // profile:write, so only an owner reaches this.
+    const merchant = req.merchant;
 
     const { storeName, description, email, phone, city, logoUrl, banner } = req.body;
 
@@ -1853,9 +1806,10 @@ export const linkStoreToUser = async (req, res) => {
     }
 
     // Resolve the target user before touching anything.
-    let clerkUser;
     try {
-      clerkUser = await clerkClient.users.getUser(clerkUserId);
+      // Existence check only — the metadata write goes through the membership
+      // sync further down.
+      await clerkClient.users.getUser(clerkUserId);
     } catch (clerkError) {
       logger.warn('Clerk user lookup failed during store link', {
         requestId: req.requestId,
@@ -1895,25 +1849,23 @@ export const linkStoreToUser = async (req, res) => {
     merchant.claimRequestedAt = undefined;
     await merchant.save();
 
+    // Repoints (or creates) the owner row at the account taking the store over.
+    // Products reference Merchant._id, so nothing else has to move.
+    await ensureOwnerMembership(merchant, { requestId: req.requestId });
+
     // Clerk metadata is what the dashboard middleware gates on — without this the
-    // owner is linked in Mongo but still locked out of /merchant/*.
-    try {
-      const existingMetadata = clerkUser.publicMetadata || {};
-      await clerkClient.users.updateUser(clerkUserId, {
-        publicMetadata: {
-          ...existingMetadata,
-          role: 'merchant',
-          merchantStatus: merchant.status,
-        },
-      });
-    } catch (clerkError) {
+    // owner is linked in Mongo but still locked out of /merchant/*. Computed
+    // from memberships so an owner who also works at another store keeps
+    // whichever standing grants them the most access.
+    const synced = await syncMemberClerkMetadata(clerkUserId, { requestId: req.requestId });
+
+    if (!synced) {
       // The link itself succeeded; surface the partial failure so an admin can
       // retry rather than silently leaving the owner without dashboard access.
       logger.error('Store linked but Clerk role update failed', {
         requestId: req.requestId,
         merchantId: merchant._id.toString(),
         clerkUserId,
-        error: clerkError.message,
       });
       return sendSuccess(res, {
         data: merchant,

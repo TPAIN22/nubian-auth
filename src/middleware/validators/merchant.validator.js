@@ -136,3 +136,48 @@ export const validateMerchantSuspension = [
     .withMessage('Suspension reason is required and must be less than 500 characters'),
   handleValidationErrors,
 ];
+
+/**
+ * Validation for inviting someone onto a store's team.
+ * The role enum is re-stated in merchantTeam.controller.js (ASSIGNABLE_ROLES),
+ * which is what actually refuses 'owner' — this is the cheap first pass.
+ */
+export const validateTeamInvite = [
+  validateEmail('email'),
+  body('role')
+    .isIn(['manager', 'staff'])
+    .withMessage('role must be either "manager" or "staff"'),
+  handleValidationErrors,
+];
+
+/**
+ * Validation for changing a member's role.
+ */
+export const validateTeamRoleUpdate = [
+  body('role')
+    .isIn(['manager', 'staff'])
+    .withMessage('role must be either "manager" or "staff"'),
+  handleValidationErrors,
+];
+
+/**
+ * Validation for handing the store to another member.
+ */
+export const validateOwnershipTransfer = [
+  body('memberId')
+    .isMongoId()
+    .withMessage('memberId must be a valid member id'),
+  handleValidationErrors,
+];
+
+/**
+ * Validation for accepting an invitation. `merchantId` is optional — it is only
+ * needed to disambiguate when someone holds invitations from several stores.
+ */
+export const validateInviteAccept = [
+  body('merchantId')
+    .optional()
+    .isMongoId()
+    .withMessage('merchantId must be a valid store id'),
+  handleValidationErrors,
+];

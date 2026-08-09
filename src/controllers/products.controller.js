@@ -806,22 +806,18 @@ export const createProduct = async (req, res) => {
 // ===== UPDATE PRODUCT =====
 export const updateProduct = async (req, res) => {
   try {
-    const { userId } = getAuth(req);
     const product = await Product.findById(req.params.id);
 
     if (!product || product.deletedAt) return sendNotFound(res, 'Product');
 
-    if (userId) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        if (user.publicMetadata?.role === 'merchant') {
-          const merchant = await Merchant.findOne({ userId, status: 'approved' });
-          if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
-            return sendForbidden(res, 'You can only update your own products');
-          }
-        }
-      } catch (error) {
-        // Ignore clerk errors
+    // isAdminOrApprovedMerchant already resolved which store this caller is
+    // acting for (admins get req.merchantIsAdmin and no req.merchant). This used
+    // to re-resolve via Clerk + Merchant.findOne inside a try/catch that
+    // swallowed failures — which meant a Clerk hiccup skipped the ownership
+    // check entirely and let any merchant edit any product.
+    if (!req.merchantIsAdmin && req.merchant) {
+      if (product.merchant?.toString() !== req.merchant._id.toString()) {
+        return sendForbidden(res, 'You can only update your own products');
       }
     }
 
@@ -875,6 +871,8 @@ export const updateProduct = async (req, res) => {
 export const deleteProduct = async (req, res) => {
   try {
     const productId = req.params.id;
+    // Kept for the audit log below — ownership itself comes from req.merchant.
+    const { userId } = getAuth(req);
 
     logger.info('Delete product request', {
       requestId: req.requestId,
@@ -882,8 +880,6 @@ export const deleteProduct = async (req, res) => {
       productIdLength: productId?.length,
       productIdFormat: /^[0-9a-fA-F]{24}$/.test(productId) ? 'valid' : 'invalid',
     });
-
-    const { userId } = getAuth(req);
 
     // 1) نجيب المنتج للتحقق (ملكية التاجر + هل محذوف مسبقاً)
     const product = await Product.findOne({
@@ -895,18 +891,13 @@ export const deleteProduct = async (req, res) => {
       return sendNotFound(res, 'Product');
     }
 
-    // 2) نفس منطق الملكية للتاجر (زي كودك الحالي)
-    if (userId) {
-      try {
-        const user = await clerkClient.users.getUser(userId);
-        if (user.publicMetadata?.role === 'merchant') {
-          const merchant = await Merchant.findOne({ userId, status: 'approved' });
-          if (merchant && product.merchant?.toString() !== merchant._id.toString()) {
-            return sendForbidden(res, 'You can only delete your own products');
-          }
-        }
-      } catch (error) {
-        // Ignore Clerk errors — best-effort ownership check
+    // 2) ملكية التاجر — نفس المصدر الذي حدده isAdminOrApprovedMerchant
+    // The middleware resolved the caller's active store; admins arrive with
+    // req.merchantIsAdmin instead. No Clerk round-trip, and no swallowed error
+    // that could skip the check.
+    if (!req.merchantIsAdmin && req.merchant) {
+      if (product.merchant?.toString() !== req.merchant._id.toString()) {
+        return sendForbidden(res, 'You can only delete your own products');
       }
     }
 
@@ -947,16 +938,10 @@ export const deleteProduct = async (req, res) => {
 // Get merchant's products
 export const getMerchantProducts = async (req, res) => {
   try {
-    const { userId } = getAuth(req);
-
-    if (!userId) {
-      return res.status(401).json({ message: 'Unauthorized' });
-    }
-
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-    if (!merchant) {
-      return res.status(403).json({ message: 'Merchant not found or not approved' });
-    }
+    // isApprovedMerchant resolved and status-checked the caller's active store.
+    // Re-resolving by userId here would have returned "Merchant not found" for
+    // any staff member, since only the owner has a row keyed to their userId.
+    const merchant = req.merchant;
 
     const MAX_LIMIT = 100;
     const MAX_PAGE = 10000;

@@ -8,6 +8,7 @@ import {
   sendOrderStatusEmail,
   sendMerchantSuspensionEmail,
   sendMerchantUnsuspensionEmail,
+  sendMerchantInviteEmail,
 } from '../lib/mail.js';
 
 /**
@@ -35,6 +36,7 @@ const directSenders = {
   [JOB_NAMES.EMAIL_ORDER_STATUS]: sendOrderStatusEmail,
   [JOB_NAMES.EMAIL_MERCHANT_SUSPENSION]: sendMerchantSuspensionEmail,
   [JOB_NAMES.EMAIL_MERCHANT_UNSUSPENSION]: sendMerchantUnsuspensionEmail,
+  [JOB_NAMES.EMAIL_MERCHANT_INVITE]: sendMerchantInviteEmail,
 };
 
 const enqueueEmail = async (jobName, payload, { critical, jobId }) => {
@@ -133,3 +135,25 @@ export const queueMerchantSuspensionEmail = (payload) => {
  */
 export const queueMerchantUnsuspensionEmail = (payload) =>
   sendOrEnqueue(JOB_NAMES.EMAIL_MERCHANT_UNSUSPENSION, payload);
+
+/**
+ * Store team invitation. Default priority.
+ *
+ * Dedup by (store, recipient, invitedAt) so a double-click on "invite" sends
+ * once, while a genuine re-invite later — which carries a fresh invitedAt —
+ * still reaches someone who lost the first mail.
+ */
+export const queueMerchantInviteEmail = (payload) => {
+  const ts =
+    payload?.invitedAt instanceof Date
+      ? payload.invitedAt.getTime()
+      : payload?.invitedAt
+        ? new Date(payload.invitedAt).getTime()
+        : null;
+  return sendOrEnqueue(JOB_NAMES.EMAIL_MERCHANT_INVITE, payload, {
+    jobId:
+      payload?.to && payload?.merchantId && ts
+        ? `email-invite-${payload.merchantId}-${payload.to}-${ts}`
+        : undefined,
+  });
+};

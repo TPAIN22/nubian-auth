@@ -193,13 +193,10 @@ export const getMerchantPricingAnalytics = async (req, res) => {
       });
     }
 
-    // Get merchant
-    const Merchant = (await import('../models/merchant.model.js')).default;
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-    
-    if (!merchant) {
-      return sendForbidden(res, 'Merchant not found or not approved');
-    }
+    // Resolved and status-checked by isApprovedMerchant. Looking the store up by
+    // userId here would exclude every staff member — only the owner has a
+    // Merchant row keyed to their Clerk id.
+    const merchant = req.merchant;
 
     // Get merchant's products
     const products = await Product.find({

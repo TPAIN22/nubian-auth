@@ -16,7 +16,8 @@ import {
 } from "../controllers/order.controller.js";
 
 import { isAuthenticated, isAdmin } from "../middleware/auth.middleware.js";
-import { isApprovedMerchant } from "../middleware/merchant.middleware.js";
+import { isApprovedMerchant, requireMerchantPermission } from "../middleware/merchant.middleware.js";
+import { PERMISSIONS } from "../lib/merchantPermissions.js";
 
 import {
   validateOrderStatusUpdate,
@@ -93,6 +94,7 @@ router.get(
   "/merchant/my-orders",
   isAuthenticated,
   isApprovedMerchant,
+  requireMerchantPermission(PERMISSIONS.ORDERS_READ),
   validateStatusFilter(["pending", "confirmed", "shipped", "delivered", "cancelled"]),
   getMerchantOrders
 );
@@ -102,12 +104,13 @@ router.patch(
   "/merchant/:id/status",
   isAuthenticated,
   isApprovedMerchant,
+  requireMerchantPermission(PERMISSIONS.ORDERS_WRITE),
   ...validateObjectId("id"),
   validateOrderStatusUpdate,
   updateMerchantOrderStatus
 );
 
-router.get("/merchant/stats", isAuthenticated, isApprovedMerchant, getMerchantOrderStats);
+router.get("/merchant/stats", isAuthenticated, isApprovedMerchant, requireMerchantPermission(PERMISSIONS.ORDERS_READ), getMerchantOrderStats);
 
 // ─────────────────────────────────────────────────────────────
 // User routes

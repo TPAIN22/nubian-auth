@@ -26,6 +26,7 @@ export const JOB_NAMES = Object.freeze({
   EMAIL_ORDER_STATUS: 'email.order.status',
   EMAIL_MERCHANT_SUSPENSION: 'email.merchant.suspension',
   EMAIL_MERCHANT_UNSUSPENSION: 'email.merchant.unsuspension',
+  EMAIL_MERCHANT_INVITE: 'email.merchant.invite',
   EMAIL_GENERIC: 'email.generic',
 
   // SMS queue (placeholder)

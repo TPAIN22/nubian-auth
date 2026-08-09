@@ -2,7 +2,7 @@ import ticketService from "../services/ticket.service.js";
 import { sendSuccess, sendError } from "../lib/response.js";
 import { getAuth, clerkClient } from "@clerk/express";
 import User from "../models/user.model.js";
-import Merchant from "../models/merchant.model.js";
+import { resolveMerchantContext, ACTIVE_STORE_HEADER } from "../middleware/merchant.middleware.js";
 
 const getLocalUser = async (req) => {
     const { userId } = getAuth(req);
@@ -26,9 +26,17 @@ const getRequestActor = async (req) => {
         }
     }
 
+    // Tickets are only gated by isAuthenticated, so the store has to be resolved
+    // here rather than by a merchant middleware. Going through the membership
+    // resolver is what lets a staff member see their store's tickets — keying off
+    // Merchant.userId would only ever have matched the owner.
     let merchant = null;
     if (clerkRole === 'merchant') {
-        merchant = await Merchant.findOne({ userId });
+        const resolved = await resolveMerchantContext(userId, req.get(ACTIVE_STORE_HEADER));
+        // A resolution failure (no store, or several with no header to pick one)
+        // degrades to "not acting for a store", which is how this read for every
+        // non-merchant already.
+        merchant = resolved.merchant || null;
     }
 
     return { user, clerkRole, merchant, clerkId: userId };

@@ -294,7 +294,7 @@ export const createOrder = async (req, res) => {
       ...req.body,
       currencyCode: req.body.currencyCode || req.currencyCode,
     };
-    const { order, emailPayload } = await orderService.createOrder(userId, body, req.ip);
+    const { order, emailPayload } = await orderService.createOrder(userId, body, req.clientIp || req.ip);
 
     queueOrderEmail({ ...emailPayload, status: 'بانتظار التأكيد' }).catch((err) => {
       logger.error('Failed to dispatch order email', { requestId: req.requestId, error: err.message, orderNumber: order.orderNumber });
@@ -416,11 +416,10 @@ export const getOrderById = async (req, res) => {
 // Get merchant's orders
 export const getMerchantOrders = async (req, res) => {
   try {
-    const { userId } = getAuth(req);
-    if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
-
-    const merchant = await Merchant.findOne({ userId, status: "approved" });
-    if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
+    // Resolved and status-checked by isApprovedMerchant. Looking the store up by
+    // userId here would exclude every staff member — only the owner has a
+    // Merchant row keyed to their Clerk id.
+    const merchant = req.merchant;
 
     const { status } = req.query;
 
@@ -602,11 +601,10 @@ export const updatePaymentStatus = async (req, res) => {
 // Merchant can update order status for orders containing their products
 export const updateMerchantOrderStatus = async (req, res) => {
   try {
-    const { userId } = getAuth(req);
-    if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
-
-    const merchant = await Merchant.findOne({ userId, status: "approved" });
-    if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
+    // Resolved and status-checked by isApprovedMerchant. Looking the store up by
+    // userId here would exclude every staff member — only the owner has a
+    // Merchant row keyed to their Clerk id.
+    const merchant = req.merchant;
 
     const { status } = req.body;
     const { id } = req.params;
@@ -687,11 +685,10 @@ export const updateMerchantOrderStatus = async (req, res) => {
 
 export const getMerchantOrderStats = async (req, res) => {
   try {
-    const { userId } = getAuth(req);
-    if (!userId) return sendError(res, { message: "Unauthorized", statusCode: 401, code: "UNAUTHORIZED" });
-
-    const merchant = await Merchant.findOne({ userId, status: "approved" });
-    if (!merchant) return sendError(res, { message: "Merchant not found or not approved", statusCode: 403, code: "FORBIDDEN" });
+    // Resolved and status-checked by isApprovedMerchant. Looking the store up by
+    // userId here would exclude every staff member — only the owner has a
+    // Merchant row keyed to their Clerk id.
+    const merchant = req.merchant;
 
     // Aggregation — all arithmetic runs inside MongoDB, zero documents loaded into Node.js memory.
     const [statusAgg, revenueAgg] = await Promise.all([

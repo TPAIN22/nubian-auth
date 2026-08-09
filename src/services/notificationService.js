@@ -6,11 +6,39 @@ import PushToken from '../models/pushToken.model.js';
 import logger from '../lib/logger.js';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';
+import MerchantMember from '../models/merchantMember.model.js';
 import { enqueue } from '../lib/queue/queues.js';
 import { QUEUE_NAMES, JOB_NAMES } from '../lib/queue/queueNames.js';
 import { wrap } from '../lib/queue/jobShapes.js';
 
 const isQueueEnabled = () => process.env.ENABLE_QUEUE === 'true';
+
+/**
+ * Coerce a Clerk userId into the Merchant._id that merchant-targeted
+ * notifications are addressed to.
+ *
+ * Merchant.userId stores the Clerk userId (see merchant.model.js); there is no
+ * `clerkId` field on Merchant. Looking it up with the wrong field was the cause
+ * of zero NEW_ORDER / LOW_STOCK / PRODUCT_* pushes ever reaching merchants.
+ *
+ * The owner pointer is tried first, then an active membership — otherwise a
+ * staff member's Clerk id would resolve to nothing, since only the owner has a
+ * store keyed to their id. Several memberships with no way to choose returns
+ * null rather than guessing which store the notification belongs to.
+ *
+ * @returns {Promise<mongoose.Types.ObjectId|null>}
+ */
+const resolveMerchantRecipientId = async (clerkUserId) => {
+  const owned = await Merchant.findOne({ userId: clerkUserId }).select('_id').lean();
+  if (owned) return owned._id;
+
+  const memberships = await MerchantMember.find({ userId: clerkUserId, status: 'active' })
+    .select('merchant')
+    .limit(2)
+    .lean();
+
+  return memberships.length === 1 ? memberships[0].merchant : null;
+};
 
 /**
  * Type → category and type → default-priority maps. Centralised here so the
@@ -171,15 +199,11 @@ class NotificationService {
         }
         recipientObjectId = user._id;
       } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-        // Merchant.userId stores the Clerk userId (see merchant.model.js); there
-        // is no `clerkId` field on Merchant. Looking it up with the wrong field
-        // was the cause of zero NEW_ORDER / LOW_STOCK / PRODUCT_* pushes ever
-        // reaching merchants.
-        const merchant = await Merchant.findOne({ userId: recipientId });
-        if (!merchant) {
+        const merchantId = await resolveMerchantRecipientId(recipientId);
+        if (!merchantId) {
           throw new Error(`Merchant not found: ${recipientId}`);
         }
-        recipientObjectId = merchant._id;
+        recipientObjectId = merchantId;
       }
 
       // Check preferences
@@ -1259,9 +1283,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
-      const merchant = await Merchant.findOne({ userId: recipientId });
-      if (merchant) recipientObjectId = merchant._id;
+      const merchantId = await resolveMerchantRecipientId(recipientId);
+      if (merchantId) recipientObjectId = merchantId;
     }
 
     const query = {
@@ -1302,9 +1325,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
-      const merchant = await Merchant.findOne({ userId: recipientId });
-      if (merchant) recipientObjectId = merchant._id;
+      const merchantId = await resolveMerchantRecipientId(recipientId);
+      if (merchantId) recipientObjectId = merchantId;
     }
 
     return Notification.markAsRead(notificationId, recipientObjectId);
@@ -1319,9 +1341,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
-      const merchant = await Merchant.findOne({ userId: recipientId });
-      if (merchant) recipientObjectId = merchant._id;
+      const merchantId = await resolveMerchantRecipientId(recipientId);
+      if (merchantId) recipientObjectId = merchantId;
     }
 
     return Notification.markMultipleAsRead(notificationIds, recipientObjectId);
@@ -1336,9 +1357,8 @@ class NotificationService {
       const user = await User.findOne({ clerkId: recipientId });
       if (user) recipientObjectId = user._id;
     } else if (typeof recipientId === 'string' && recipientType === 'merchant') {
-      // Merchant.userId holds the Clerk userId, not clerkId — see merchant.model.js.
-      const merchant = await Merchant.findOne({ userId: recipientId });
-      if (merchant) recipientObjectId = merchant._id;
+      const merchantId = await resolveMerchantRecipientId(recipientId);
+      if (merchantId) recipientObjectId = merchantId;
     }
 
     return Notification.getUnreadCount(recipientObjectId, recipientType, category);

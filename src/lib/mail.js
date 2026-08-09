@@ -463,4 +463,61 @@ export async function sendMerchantUnsuspensionEmail({ to, businessName }) {
     subject: `تم إلغاء تعليق حسابك التجاري - ${businessName}`,
     html,
   });
+}
+
+// Arabic labels for the store roles. Kept next to the template that renders
+// them; the canonical role list lives in models/merchantMember.model.js.
+const ROLE_LABELS_AR = {
+  owner: 'مالك المتجر',
+  manager: 'مدير',
+  staff: 'موظف',
+};
+
+/**
+ * Invitation to join an existing store's team.
+ *
+ * The recipient may not have a Nubian account yet — the accept link goes to the
+ * dashboard, which sends them through sign-up first and matches the invite by
+ * email afterwards.
+ */
+export async function sendMerchantInviteEmail({ to, storeName, inviterName, role, acceptUrl }) {
+  const roleLabel = ROLE_LABELS_AR[role] || role;
+
+  const html = `
+    <div dir="rtl" style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background-color: #e7f3ff; border: 1px solid #2196F3; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+        <h2 style="color: #1976D2; margin-top: 0;">🤝 دعوة للانضمام إلى متجر ${storeName}</h2>
+      </div>
+
+      <p>مرحباً،</p>
+
+      <p>قام <b>${inviterName}</b> بدعوتك للعمل في متجر <b>${storeName}</b> على منصة نوبيان بصفة <b>${roleLabel}</b>.</p>
+
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="${acceptUrl}"
+           style="background-color: #2196F3; color: #ffffff; padding: 14px 28px; border-radius: 6px; text-decoration: none; display: inline-block; font-weight: bold;">
+          قبول الدعوة
+        </a>
+      </div>
+
+      <p style="color: #666; font-size: 14px;">
+        إذا لم يكن لديك حساب على نوبيان، سيُطلب منك إنشاء حساب بنفس البريد الإلكتروني الذي وصلتك عليه هذه الدعوة.
+      </p>
+
+      <p style="color: #666; font-size: 14px;">
+        إذا لم تكن تتوقع هذه الدعوة، يمكنك تجاهل هذه الرسالة ولن يتم منحك أي صلاحية.
+      </p>
+
+      <p>مع أطيب التحيات،<br>فريق نوبيان</p>
+
+      <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+      <p style="color: #666; font-size: 12px;">هذه رسالة تلقائية، يرجى عدم الرد على هذا البريد الإلكتروني.</p>
+    </div>
+  `;
+
+  return send({
+    to,
+    subject: `دعوة للانضمام إلى متجر ${storeName} على نوبيان`,
+    html,
+  });
 } 

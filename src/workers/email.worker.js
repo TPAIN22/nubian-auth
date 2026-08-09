@@ -24,6 +24,7 @@ export const createEmailWorker = () => {
         JOB_NAMES.EMAIL_ORDER_STATUS,
         JOB_NAMES.EMAIL_MERCHANT_SUSPENSION,
         JOB_NAMES.EMAIL_MERCHANT_UNSUSPENSION,
+        JOB_NAMES.EMAIL_MERCHANT_INVITE,
       ]);
 
       if (!knownEmailJobs.has(job.name)) {

@@ -1,6 +1,7 @@
 import express from 'express';
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
-import { isApprovedMerchant } from '../middleware/merchant.middleware.js';
+import { isApprovedMerchant, requireMerchantPermission } from '../middleware/merchant.middleware.js';
+import { PERMISSIONS } from '../lib/merchantPermissions.js';
 import {
   getPricingAnalytics,
   getMerchantPricingAnalytics,
@@ -19,7 +20,7 @@ router.get('/timeseries',         isAuthenticated, isAdmin,            getAdminT
 // Admin-only: full platform pricing overview (reveals markups, margins)
 router.get('/pricing',            isAuthenticated, isAdmin,            getPricingAnalytics);
 // Merchant-only: their own pricing analytics
-router.get('/pricing/merchant',   isAuthenticated, isApprovedMerchant, getMerchantPricingAnalytics);
+router.get('/pricing/merchant',   isAuthenticated, isApprovedMerchant, requireMerchantPermission(PERMISSIONS.ANALYTICS_READ), getMerchantPricingAnalytics);
 // Admin-only: currency-level markup/adjustment data
 router.get('/pricing/currencies', isAuthenticated, isAdmin,            getCurrencyAnalytics);
 

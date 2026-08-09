@@ -1,6 +1,7 @@
 import express from 'express'
 import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js'
-import { isApprovedMerchant, isAdminOrApprovedMerchant } from '../middleware/merchant.middleware.js'
+import { isApprovedMerchant, isAdminOrApprovedMerchant, requireMerchantPermission } from '../middleware/merchant.middleware.js'
+import { PERMISSIONS } from '../lib/merchantPermissions.js'
 import {
   getProducts,
   getProductById,
@@ -28,16 +29,16 @@ const router = express.Router()
 // Public/Merchant routes (order matters - more specific routes first)
 router.get('/', validatePagination, validateCategoryFilter, validateMerchantFilter, getProducts)
 router.get('/explore', validatePagination, exploreProducts)
-router.get('/merchant/my-products', isAuthenticated, isApprovedMerchant, validatePagination, validateCategoryFilter, getMerchantProducts)
+router.get('/merchant/my-products', isAuthenticated, isApprovedMerchant, requireMerchantPermission(PERMISSIONS.PRODUCTS_READ), validatePagination, validateCategoryFilter, getMerchantProducts)
 router.get('/:id', ...validateObjectId('id'), handleValidationErrors, getProductById)
 
 // Product creation/update/delete (merchant and admin)
-router.post('/', isAuthenticated, isAdminOrApprovedMerchant, validateProductCreate, createProduct)
-router.put('/:id',    isAuthenticated, isAdminOrApprovedMerchant, ...validateObjectId('id'), handleValidationErrors, validateProductUpdate, updateProduct)
-router.delete('/:id', isAuthenticated, isAdminOrApprovedMerchant, ...validateObjectId('id'), handleValidationErrors, deleteProduct)
+router.post('/', isAuthenticated, isAdminOrApprovedMerchant, requireMerchantPermission(PERMISSIONS.PRODUCTS_WRITE), validateProductCreate, createProduct)
+router.put('/:id',    isAuthenticated, isAdminOrApprovedMerchant, requireMerchantPermission(PERMISSIONS.PRODUCTS_WRITE), ...validateObjectId('id'), handleValidationErrors, validateProductUpdate, updateProduct)
+router.delete('/:id', isAuthenticated, isAdminOrApprovedMerchant, requireMerchantPermission(PERMISSIONS.PRODUCTS_WRITE), ...validateObjectId('id'), handleValidationErrors, deleteProduct)
 
 // Bulk import (admin OR approved merchant — controller enforces ownership)
-router.post('/admin/bulk-import', isAuthenticated, isAdminOrApprovedMerchant, bulkImportProducts)
+router.post('/admin/bulk-import', isAuthenticated, isAdminOrApprovedMerchant, requireMerchantPermission(PERMISSIONS.PRODUCTS_WRITE), bulkImportProducts)
 
 // Admin-only routes for managing all products
 router.get('/admin/all', isAuthenticated, isAdmin, validatePagination, validateCategoryFilter, validateMerchantFilter, getAllProductsAdmin)

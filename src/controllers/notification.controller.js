@@ -5,6 +5,7 @@ import PushToken from '../models/pushToken.model.js';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';
 import { getAuth } from '@clerk/express';
+import { resolveMerchantContext, ACTIVE_STORE_HEADER } from '../middleware/merchant.middleware.js';
 import logger from '../lib/logger.js';
 import { sendSuccess, sendError, sendCreated, sendNotFound } from '../lib/response.js';
 import {
@@ -22,11 +23,30 @@ import {
  * merchants never saw their merchant-targeted notifications. We now return
  * both buckets and let read/mark endpoints query them as a union.
  */
-const resolveRecipients = async (clerkUserId) => {
+/**
+ * The approved store the caller is currently acting for, or null.
+ *
+ * Merchant-targeted notifications are addressed to Merchant._id, so resolving
+ * through memberships is what puts a store's notifications in front of its
+ * staff — keying off Merchant.userId only ever matched the owner. An ambiguous
+ * membership (several stores, no x-merchant-id header) resolves to null, which
+ * reads exactly like "not acting for a store".
+ */
+const resolveActiveStore = async (req, clerkUserId) => {
+  if (!clerkUserId) return null;
+  const { merchant } = await resolveMerchantContext(
+    clerkUserId,
+    req.get(ACTIVE_STORE_HEADER)
+  );
+  // Unapproved stores never received merchant-targeted notifications.
+  return merchant?.status === 'approved' ? merchant : null;
+};
+
+const resolveRecipients = async (req, clerkUserId) => {
   if (!clerkUserId) return { user: null, merchant: null };
   const [user, merchant] = await Promise.all([
     User.findOne({ clerkId: clerkUserId }),
-    Merchant.findOne({ userId: clerkUserId, status: 'approved' }),
+    resolveActiveStore(req, clerkUserId),
   ]);
   return { user, merchant };
 };
@@ -380,14 +400,10 @@ export const saveMerchantPushToken = async (req, res) => {
       });
     }
 
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
-    if (!merchant) {
-      return sendError(res, {
-        message: 'Merchant not found or not approved',
-        code: 'MERCHANT_NOT_FOUND',
-        statusCode: 403,
-      });
-    }
+    // Resolved and status-checked by isApprovedMerchant. Registering against the
+    // store rather than the owner is what gets order pushes onto every staff
+    // member's device — PushToken.merchantId already keys on Merchant._id.
+    const merchant = req.merchant;
 
     if (!token) {
       return sendError(res, {
@@ -458,7 +474,7 @@ export const getNotifications = async (req, res) => {
       });
     }
 
-    const recipients = await resolveRecipients(userId);
+    const recipients = await resolveRecipients(req, userId);
     const or = recipientOrClauses(recipients);
     if (!or) {
       return sendError(res, {
@@ -533,7 +549,7 @@ export const getUnreadCount = async (req, res) => {
       });
     }
 
-    const recipients = await resolveRecipients(userId);
+    const recipients = await resolveRecipients(req, userId);
     const or = recipientOrClauses(recipients);
     if (!or) {
       return sendError(res, {
@@ -591,7 +607,7 @@ export const markAsRead = async (req, res) => {
       });
     }
 
-    const recipients = await resolveRecipients(userId);
+    const recipients = await resolveRecipients(req, userId);
     const or = recipientOrClauses(recipients);
     if (!or) {
       return sendError(res, {
@@ -661,7 +677,7 @@ export const markMultipleAsRead = async (req, res) => {
       });
     }
 
-    const recipients = await resolveRecipients(userId);
+    const recipients = await resolveRecipients(req, userId);
     const or = recipientOrClauses(recipients);
     if (!or) {
       return sendError(res, {
@@ -710,7 +726,7 @@ export const getPreferences = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
+    const merchant = await resolveActiveStore(req, userId);
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -767,7 +783,7 @@ export const updatePreferences = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
+    const merchant = await resolveActiveStore(req, userId);
 
     let recipientType = 'user';
     let recipientId = user?._id;
@@ -1107,7 +1123,7 @@ export const sendTestNotification = async (req, res) => {
     }
 
     const user = await User.findOne({ clerkId: userId });
-    const merchant = await Merchant.findOne({ userId, status: 'approved' });
+    const merchant = await resolveActiveStore(req, userId);
 
     let recipientType = 'user';
     let recipientId = user?._id;

@@ -2,6 +2,8 @@ import express from 'express';
 import User from '../models/user.model.js';
 import Merchant from '../models/merchant.model.js';
 import Product from '../models/product.model.js';
+import MerchantMember from '../models/merchantMember.model.js';
+import { removeMembershipsForStore, syncMemberClerkMetadata } from '../services/merchantMembership.service.js';
 import { Webhook } from 'svix';
 import logger from '../lib/logger.js';
 
@@ -169,7 +171,35 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
           // future application from this clerkId (or from an admin re-creating
           // the same Mongo User row). Products are deactivated rather than
           // deleted to preserve order history; orders keep their snapshot.
+          //
+          // Since stores can have staff, "this user is gone" no longer means
+          // "this store is gone". Only the OWNER's departure takes the store
+          // down; anyone else simply loses their membership. Getting this
+          // backwards would let a departing employee deactivate an entire
+          // catalogue.
           try {
+            // Stores this person merely worked at — revoke and leave alone.
+            const staffMemberships = await MerchantMember.find({
+              userId: clerkId,
+              role: { $ne: 'owner' },
+            })
+              .select('_id merchant')
+              .lean();
+
+            if (staffMemberships.length > 0) {
+              await MerchantMember.updateMany(
+                { _id: { $in: staffMemberships.map((m) => m._id) } },
+                { $set: { status: 'revoked', revokedAt: new Date(), revokedBy: 'clerk:user.deleted' } }
+              );
+              logger.info('Staff memberships revoked on user.deleted', {
+                clerkId,
+                revoked: staffMemberships.length,
+                stores: staffMemberships.map((m) => m.merchant.toString()),
+              });
+            }
+
+            // Merchant.userId remains the owner pointer until Phase 6 drops it,
+            // so it is still the reliable test for "did this person own a store".
             const merchant = await Merchant.findOne({ userId: clerkId });
             if (merchant) {
               const productCascade = await Product.updateMany(
@@ -177,16 +207,27 @@ router.post('/clerk', express.raw({ type: '*/*' }), async (req, res) => {
                 { $set: { isActive: false } },
               );
 
+              // Drop the team with the store; a membership pointing at a deleted
+              // store would resolve to a 403 for every one of its members.
+              const orphanedMembers = await removeMembershipsForStore(merchant._id);
+
               await Merchant.deleteOne({ _id: merchant._id });
+
+              // The store is gone from under them — recompute what each former
+              // member's Clerk role should now be.
+              for (const memberId of orphanedMembers) {
+                if (memberId !== clerkId) await syncMemberClerkMetadata(memberId);
+              }
 
               logger.info('Merchant cascade-cleaned on user.deleted', {
                 clerkId,
                 merchantId: merchant._id.toString(),
                 merchantStatus: merchant.status,
                 productsDeactivated: productCascade.modifiedCount,
+                membersOrphaned: orphanedMembers.length,
               });
             } else {
-              logger.info('user.deleted: no merchant record to clean', { clerkId });
+              logger.info('user.deleted: no owned store to clean', { clerkId });
             }
           } catch (cascadeErr) {
             // Don't fail the webhook — Clerk has already deleted the user.
