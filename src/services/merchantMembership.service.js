@@ -38,6 +38,102 @@ export const pickBestStatus = (statuses) => {
   return known.reduce((a, b) => (rank(b) > rank(a) ? b : a));
 };
 
+/* -------------------------------------------------------------------------- */
+/* Readiness                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Compare what the stores say about ownership against what the membership rows
+ * say, and report every place the two disagree.
+ *
+ * This exists to answer one question: is it safe to delete the legacy fallback
+ * in merchant.middleware.js? While the fallback is there, a store whose owner
+ * has no membership row still works — the resolver quietly drops back to
+ * Merchant.userId. Once it goes, that same store becomes a 403 for its owner.
+ * So the fallback may only be removed when this reports zero.
+ *
+ * Pure, so the comparison can be tested without a database. Callers hand it
+ * plain objects; `checkMembershipReadiness` below does the queries.
+ *
+ * @param {Array} stores - {_id, storeName, userId, status}
+ * @param {Array} memberships - {_id, merchant, userId, email, role, status}
+ */
+export const diffOwnership = (stores = [], memberships = []) => {
+  const storeIds = new Set(stores.map((s) => String(s._id)));
+
+  // Placeholder ids are not people: an unclaimed store has no owner to have a
+  // membership, and never resolves through the middleware in the first place.
+  const owned = stores.filter((s) => s.userId && !isUnclaimedUserId(s.userId));
+
+  const ownerByStore = new Map(
+    memberships
+      .filter((m) => m.role === 'owner' && m.status === 'active')
+      .map((m) => [String(m.merchant), m]),
+  );
+
+  const missing = [];
+  const mismatched = [];
+
+  for (const store of owned) {
+    const owner = ownerByStore.get(String(store._id));
+
+    if (!owner) {
+      // The case that breaks when the fallback goes.
+      missing.push({
+        merchantId: String(store._id),
+        storeName: store.storeName,
+        userId: store.userId,
+        status: store.status,
+      });
+      continue;
+    }
+
+    if (owner.userId !== store.userId) {
+      // Drift between the two sources of truth — the fallback and the resolver
+      // would hand this request to different people. A half-finished ownership
+      // transfer looks exactly like this.
+      mismatched.push({
+        merchantId: String(store._id),
+        storeName: store.storeName,
+        storeOwnerUserId: store.userId,
+        membershipOwnerUserId: owner.userId,
+      });
+    }
+  }
+
+  // Memberships pointing at a store that no longer exists resolve to a 403 for
+  // whoever holds them.
+  const orphaned = memberships
+    .filter((m) => !storeIds.has(String(m.merchant)))
+    .map((m) => ({
+      membershipId: String(m._id),
+      merchantId: String(m.merchant),
+      email: m.email,
+      role: m.role,
+      status: m.status,
+    }));
+
+  return {
+    storeCount: stores.length,
+    ownedStoreCount: owned.length,
+    membershipCount: memberships.length,
+    missing,
+    mismatched,
+    orphaned,
+    ready: missing.length === 0 && mismatched.length === 0 && orphaned.length === 0,
+  };
+};
+
+/** Run {@link diffOwnership} against the database. */
+export const checkMembershipReadiness = async () => {
+  const [stores, memberships] = await Promise.all([
+    Merchant.find({}).select('storeName userId status claimStatus').lean(),
+    MerchantMember.find({}).select('merchant userId email role status').lean(),
+  ]);
+
+  return diffOwnership(stores, memberships);
+};
+
 /**
  * Create or repoint a store's owner membership. Idempotent.
  *
@@ -81,11 +177,19 @@ export const ensureOwnerMembership = async (merchant, { requestId } = {}) => {
 
     return membership;
   } catch (error) {
-    // Never fail the caller's primary action over this — the middleware's
-    // legacy fallback still resolves the owner from Merchant.userId.
+    // Deliberately does not fail the caller's primary action: while the legacy
+    // fallback exists, the middleware still resolves this owner from
+    // Merchant.userId, so a failed write here costs nothing today.
+    //
+    // It costs everything the moment the fallback is removed — the owner is
+    // then locked out of their own store. Hence the marker: alert on it, and
+    // treat any occurrence as a reason not to remove the fallback yet.
+    // `npm run check:memberships` reports the resulting state directly.
     logger.error('Failed to ensure owner membership', {
+      marker: 'membershipWriteFailed',
       requestId,
       merchantId: merchant._id?.toString(),
+      userId: merchant.userId,
       error: error.message,
     });
     return null;

@@ -24,6 +24,7 @@ import {
   updateStoreForMerchant,
   getStoreClaimCandidates,
   linkStoreToUser,
+  getMembershipReadiness,
 } from '../controllers/merchant.controller.js';
 import {
   listMembers,
@@ -85,6 +86,10 @@ router.post('/my-store/transfer-ownership', isAuthenticated, isApprovedMerchant,
 
 // Admin-only routes
 router.get('/', isAuthenticated, isAdmin, getAllMerchants);
+
+// Ops check: may the legacy owner fallback be removed yet? Declared before
+// '/:id' so the literal path is not read as an ObjectId.
+router.get('/admin/membership-readiness', isAuthenticated, isAdmin, getMembershipReadiness);
 
 // Admin-created stores. Registered before '/:id' so the literal path is not
 // swallowed by the ObjectId param route.

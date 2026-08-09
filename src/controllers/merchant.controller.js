@@ -14,6 +14,7 @@ import {
   syncStoreMembersClerkMetadata,
   removeMembershipsForStore,
   syncMemberClerkMetadata,
+  checkMembershipReadiness,
 } from '../services/merchantMembership.service.js';
 import { enrichProductsWithPricing } from './products.controller.js';
 import { convertProductPrices } from '../services/currency.service.js';
@@ -430,6 +431,46 @@ export const merchantDiagnostic = async (req, res) => {
       requestId: req.requestId,
       error: error.message,
       stack: error.stack,
+    });
+    throw error;
+  }
+};
+
+/**
+ * Membership readiness (Admin only).
+ *
+ * Reports every disagreement between a store's owner pointer (Merchant.userId)
+ * and its owner membership row. While the legacy fallback exists in
+ * merchant.middleware.js those disagreements are invisible — the resolver drops
+ * back to the owner pointer and the store keeps working. Removing the fallback
+ * turns each one into a 403 for the store's owner, so this is the check that
+ * says whether that removal is safe yet.
+ *
+ * Same report as `npm run check:memberships`, for when shell access to
+ * production is not to hand.
+ */
+export const getMembershipReadiness = async (req, res) => {
+  try {
+    const report = await checkMembershipReadiness();
+
+    logger.info('Membership readiness checked', {
+      requestId: req.requestId,
+      ready: report.ready,
+      missing: report.missing.length,
+      mismatched: report.mismatched.length,
+      orphaned: report.orphaned.length,
+    });
+
+    return sendSuccess(res, {
+      data: report,
+      message: report.ready
+        ? 'Every owned store has a matching owner membership'
+        : 'Ownership records disagree — see data for details',
+    });
+  } catch (error) {
+    logger.error('Error checking membership readiness', {
+      requestId: req.requestId,
+      error: error.message,
     });
     throw error;
   }

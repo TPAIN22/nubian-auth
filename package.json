@@ -16,7 +16,8 @@
     "fetch:zone": "node scripts/fetch-zone.js",
     "fix:product-indexes": "node scripts/fix-stale-product-indexes.js",
     "backfill:product-merchant": "node scripts/backfill-product-merchant.js",
-    "backfill:merchant-members": "node scripts/backfill-merchant-members.js"
+    "backfill:merchant-members": "node scripts/backfill-merchant-members.js",
+    "check:memberships": "node scripts/check-membership-readiness.js"
   },
   "keywords": [
     "ecommerce",
