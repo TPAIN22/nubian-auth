@@ -193,26 +193,89 @@ export const inviteMember = async (req, res) => {
       });
     }
 
+    // Same person, different address. The (merchant, email) index only stops
+    // the SAME address being added twice — someone already on the team as
+    // alice@personal.com can still be invited as alice@work.com. That collides
+    // on (merchant, userId) at accept time and fails there, which means the
+    // owner thinks they invited somebody and the invitee hits an error days
+    // later. Catch it now, while there is somebody to tell.
+    let alreadyOnTeam = null;
+    try {
+      const matches = await clerkClient.users.getUserList({
+        emailAddress: [email],
+        limit: 10,
+      });
+      const userIds = (matches?.data || []).map((u) => u.id);
+
+      if (userIds.length > 0) {
+        alreadyOnTeam = await MerchantMember.findOne({
+          merchant: merchant._id,
+          userId: { $in: userIds },
+          status: 'active',
+        }).lean();
+      }
+    } catch (clerkError) {
+      // Degrade rather than block: this is a courtesy check, and the unique
+      // index still refuses the duplicate at accept time.
+      logger.warn('Could not check Clerk for an existing member with that email', {
+        requestId: req.requestId,
+        merchantId: merchant._id.toString(),
+        error: clerkError.message,
+      });
+    }
+
+    if (alreadyOnTeam) {
+      return sendError(res, {
+        message: `That person is already on this store’s team as ${alreadyOnTeam.email}`,
+        code: 'ALREADY_A_MEMBER',
+        statusCode: 409,
+        details: {
+          memberId: alreadyOnTeam._id.toString(),
+          existingEmail: alreadyOnTeam.email,
+          role: alreadyOnTeam.role,
+          messageAr: `هذا الشخص عضو في الفريق بالفعل عبر البريد ${alreadyOnTeam.email}.`,
+        },
+      });
+    }
+
     const invitedAt = new Date();
 
     // Reuses the row for a re-invite or a previously revoked member; the unique
     // (merchant, email) index makes this the only safe way to do it.
-    const membership = await MerchantMember.findOneAndUpdate(
-      { merchant: merchant._id, email },
-      {
-        $set: {
-          role,
-          status: 'invited',
-          invitedBy: inviterId,
-          invitedAt,
-          // A re-invite must not carry the previous revocation forward.
-          revokedAt: null,
-          revokedBy: null,
+    let membership;
+    try {
+      membership = await MerchantMember.findOneAndUpdate(
+        { merchant: merchant._id, email },
+        {
+          $set: {
+            role,
+            status: 'invited',
+            invitedBy: inviterId,
+            invitedAt,
+            // A re-invite must not carry the previous revocation forward.
+            revokedAt: null,
+            revokedBy: null,
+          },
+          $setOnInsert: { merchant: merchant._id, email },
         },
-        $setOnInsert: { merchant: merchant._id, email },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+    } catch (inviteError) {
+      // Two invites for the same address at once: both miss the findOne above,
+      // both try to insert, and the unique index rejects the loser. That is the
+      // guard working — report it as the conflict it is, not as a 500.
+      if (inviteError?.code === 11000) {
+        return sendError(res, {
+          message: 'That person has just been invited to this store',
+          code: 'ALREADY_A_MEMBER',
+          statusCode: 409,
+          details: {
+            messageAr: 'تم إرسال دعوة إلى هذا الشخص للتو.',
+          },
+        });
+      }
+      throw inviteError;
+    }
 
     let inviterName = merchant.storeName;
     try {
