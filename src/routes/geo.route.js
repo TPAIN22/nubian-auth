@@ -1,5 +1,5 @@
 import express from 'express';
-import rateLimit from 'express-rate-limit';
+import { createLimiter } from '../lib/rateLimit/index.js';
 import {
   getConfig,
   getStats,
@@ -25,12 +25,14 @@ const router = express.Router();
  * is told to by `/api/geo/config`): a shopper picking one address makes roughly
  * 5–15 reverse calls and a handful of searches.
  */
-const geoLimiter = rateLimit({
+const geoLimiter = createLimiter({
+  name: 'geo',
   windowMs: 60 * 1000,
   limit: 60,
   message: 'Too many location requests, please slow down.',
-  standardHeaders: true,
-  legacyHeaders: false,
+  // A shopper panning the map hard, or a client whose debounce regressed, can
+  // trip this without being an attacker. Throttle them; don't ban them.
+  countsTowardBan: false,
 });
 
 // Public: clients need this before they can render a map, including on the

@@ -23,7 +23,9 @@ export const requestLogger = (req, res, next) => {
     url: req.originalUrl || req.url,
     path: req.path,
     query: Object.keys(req.query).length > 0 ? req.query : undefined,
-    ip: req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress,
+    // clientIp is the end user's address even when the dashboard proxied the
+    // request on their behalf; falls back to req.ip for direct traffic.
+    ip: req.clientIp || req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress,
     userAgent: req.get('user-agent'),
     contentType: req.get('content-type'),
     contentLength: req.get('content-length'),

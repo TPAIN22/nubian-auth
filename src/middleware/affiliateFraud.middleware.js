@@ -15,7 +15,9 @@ export const checkReferralFraud = async (req, res, next) => {
       return next(); // Nothing to check
     }
 
-    const ip       = req.ip || req.socket?.remoteAddress;
+    // clientIp, not req.ip: fraud scoring clusters on IP, and every proxied
+    // referral sharing one egress address would look like a click farm.
+    const ip       = req.clientIp || req.ip || req.socket?.remoteAddress;
     const deviceId = req.headers['x-device-id'] || (req.body && req.body.deviceId);
 
     const fraudResult = await ReferralFraudService.evaluateReferralRisk({

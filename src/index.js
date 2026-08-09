@@ -2,7 +2,12 @@ import 'dotenv/config'; // Must be first — loads .env before any other module 
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import { createLimiter } from './lib/rateLimit/index.js';
+import { healthProbeLimiter } from './lib/rateLimit/healthLimiter.js';
+import { startBanSync, stopBanSync } from './lib/rateLimit/denylist.js';
+import { closeRateLimitRedis } from './lib/rateLimit/redis.js';
+import { resolveClientIp } from './middleware/clientIp.middleware.js';
+import { ipDenylist } from './middleware/ipDenylist.middleware.js';
 import { connect } from './lib/db.js';
 import productRoutes from './routes/products.route.js';
 import orderRoutes from './routes/orders.route.js';
@@ -40,6 +45,7 @@ import affiliateRoutes from './routes/affiliate.route.js';
 import referralTrackingRoutes from './routes/referralTracking.route.js';
 import adminCommissionRoutes from './routes/adminCommission.route.js';
 import queuesAdminRoutes from './routes/queues.admin.route.js';
+import securityAdminRoutes from './routes/security.admin.route.js';
 import { requestLogger } from './middleware/logger.middleware.js';
 import { currencyMiddleware } from './middleware/currency.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.middleware.js';
@@ -70,6 +76,13 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const app = express();
+
+// Trust exactly 1 proxy hop in production (Render, etc.), none in development.
+// Setting this to `true` in dev lets clients spoof X-Forwarded-For and bypass
+// rate limiting. Declared up here because everything IP-derived below —
+// resolveClientIp, the denylist, every limiter — reads `req.ip`, which this
+// setting defines.
+app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
 
 // Redirect HTTP → HTTPS in production (must be before all other middleware)
 app.use(enforceHTTPS);
@@ -129,33 +142,48 @@ app.use(helmet({
 }));
 
 // 🛡️ Security: Rate limiting
-const limiter = rateLimit({
+// All limiters are built by createLimiter so they share the Redis-backed store,
+// key on the real client IP, and feed the IP denylist. Never call rateLimit()
+// directly — see lib/rateLimit/index.js.
+const limiter = createLimiter({
+  name: 'global',
   windowMs: 15 * 60 * 1000, // 15 minutes
   limit: 300, // 300 requests per 15 min per IP (~20 req/min)
   message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
 });
 
 // Strict rate limit for webhook/auth endpoints
-const authLimiter = rateLimit({
+const authLimiter = createLimiter({
+  name: 'webhooks',
   windowMs: 15 * 60 * 1000,
   limit: 20, // 20 requests per 15 min per IP
   message: 'Too many authentication attempts, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
+  // Webhook traffic originates from Clerk/Svix, not from users. Banning that
+  // source IP would silently break user provisioning platform-wide, so this
+  // limiter throttles without ever escalating to a ban.
+  countsTowardBan: false,
 });
 
+// Resolve the true end-user IP before anything reads or keys off it — the
+// request log, the denylist, every limiter, and the fraud engine all consume
+// req.clientIp, so this must come first.
+app.use(resolveClientIp);
 
 // Request logging middleware (must be befoe routes)
 app.use(requestLogger);
 
+// Reject banned IPs before routing, auth, body parsing, or any DB work.
+app.use(ipDenylist);
+
 // Global currency and country detection
 app.use(currencyMiddleware);
 
-// Health check endpoints (before authentication and body parsing)
+// Health check endpoints (before authentication and body parsing).
+// Mounted at '/', so the router matches every request — its own routes carry
+// their limiter internally rather than taking one here, which would meter the
+// entire app.
 app.use('/', healthRoutes);
-app.get("/ping", (_, res) => res.send("pong"));
+app.get("/ping", healthProbeLimiter, (_, res) => res.send("pong"));
 
 // ⚠️ IMPORTANT: Webhook routes must be registered BEFORE express.json()
 // Webhooks need raw body for signature verification - express.json() consumes the body stream
@@ -163,20 +191,18 @@ app.get("/ping", (_, res) => res.send("pong"));
 // Webhooks handle authentication events (user.created, user.updated, user.deleted)
 app.use('/api/webhooks', authLimiter, express.raw({ type: 'application/json' }), webhookRoutes);
 
+// Apply general rate limiting to all other API routes.
+// Placed BEFORE the body parsers so a rejected request never costs us the parse:
+// otherwise a flood of 2MB payloads is fully read and deserialized before the
+// limiter gets to say no. Webhooks are unaffected — they are mounted above with
+// their own limiter and raw parser.
+app.use('/api', limiter);
+
 // 🛡️ Security: Request size limits (prevent large payload attacks)
 // Register body parsers AFTER webhook routes so webhooks can access raw body
 // These parsers will apply to all subsequent routes
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
-
-// Apply general rate limiting to all other API routes
-// This applies to routes that don't match the more specific routes above
-app.use('/api', limiter);
-
-
-// Trust exactly 1 proxy hop in production (Render, etc.), none in development.
-// Setting this to `true` in dev lets clients spoof X-Forwarded-For and bypass rate limiting.
-app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : false);
 
 // Note: clerkMiddleware should NOT block routes - it just adds auth context
 app.use(clerkMiddleware({
@@ -239,6 +265,7 @@ app.use('/api/affiliate', affiliateRoutes);
 app.use('/api/track', referralTrackingRoutes);
 app.use('/api/admin/commissions', adminCommissionRoutes);
 app.use('/api/admin/queues', queuesAdminRoutes);
+app.use('/api/admin/security', securityAdminRoutes);
 
 // Debug: Log all unmatched routes before 404 handler
 app.use((req, res, next) => {
@@ -268,6 +295,10 @@ const PORT = process.env.PORT || 5000;
   try {
     // Connect to database first
     await connect();
+
+    // Prime the IP ban snapshot and keep it refreshed. Done before listen so the
+    // first requests this instance serves already see the current ban list.
+    startBanSync();
 
     // Initialize cron jobs for pricing and visibility score recalculation
     try {
@@ -333,6 +364,18 @@ const PORT = process.env.PORT || 5000;
         listening: true
       });
     });
+
+    // Release the ban-sync interval and its Redis client on shutdown so the
+    // process can exit cleanly instead of being killed after the grace period.
+    const shutdown = async (signal) => {
+      logger.info('Shutting down', { signal });
+      stopBanSync();
+      server.close();
+      await closeRateLimitRedis();
+      process.exit(0);
+    };
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
 
     // Handle server errors (must be set before listen callback)
     server.on('error', (error) => {

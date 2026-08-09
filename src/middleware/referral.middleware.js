@@ -17,7 +17,7 @@ export const extractReferral = (req, res, next) => {
   req.referralContext = {
     deviceId: req.headers['x-device-id'] || (req.body && req.body.deviceId) || null,
     platform: req.headers['x-platform'] || (req.body && req.body.platform) || 'web',
-    ip: req.ip || req.connection.remoteAddress,
+    ip: req.clientIp || req.ip || req.connection.remoteAddress,
     userAgent: req.headers['user-agent']
   };
 

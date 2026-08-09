@@ -11,7 +11,7 @@ export const trackReferral = async (req, res) => {
   try {
     const { referralCode, deviceId, platform, sessionId } = req.body;
     const { userId } = getAuth(req);
-    const ip = req.ip || req.connection.remoteAddress;
+    const ip = req.clientIp || req.ip || req.connection.remoteAddress;
     const userAgent = req.headers['user-agent'];
 
     // 1. Verify marketer exists and is active

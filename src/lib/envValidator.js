@@ -76,6 +76,37 @@ const optionalEnvVars = {
     default: 'false',
   },
 
+  // ── Rate limiting / IP denylist ────────────────────────────────────────────
+  // See lib/rateLimit/. `auto` uses Redis whenever REDIS_URL is set, which is
+  // what makes limits survive restarts and hold across multiple instances.
+  RATE_LIMIT_STORE: {
+    value: process.env.RATE_LIMIT_STORE || 'auto',
+    description: 'Rate limit backing store (auto, redis, memory)',
+    default: 'auto',
+  },
+  ENABLE_IP_BAN: {
+    value: process.env.ENABLE_IP_BAN || 'true',
+    description: 'Auto-ban IPs that repeatedly trip rate limits',
+    default: 'true',
+  },
+  IP_ALLOWLIST: {
+    value: process.env.IP_ALLOWLIST || '',
+    description: 'Comma-separated IPs exempt from rate limiting and banning',
+    default: '',
+  },
+  IP_DENYLIST: {
+    value: process.env.IP_DENYLIST || '',
+    description: 'Comma-separated IPs permanently blocked at the edge',
+    default: '',
+  },
+  INTERNAL_PROXY_SECRET: {
+    value: process.env.INTERNAL_PROXY_SECRET,
+    description:
+      'Shared secret letting the dashboard forward the real end-user IP. ' +
+      'Must match the dashboard\'s value or proxied traffic shares one rate-limit bucket.',
+    default: '',
+  },
+
   // ── Pricing ────────────────────────────────────────────────────────────────
   // Nubian's default margin on top of the merchant price. Single knob for the
   // whole platform — see lib/pricing.config.js.
@@ -200,6 +231,39 @@ export const validateEnv = () => {
       'ENABLE_QUEUE=true but RUN_WORKERS_INPROCESS is not true — this process will ' +
         'enqueue notifications without consuming them. Confirm a separate worker ' +
         '(npm run worker) is running, or set RUN_WORKERS_INPROCESS=true.'
+    );
+  }
+
+  // ── Rate limiting / denylist sanity checks ─────────────────────────────────
+  // These are optional vars, so the format loop above (required-only) never sees
+  // them. Each failure mode here is silent at runtime, which is exactly why it
+  // gets shouted about at boot.
+  const rlStore = (process.env.RATE_LIMIT_STORE || 'auto').toLowerCase();
+  if (!['auto', 'redis', 'memory'].includes(rlStore)) {
+    logger.warn(
+      `RATE_LIMIT_STORE="${process.env.RATE_LIMIT_STORE}" is not one of auto|redis|memory — ` +
+        'treating it as "auto".'
+    );
+  }
+  if (rlStore === 'redis' && !process.env.REDIS_URL) {
+    missing.push({
+      key: 'REDIS_URL',
+      description: 'Redis connection URL (required when RATE_LIMIT_STORE=redis)',
+      example: 'redis://localhost:6379',
+    });
+  }
+  if (rlStore === 'memory' || (rlStore === 'auto' && !process.env.REDIS_URL)) {
+    logger.warn(
+      'Rate limiting is using the in-memory store: counters reset on every restart ' +
+        'and each instance enforces its own limit (N instances = N x the limit). ' +
+        'Set REDIS_URL for shared, restart-proof limiting.'
+    );
+  }
+  if (process.env.NODE_ENV === 'production' && !process.env.INTERNAL_PROXY_SECRET) {
+    logger.warn(
+      'INTERNAL_PROXY_SECRET is not set. The dashboard cannot forward end-user IPs, ' +
+        'so all dashboard-proxied traffic shares a single rate-limit bucket. ' +
+        'Set the same value here and in the dashboard.'
     );
   }
 

@@ -13,7 +13,9 @@ function getClerkId(req) {
 }
 
 function getIp(req) {
-  return req.ip || req.socket?.remoteAddress || null;
+  // Prefer the proxy-verified end-user IP: attributing every dashboard-originated
+  // action to the dashboard's egress address would poison the activity signal.
+  return req.clientIp || req.ip || req.socket?.remoteAddress || null;
 }
 
 function track(event, data) {
