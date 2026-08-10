@@ -1,5 +1,7 @@
 import logger from "../lib/logger.js";
 import Currency from "../models/currency.model.js";
+import ExchangeRate from "../models/exchangeRate.model.js";
+import { ServiceError } from "../lib/errors.js";
 import { getLatestRate } from "./fx.service.js";
 
 /**
@@ -702,6 +704,250 @@ function buildPriceEnvelope(source, convert, convertReference, config) {
     discountAmount: discountMoney,
     hasDiscount: !!source.hasDiscount,
   };
+}
+
+/* ============================================================================
+   INPUT conversion — merchant's currency → USD (the WRITE path)
+   ----------------------------------------------------------------------------
+   Everything above this line is the READ path: USD leaves the database and is
+   dressed up for a shopper. This section is the opposite direction, and the two
+   must not be confused.
+
+   THE RULE THAT MATTERS: the write path applies the FX rate and NOTHING ELSE.
+   No `marketMarkupAdjustment`, no `roundingStrategy`. Those exist to make the
+   price a shopper PAYS attractive and market-appropriate; they are applied on
+   the way out, every time a product is served. Applying them on the way in
+   would bake a second market markup into the stored cost (which then gets
+   marked up again on read) and would psychologically round a merchant's COST —
+   a number that is not for sale and that the merchant expects to see back
+   unchanged. Do not "reuse convertAndFormatPriceSync with an inverted rate".
+   ========================================================================== */
+
+/** Mirrors variantSchema.merchantPrice `min: 1` (models/product.model.js). */
+export const MIN_MERCHANT_PRICE_USD = 1;
+
+/**
+ * PURE inverse conversion. Exported for tests and for callers converting a
+ * whole product, who must pass ONE rate through every money field so a price
+ * and its discount can't be struck at two different rates.
+ *
+ * `rate` is USD→currency — the direction fx.service publishes — so going back
+ * to USD is a division. A single division rounded once at the end is the whole
+ * operation: any intermediate rounding would only add error.
+ *
+ * @param {number} amount  merchant-entered amount, in `rate`'s currency
+ * @param {number} rate    USD→currency rate (e.g. 3.75 for SAR)
+ * @returns {number} USD, rounded to cents
+ */
+export function usdFromRate(amount, rate) {
+  return roundTo((Number(amount) || 0) / rate, 2);
+}
+
+/**
+ * Resolve the { currency, rate } pair a merchant-entered price needs, fetching
+ * each at most once. Shaped to be reused across every field of one product.
+ *
+ * Throws rather than degrading: see convertToUSD.
+ */
+export async function getInputCurrencyContext(currencyCode) {
+  const upperCode = String(currencyCode || "USD").trim().toUpperCase();
+
+  if (!/^[A-Z]{3}$/.test(upperCode)) {
+    throw new ServiceError(
+      `"${currencyCode}" is not a valid ISO 4217 currency code`,
+      "INVALID_CURRENCY_CODE",
+      400,
+    );
+  }
+
+  if (upperCode === "USD") {
+    return {
+      code: "USD",
+      rate: 1,
+      rateDate: new Date().toISOString().split("T")[0],
+      provider: "system",
+      decimals: 2,
+      symbol: "$",
+    };
+  }
+
+  const [currency, rateInfo] = await Promise.all([
+    Currency.findOne({ code: upperCode }).lean(),
+    getLatestRate(upperCode),
+  ]);
+
+  // An unknown or switched-off currency is a configuration answer, not a
+  // pricing one — never guess a rate for it.
+  if (!currency || !currency.isActive) {
+    throw new ServiceError(
+      `${upperCode} is not enabled for price entry`,
+      "CURRENCY_NOT_AVAILABLE",
+      400,
+    );
+  }
+
+  // THE CATASTROPHIC CASE. The read path answers "no rate" with rate = 1 and a
+  // `rateUnavailable` flag, which is survivable when displaying a price — the
+  // shopper sees dollars labelled oddly. On the WRITE path a 1:1 fallback would
+  // store 60,000 SDG as $60,000 and the merchant would never be told. Most of
+  // the currencies this feature exists for (SAR, AED, EGP, SDG, QAR, KWD) are
+  // NOT published by Frankfurter/ECB — see fx.service.js SUPPORTED_SYMBOLS —
+  // so they reach here with a rate ONLY if an admin set `allowManualRate` +
+  // `manualRate` in /admin/currencies. Refusing is the correct answer.
+  if (rateInfo?.rateUnavailable || !(Number(rateInfo?.rate) > 0)) {
+    throw new ServiceError(
+      `No exchange rate is available for ${upperCode}, so a price entered in it ` +
+        `cannot be converted. An admin must set a manual rate for ${upperCode} first.`,
+      "RATE_UNAVAILABLE",
+      422,
+    );
+  }
+
+  return {
+    code: upperCode,
+    rate: Number(rateInfo.rate),
+    rateDate: rateInfo.date || null,
+    provider: rateInfo.provider || "unknown",
+    decimals: currency.decimals ?? 2,
+    symbol: currency.symbol || upperCode,
+  };
+}
+
+/**
+ * Convert ONE merchant-entered amount into the USD the platform stores.
+ *
+ * Returns the audit block that belongs alongside the stored dollars — the rate
+ * actually used, its date and provider — so a price can always be explained
+ * later, and so a merchant editing the product can be shown the number they
+ * originally typed instead of a re-converted approximation that drifts.
+ *
+ * NOTE ON STALENESS: this deliberately does NOT reject an old rate. The
+ * currencies this feature is for are the manual-rate ones, and a manual rate's
+ * date is simply whenever an admin last touched it — an age check would make
+ * the feature unusable for exactly the Gulf/Sudan markets it exists to serve.
+ * `rateDate` and `rateAgeDays` are returned instead so the caller can warn.
+ *
+ * @param {number} amount        merchant-entered amount
+ * @param {string} currencyCode  what the merchant typed it in
+ * @param {object} [context]     from getInputCurrencyContext(), to reuse a rate
+ * @returns {Promise<{amountUSD:number, currency:string, amount:number,
+ *                    rate:number, rateDate:string|null, provider:string}>}
+ */
+export async function convertToUSD(amount, currencyCode, context = null) {
+  const numericAmount = Number(amount);
+
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    throw new ServiceError(
+      "Price must be a number greater than zero",
+      "INVALID_AMOUNT",
+      400,
+    );
+  }
+
+  const ctx = context || (await getInputCurrencyContext(currencyCode));
+  const amountUSD = usdFromRate(numericAmount, ctx.rate);
+
+  // Below the schema floor the save would fail deep inside Mongoose with a
+  // message about `variants.0.merchantPrice`, which tells a merchant nothing.
+  // Explain it in the currency they actually typed.
+  if (amountUSD < MIN_MERCHANT_PRICE_USD) {
+    throw new ServiceError(
+      `${numericAmount} ${ctx.code} converts to $${amountUSD.toFixed(2)}, below the ` +
+        `$${MIN_MERCHANT_PRICE_USD.toFixed(2)} minimum price.`,
+      "BELOW_MINIMUM_PRICE",
+      400,
+    );
+  }
+
+  return {
+    amountUSD,
+    currency: ctx.code,
+    amount: numericAmount,
+    rate: ctx.rate,
+    rateDate: ctx.rateDate,
+    provider: ctx.provider,
+  };
+}
+
+/** Whole days between an ISO yyyy-mm-dd rate date and today; null if unknown. */
+function rateAgeDays(rateDate) {
+  if (!rateDate) return null;
+  const then = Date.parse(`${rateDate}T00:00:00Z`);
+  if (Number.isNaN(then)) return null;
+  return Math.max(0, Math.floor((Date.now() - then) / 86_400_000));
+}
+
+/**
+ * Currencies a merchant may actually type a price in: active AND holding a
+ * usable rate right now.
+ *
+ * The intersection is the point. Listing an active currency with no rate would
+ * put a choice in the picker that can only fail at save time — or worse, invite
+ * the 1:1 fallback this module refuses to perform. USD is always eligible.
+ *
+ * Resolves every currency against ONE ExchangeRate document rather than calling
+ * getLatestRate per code, which would re-read it for each.
+ */
+export async function listInputEligibleCurrencies() {
+  const [currencies, latest] = await Promise.all([
+    Currency.find({ isActive: true })
+      .sort({ sortOrder: 1, code: 1 })
+      .select("code name nameAr symbol symbolPosition decimals allowManualRate manualRate manualRateUpdatedAt")
+      .lean(),
+    ExchangeRate.getLatest(),
+  ]);
+
+  const eligible = [];
+
+  for (const c of currencies) {
+    if (c.code === "USD") continue; // appended below, always
+
+    // Same precedence as getLatestRate: a manual rate overrides the feed.
+    let rate = null;
+    let date = null;
+    let provider = null;
+
+    if (c.allowManualRate && c.manualRate > 0) {
+      rate = c.manualRate;
+      date = c.manualRateUpdatedAt?.toISOString().split("T")[0] || null;
+      provider = "manual";
+    } else if (latest?.rates?.[c.code] > 0) {
+      rate = latest.rates[c.code];
+      date = latest.date || null;
+      provider = latest.provider || "unknown";
+    }
+
+    if (!(rate > 0)) continue;
+
+    eligible.push({
+      code: c.code,
+      name: c.name,
+      nameAr: c.nameAr,
+      symbol: c.symbol,
+      symbolPosition: c.symbolPosition || "before",
+      decimals: c.decimals ?? 2,
+      rate,
+      rateDate: date,
+      rateProvider: provider,
+      rateAgeDays: rateAgeDays(date),
+    });
+  }
+
+  return [
+    {
+      code: "USD",
+      name: "US Dollar",
+      nameAr: "دولار أمريكي",
+      symbol: "$",
+      symbolPosition: "before",
+      decimals: 2,
+      rate: 1,
+      rateDate: new Date().toISOString().split("T")[0],
+      rateProvider: "system",
+      rateAgeDays: 0,
+    },
+    ...eligible,
+  ];
 }
 
 /**
