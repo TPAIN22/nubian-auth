@@ -9,7 +9,8 @@ import { clerkClient } from '@clerk/express'
 import { sendSuccess, sendError, sendCreated, sendNotFound, sendPaginated, sendForbidden } from '../lib/response.js'
 import logger from '../lib/logger.js'
 import { getUserPreferredCategories, RANKING_CONSTANTS } from '../utils/productRanking.js'
-import { convertProductPrices } from '../services/currency.service.js'
+import { convertProductPrices, getInputCurrencyContext } from '../services/currency.service.js'
+import { applyPricingCurrency, clearPricingInput } from '../lib/pricingInput.js'
 import {
   calculateFinalPrice,
   calculateProductPricing,
@@ -704,6 +705,33 @@ const validateVariants = (variants) => {
   }
 };
 
+// ===== Helper: merchant-currency price entry =====
+// `pricingCurrency` is a CONTROL field on the request, not a stored one: it
+// declares what currency the money fields in this payload are denominated in.
+// Absent (every legacy client, and the mobile app) means USD, and nothing is
+// touched — this must stay backwards compatible, because the alternative is
+// re-pricing the entire existing catalogue.
+//
+// Resolved ONCE per request and threaded through every money field, so a price
+// and its discount can never be struck at two different rates.
+const resolveAndApplyPricingCurrency = async (body) => {
+  const requested = body.pricingCurrency;
+  delete body.pricingCurrency; // never persist the control field
+
+  if (requested === undefined || requested === null || requested === '') return;
+
+  // Throws ServiceError (CURRENCY_NOT_AVAILABLE / RATE_UNAVAILABLE / …) rather
+  // than falling back to a 1:1 rate — see currency.service.js.
+  const context = await getInputCurrencyContext(requested);
+
+  if (context.code === 'USD') {
+    clearPricingInput(body);
+    return;
+  }
+
+  applyPricingCurrency(body, context);
+};
+
 // ===== Helper: Explain an E11000 on the variants.sku index =====
 // Naming the value is the difference between a dead end and a one-line fix on
 // the caller's side. Since variants_sku_live_unique is scoped to live products
@@ -765,6 +793,13 @@ export const createProduct = async (req, res) => {
     // Validate Variants
     validateVariants(req.body.variants);
 
+    // Convert merchant-entered prices to USD BEFORE anything reads them.
+    // Runs after validateVariants so a missing SKU or duplicate surfaces as a
+    // structural error rather than as an FX failure, and before
+    // sanitizeDiscountInput so the discount block it inspects is already in
+    // dollars.
+    await resolveAndApplyPricingCurrency(req.body);
+
     // Remove legacy product-level price fields. Note: req.body.discount (the
     // product-wide discount block) is INTENTIONALLY preserved here — it is the
     // single knob that propagates a discount to every variant via the engine.
@@ -799,7 +834,10 @@ export const createProduct = async (req, res) => {
     if (error.code === 11000 && error.keyPattern?.['variants.sku']) {
       return sendError(res, { message: duplicateSkuMessage(error), statusCode: 400, code: 'VALIDATION_ERROR' });
     }
-    return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR' });
+    // details carries field/SKU pointers (e.g. which variant's price fell below
+    // the minimum after conversion) — without forwarding it the dashboard can
+    // only show the sentence, not highlight the row.
+    return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR', details: error.details ?? null });
   }
 };
 
@@ -828,6 +866,9 @@ export const updateProduct = async (req, res) => {
     // Validate Variants if provided
     if (req.body.variants) validateVariants(req.body.variants);
 
+    // Same ordering rationale as createProduct.
+    await resolveAndApplyPricingCurrency(req.body);
+
     // Strip legacy root price fields, keep req.body.discount (product-wide discount).
     delete req.body.price;
     delete req.body.merchantPrice;
@@ -846,6 +887,7 @@ export const updateProduct = async (req, res) => {
     // Nested-path writes are not always picked up by change tracking; be
     // explicit so the pre-save hook definitely re-runs the engine.
     if (req.body.discount !== undefined) product.markModified('discount');
+    if (req.body.pricingInput !== undefined) product.markModified('pricingInput');
 
     const updatedProduct = await product.save();
 
@@ -862,7 +904,10 @@ export const updateProduct = async (req, res) => {
     if (error.code === 11000 && error.keyPattern?.['variants.sku']) {
       return sendError(res, { message: duplicateSkuMessage(error), statusCode: 400, code: 'VALIDATION_ERROR' });
     }
-    return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR' });
+    // details carries field/SKU pointers (e.g. which variant's price fell below
+    // the minimum after conversion) — without forwarding it the dashboard can
+    // only show the sentence, not highlight the row.
+    return sendError(res, { message: error.message || 'Internal Server Error', statusCode: error.statusCode || 500, code: error.code || 'SERVER_ERROR', details: error.details ?? null });
   }
 };
 

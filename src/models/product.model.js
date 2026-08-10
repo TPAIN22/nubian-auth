@@ -28,6 +28,20 @@ const variantSchema = new mongoose.Schema(
     // Computed and stored by pre-save + dynamic pricing cron
     finalPrice: { type: Number, default: 0, min: 0 },
 
+    // What the merchant actually TYPED, when they priced in a non-USD currency.
+    // merchantPrice / merchantDiscount above are always USD; these are the
+    // originals, kept so an edit screen can show the merchant their own number
+    // instead of a re-conversion that drifts every time the rate moves. The
+    // currency and rate they were struck at live once per product, in
+    // productSchema.pricingInput — one product is priced in one currency.
+    //
+    // Null for USD-entered products, which is the overwhelming majority and the
+    // default. Never read these for pricing math: USD is the source of truth.
+    pricingInput: {
+      merchantPrice:    { type: Number, default: null, min: 0 },
+      merchantDiscount: { type: Number, default: null, min: 0 },
+    },
+
     stock: { type: Number, required: true, min: 0 },
     images: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
@@ -66,6 +80,34 @@ const productSchema = new mongoose.Schema(
       startsAt:    { type: Date, default: null },
       endsAt:      { type: Date, default: null },
       isActive:    { type: Boolean, default: false },
+    },
+
+    // The FX rate every money field on this product was converted AT, when the
+    // merchant priced in something other than USD. Written by the product write
+    // path (controllers/products.controller.js → applyPricingCurrency), never by
+    // the pricing engine.
+    //
+    // This is an AUDIT record, not an input to pricing. Stored USD is the source
+    // of truth and nothing recomputes from these. It exists so a price can be
+    // explained months later ("you entered 375 SAR at 3.75 on 2026-08-10"), so
+    // the edit screen round-trips the merchant's own number, and so a future job
+    // could re-peg USD to a merchant's intended local price when a floating
+    // currency like SDG or EGP drifts.
+    //
+    // One block per product, not per variant: a product is priced in a single
+    // currency at a single rate, and splitting the rate across variants is what
+    // would let a price and its discount be struck at two different rates.
+    pricingInput: {
+      currency: { type: String, default: null, uppercase: true, trim: true },
+      rate:     { type: Number, default: null, min: 0 },
+      rateDate: { type: String, default: null },
+      provider: { type: String, default: null },
+      lockedAt: { type: Date,   default: null },
+      // Product-level discount block amounts as typed. `discountValue` is only
+      // meaningful when discount.type === 'fixed' — a percentage is not money
+      // and is never converted.
+      discountValue:       { type: Number, default: null, min: 0 },
+      discountMaxDiscount: { type: Number, default: null, min: 0 },
     },
 
     // NOTE: intentionally has NO `ref`. There is no `Offer` model anywhere in
