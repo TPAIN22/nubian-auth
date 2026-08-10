@@ -1558,6 +1558,7 @@ export const toggleDynamicPricing = async (req, res) => {
  *       variants: Array<{ sku, attributes, merchantPrice, stock, images?, isActive?,
  *                         nubianMarkup?, dynamicMarkup?, merchantDiscount? }>,
  *       discount?: { type, value, maxDiscount?, startsAt?, endsAt?, isActive? },
+ *       pricingCurrency?: string,   // what this row's money fields are in; USD when absent
  *       priorityScore?: number,
  *       featured?: boolean,
  *     }>
@@ -1604,6 +1605,34 @@ export const bulkImportProducts = async (req, res) => {
   const failures = [];
   const ops = [];
 
+  // Resolve each DISTINCT currency in the batch exactly once, up front.
+  //
+  // Two reasons this is not done per row. First, a 500-row file would otherwise
+  // issue 500 rate lookups. Second and more importantly, rows sharing a currency
+  // must share a rate: resolving per row lets a long import straddle the 4 AM FX
+  // refresh, so the first half of a merchant's catalogue is priced at yesterday's
+  // rate and the second half at today's, with nothing recording that it happened.
+  //
+  // A currency that fails to resolve fails ONLY the rows that asked for it —
+  // one unconfigured currency must not reject a file that is otherwise fine.
+  const currencyContexts = new Map();
+  const currencyErrors = new Map();
+  const requestedCodes = new Set(
+    rows
+      .map((r) => String(r?.pricingCurrency || '').trim().toUpperCase())
+      .filter((c) => c && c !== 'USD'),
+  );
+
+  await Promise.all(
+    [...requestedCodes].map(async (code) => {
+      try {
+        currencyContexts.set(code, await getInputCurrencyContext(code));
+      } catch (e) {
+        currencyErrors.set(code, e.message || `Cannot price in ${code}`);
+      }
+    }),
+  );
+
   rows.forEach((row, idx) => {
     try {
       if (!row.importSku || typeof row.importSku !== 'string') {
@@ -1638,6 +1667,18 @@ export const bulkImportProducts = async (req, res) => {
         if (!(v.stock >= 0)) {
           throw new Error('Each variant must have stock >= 0');
         }
+      }
+
+      // Convert this row's money fields to USD if it declared a currency.
+      // Must run BEFORE the discount is sanitized (that inspects `value`, which
+      // is money for a fixed discount) and before calculateFinalPrice below,
+      // which assumes dollars. Mutates `row` in place — including stamping
+      // `row.pricingInput` and each variant's, which are carried into the
+      // update document further down.
+      const rowCode = String(row.pricingCurrency || '').trim().toUpperCase();
+      if (rowCode && rowCode !== 'USD') {
+        if (currencyErrors.has(rowCode)) throw new Error(currencyErrors.get(rowCode));
+        applyPricingCurrency(row, currencyContexts.get(rowCode));
       }
 
       // Optional product-level discount block (Issue #25). Only honoured when
@@ -1675,6 +1716,11 @@ export const bulkImportProducts = async (req, res) => {
           stock: Number(v.stock),
           images: Array.isArray(v.images) ? v.images : [],
           isActive: v.isActive !== false,
+          // Written by applyPricingCurrency above; undefined for USD rows. This
+          // mapping builds a NEW variant object rather than spreading `v`, so
+          // without carrying it explicitly the typed amounts would be dropped
+          // and an imported foreign-currency product would not round-trip.
+          ...(v.pricingInput ? { pricingInput: v.pricingInput } : {}),
         };
         const { finalPrice } = calculateFinalPrice({ product: pricingContext, variant });
         return { ...variant, finalPrice };
@@ -1706,6 +1752,12 @@ export const bulkImportProducts = async (req, res) => {
         isActive: true,
         deletedAt: null,
         ...(discountBlock ? { discount: discountBlock } : {}),
+        // The FX audit record for this row. Set only when the row declared a
+        // currency: a USD row must not overwrite the block on a product that a
+        // previous import (or the wizard) priced in something else, because
+        // this is an upsert and $set would silently blank the audit trail for a
+        // price that is still stored in dollars either way.
+        ...(row.pricingInput ? { pricingInput: row.pricingInput } : {}),
         ...(row.priorityScore !== undefined ? { priorityScore: Number(row.priorityScore) } : {}),
         ...(row.featured !== undefined ? { featured: Boolean(row.featured) } : {}),
       };
