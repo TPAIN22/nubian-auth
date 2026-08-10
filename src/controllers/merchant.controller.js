@@ -1351,7 +1351,10 @@ export const updateMerchantProfile = async (req, res) => {
     // profile:write, so only an owner reaches this.
     const merchant = req.merchant;
 
-    const { storeName, description, email, phone, city, logoUrl, banner } = req.body;
+    const {
+      storeName, description, email, phone, city, logoUrl, banner,
+      preferredInputCurrency,
+    } = req.body;
 
     if (storeName)              merchant.storeName   = storeName;
     if (description !== undefined) merchant.description = description;
@@ -1360,6 +1363,16 @@ export const updateMerchantProfile = async (req, res) => {
     if (city !== undefined)     merchant.city        = city;
     if (logoUrl !== undefined)  merchant.logoUrl     = logoUrl;
     if (banner !== undefined)   merchant.banner      = banner;
+
+    // A form DEFAULT, not a pricing decision — saving it converts nothing and
+    // re-prices nothing. Eligibility is enforced where money is actually
+    // converted (products.controller → getInputCurrencyContext), so this
+    // accepts any well-formed code and lets a stale preference fail loudly at
+    // the point of sale rather than silently blocking a profile save.
+    if (preferredInputCurrency !== undefined) {
+      merchant.preferredInputCurrency =
+        String(preferredInputCurrency || 'USD').trim().toUpperCase() || 'USD';
+    }
 
     await merchant.save();
 

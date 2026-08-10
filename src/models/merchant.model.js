@@ -41,6 +41,28 @@ const merchantSchema = new mongoose.Schema(
     city:         { type: String, required: true },
     productSamples: [{ type: String }],
 
+    // ── Pricing ────────────────────────────────────────────────────────────
+    // The currency this store PRICES IN — what its product forms default to,
+    // nothing more. It is not a storage currency and not a display currency:
+    // every amount is still stored in USD (product.model.js `merchantPrice`)
+    // and shoppers still see whatever their own `x-currency` header asks for.
+    //
+    // Deliberately NOT validated against the Currency collection here. A
+    // currency can be deactivated or lose its exchange rate long after a
+    // merchant chose it, so a stored code is a preference, never a promise —
+    // the write path re-checks eligibility on every save
+    // (currency.service.js getInputCurrencyContext) and is the only authority.
+    // A schema enum would just fail saves on an unrelated field once an admin
+    // retired a currency.
+    preferredInputCurrency: {
+      type: String,
+      default: 'USD',
+      uppercase: true,
+      trim: true,
+      minlength: 3,
+      maxlength: 3,
+    },
+
     // ── Status ─────────────────────────────────────────────────────────────
     status: {
       type: String,

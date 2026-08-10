@@ -111,6 +111,17 @@ export const validateMerchantUpdate = [
   sanitizeString('city',        { min: 0, max: 100, optional: true }),
   body('logoUrl').optional().isString().isLength({ max: 1000 }),
   body('banner').optional().isString().isLength({ max: 1000 }),
+  // Format only. Whether the code is CURRENTLY usable for pricing is decided on
+  // the product write path, the only place money is actually converted. A
+  // currency retired after a merchant chose it must not start failing their
+  // profile saves.
+  body('preferredInputCurrency')
+    .optional()
+    .isString()
+    .trim()
+    .toUpperCase()
+    .matches(/^[A-Z]{3}$/)
+    .withMessage('preferredInputCurrency must be a 3-letter ISO 4217 code'),
   handleValidationErrors,
 ];
 
