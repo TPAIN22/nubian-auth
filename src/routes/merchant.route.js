@@ -39,7 +39,12 @@ import { isAuthenticated, isAdmin } from '../middleware/auth.middleware.js';
 import { isMerchant, isApprovedMerchant, requireMerchantPermission, loadStoreForAdmin } from '../middleware/merchant.middleware.js';
 import { PERMISSIONS } from '../lib/merchantPermissions.js';
 import { validateMerchantApplication, validateMerchantUpdate, validateMerchantStatusUpdate, validateMerchantSuspension, validateAdminStoreCreate, validateAdminStoreUpdate, validateStoreLink, validateTeamInvite, validateTeamRoleUpdate, validateOwnershipTransfer, validateInviteAccept } from '../middleware/validators/merchant.validator.js';
+import { validateMerchantOnboarding } from '../middleware/validators/merchantOnboarding.validator.js';
 import { validateObjectId, handleValidationErrors } from '../middleware/validation.middleware.js';
+import {
+  getMerchantOnboarding,
+  updateMerchantOnboarding,
+} from '../controllers/merchantOnboarding.controller.js';
 
 const router = express.Router();
 
@@ -49,6 +54,15 @@ router.delete('/my-application', isAuthenticated, withdrawMyApplication);
 router.get('/my-status', isAuthenticated, getMyMerchantStatus);
 router.get('/_diag', isAuthenticated, merchantDiagnostic);
 router.get('/list', getPublicMerchants); // New Public Endpoint
+
+// ── Dashboard onboarding tour ───────────────────────────────────────────
+// Progress through the merchant console's guided tour. Authenticated-only, not
+// isApprovedMerchant: this stores nothing about a store, and a 403 here (from a
+// suspension or a stale membership) is indistinguishable to the client from
+// "never started" — which would replay the tour at a merchant who finished it.
+// Declared above '/:id' so the literal path is not swallowed by the param route.
+router.get('/onboarding', isAuthenticated, getMerchantOnboarding);
+router.put('/onboarding', isAuthenticated, validateMerchantOnboarding, updateMerchantOnboarding);
 
 // Public store routes (authenticated users can view approved stores)
 router.get('/store/:id', getStoreById);

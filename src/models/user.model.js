@@ -33,6 +33,33 @@ const userSchema = new mongoose.Schema({
   countryCode: { type: String, trim: true, uppercase: true, maxlength: 3, default: null },
   currencyCode: { type: String, trim: true, uppercase: true, maxlength: 3, default: null },
 
+  // ===== MERCHANT DASHBOARD ONBOARDING =====
+  // Progress through the guided product tour in the merchant console.
+  //
+  // Keyed to the PERSON, not the store. A store can be run by a team, and the
+  // tour teaches somebody how to use the dashboard — an owner finishing it must
+  // not silently mark it done for a member of staff invited afterwards. Keeping
+  // it here is also what makes it survive a device change: it travels with the
+  // Clerk account rather than with a browser.
+  merchantOnboarding: {
+    status: {
+      type: String,
+      enum: ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED'],
+      default: 'NOT_STARTED',
+    },
+    /** Step id the tour should resume at. Null once it reaches a terminal state. */
+    currentStep: { type: String, default: null, maxlength: 64 },
+    /** Step ids the merchant has actually finished, in no particular order. */
+    completedSteps: { type: [String], default: [] },
+    /**
+     * Bumped when the tour's step list changes materially enough that a stored
+     * `currentStep` is no longer meaningful. The client decides what to do with
+     * a mismatch; the server only stores it.
+     */
+    version: { type: Number, default: 1 },
+    updatedAt: { type: Date, default: null },
+  },
+
   // ===== SOFT DELETE =====
   isDeleted: { type: Boolean, default: false },
   deletedAt: { type: Date, default: null },
