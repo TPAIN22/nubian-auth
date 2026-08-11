@@ -18,6 +18,17 @@ const STEP_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MAX_COMPLETED_STEPS = 32;
 
 export const validateMerchantOnboarding = [
+  // `tourId` becomes part of a dotted update path (`merchantOnboarding.<id>.…`),
+  // so this is not just shape-checking — it is the thing that stops a crafted
+  // id writing somewhere it has no business writing. The pattern admits no dot,
+  // no `$`, and no bracket, which is every character that could steer the path.
+  body('tourId')
+    .exists()
+    .withMessage('tourId is required')
+    .bail()
+    .custom((value) => typeof value === 'string' && STEP_ID.test(value))
+    .withMessage('tourId must be a lowercase slug of at most 64 characters'),
+
   body('status')
     .optional()
     .isIn(['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED'])

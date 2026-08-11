@@ -34,30 +34,44 @@ const userSchema = new mongoose.Schema({
   currencyCode: { type: String, trim: true, uppercase: true, maxlength: 3, default: null },
 
   // ===== MERCHANT DASHBOARD ONBOARDING =====
-  // Progress through the guided product tour in the merchant console.
+  // Progress through the merchant console's guided tours, keyed by tour id
+  // ('merchant-console', 'add-product', …).
   //
-  // Keyed to the PERSON, not the store. A store can be run by a team, and the
-  // tour teaches somebody how to use the dashboard — an owner finishing it must
-  // not silently mark it done for a member of staff invited afterwards. Keeping
-  // it here is also what makes it survive a device change: it travels with the
-  // Clerk account rather than with a browser.
+  // A Map rather than one fixed subdocument because there is more than one tour
+  // and there will be more again: the console walkthrough and the add-a-product
+  // walkthrough have separate lifecycles, and somebody who finished the first
+  // has not thereby seen the second. The dashboard owns the ids; the server just
+  // stores whatever slug it is handed.
+  //
+  // Keyed to the PERSON, not the store. A store can be run by a team, and a tour
+  // teaches somebody how to use the dashboard — an owner finishing it must not
+  // silently mark it done for a member of staff invited afterwards. Living here
+  // is also what makes it survive a device change: it travels with the Clerk
+  // account rather than with a browser.
   merchantOnboarding: {
-    status: {
-      type: String,
-      enum: ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED'],
-      default: 'NOT_STARTED',
-    },
-    /** Step id the tour should resume at. Null once it reaches a terminal state. */
-    currentStep: { type: String, default: null, maxlength: 64 },
-    /** Step ids the merchant has actually finished, in no particular order. */
-    completedSteps: { type: [String], default: [] },
-    /**
-     * Bumped when the tour's step list changes materially enough that a stored
-     * `currentStep` is no longer meaningful. The client decides what to do with
-     * a mismatch; the server only stores it.
-     */
-    version: { type: Number, default: 1 },
-    updatedAt: { type: Date, default: null },
+    type: Map,
+    of: new mongoose.Schema(
+      {
+        status: {
+          type: String,
+          enum: ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED'],
+          default: 'NOT_STARTED',
+        },
+        /** Step id to resume at. Null once the tour reaches a terminal state. */
+        currentStep: { type: String, default: null, maxlength: 64 },
+        /** Step ids actually finished, in no particular order. */
+        completedSteps: { type: [String], default: [] },
+        /**
+         * Bumped when a tour's step list changes materially enough that a
+         * stored `currentStep` is no longer meaningful. The client decides what
+         * to do with a mismatch; the server only records it.
+         */
+        version: { type: Number, default: 1 },
+        updatedAt: { type: Date, default: null },
+      },
+      { _id: false },
+    ),
+    default: () => new Map(),
   },
 
   // ===== SOFT DELETE =====
