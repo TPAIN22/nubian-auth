@@ -36,19 +36,20 @@ async function buildUsdPayload(userId) {
     getStoreHighlights(),
   ]);
 
-  return {
-    banners,
-    categories,
-    collections,
-    trending:      enrichProductsWithPricing(recommendations.trending),
-    flashDeals:    enrichProductsWithPricing(recommendations.flashDeals),
-    newArrivals:   enrichProductsWithPricing(recommendations.newArrivals),
-    brandsYouLove: enrichProductsWithPricing(recommendations.brandsYouLove),
-    forYou:        enrichProductsWithPricing(
-      !userId ? recommendations.trending.slice(0, 10) : recommendations.forYou,
-    ),
-    stores,
+  const sections = {
+    trending:      recommendations.trending,
+    flashDeals:    recommendations.flashDeals,
+    newArrivals:   recommendations.newArrivals,
+    brandsYouLove: recommendations.brandsYouLove,
+    forYou:        !userId ? recommendations.trending.slice(0, 10) : recommendations.forYou,
   };
+  const storeOf = await getProductStores(Object.values(sections).flat());
+
+  const out = { banners, categories, collections, stores };
+  for (const [k, list] of Object.entries(sections)) {
+    out[k] = attachStores(enrichProductsWithPricing(list), storeOf);
+  }
+  return out;
 }
 
 async function convertHomePayload(usdPayload, currencyCode, rateInfo) {
@@ -133,6 +134,35 @@ async function getCollectionHighlights() {
     .lean();
 
   return collections.map((c) => toCollectionSummary(c, c.products?.length ?? 0));
+}
+
+/**
+ * Seller name + logo for the products in the home feed.
+ *
+ * `merchant` stays the bare id it has always been — the mobile normaliser reads
+ * it as `merchantId`, so populating it in place would break the app. The store
+ * is attached alongside as `store: { _id, name, logo }` (the same shape as the
+ * `stores` rail), from ONE lean query over the distinct merchant ids in the
+ * feed, selecting three fields. No per-section populate, no $lookup.
+ */
+async function getProductStores(products) {
+  const ids = [...new Set(products.map((p) => p?.merchant?.toString()).filter(Boolean))];
+  if (ids.length === 0) return new Map();
+
+  const merchants = await Merchant.find({ _id: { $in: ids } }, 'storeName logoUrl').lean();
+  return new Map(
+    merchants.map((m) => [
+      m._id.toString(),
+      { _id: m._id.toString(), name: m.storeName, logo: m.logoUrl || null },
+    ]),
+  );
+}
+
+function attachStores(products, storeOf) {
+  return products.map((p) => {
+    const store = p?.merchant ? storeOf.get(p.merchant.toString()) : undefined;
+    return store ? { ...p, store } : p;
+  });
 }
 
 async function getStoreHighlights() {
